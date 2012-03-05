@@ -52,7 +52,7 @@ def fault_body_function_v10(wrapped_exc):
 
 def fault_body_function_v11(wrapped_exc):
     """ This function creates the contents of the body for a fault
-    response for Quantum API v1.0.
+    response for Quantum API v1.1.
 
     :param wrapped_exc: Exception thrown by the Quantum service
     :type wrapped_exc: quantum.common.exceptions.QuantumException
@@ -116,7 +116,7 @@ class Quantum10HTTPError(webob.exc.HTTPClientError):
                 'explanation': _ALREADYATTACHED_EXPL
             },
             exceptions.NotImplementedError: {
-                'code': 501,
+                'code': 450,
                 'title': 'notImplemented',
                 'explanation': _NOTIMPLEMENTED_EXPL
             }
