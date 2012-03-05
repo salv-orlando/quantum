@@ -389,7 +389,8 @@ class SecurityGroupExtensionControllerTest(unittest.TestCase):
 
     def test_index(self):
         index_response = self.test_app.get(
-            "/extensions/sg/tenants/XYZ/securitygroups")
+            "/extensions/sg/tenants/XYZ/securitygroups",
+            {'ext_sgid': 'True'})
         self.assertEqual(200, index_response.status_int)
         LOG.info('***** index_response: %s' %
                  pp.pformat(index_response.__dict__))
@@ -447,7 +448,6 @@ class SecurityGroupExtensionControllerTest(unittest.TestCase):
             json.dumps(SECURITY_GROUP_1_JSON),
             [('Content-Type', 'application/json')])
 
-        # TODO(del): add tenant_id to securitygroup?
         self.assertEqual(200, create_response.status_int)
         received = create_response.json['securitygroup']
         received = create_response.json['securitygroup']
@@ -476,7 +476,6 @@ class SecurityGroupExtensionControllerTest(unittest.TestCase):
             SECURITY_GROUP_1_XML,
             [('Content-Type', 'application/xml')])
 
-        # TODO(del): add tenant_id to securitygroup?
         self.assertEqual(200, create_response.status_int)
         sg_atts = create_response.xml.attrib
         self.assertTrue(sg_atts['id'] == SG_CREATE_ID)
@@ -503,7 +502,6 @@ class SecurityGroupExtensionControllerTest(unittest.TestCase):
             json.dumps(SECURITY_GROUP_1_JSON),
             [('Content-Type', 'application/json')])
 
-        # TODO(del): add tenant_id to securitygroup?
         self.assertEqual(200, update_response.status_int)
         received = update_response.json['securitygroup']
         received = update_response.json['securitygroup']
@@ -532,7 +530,6 @@ class SecurityGroupExtensionControllerTest(unittest.TestCase):
             SECURITY_GROUP_1_XML,
             [('Content-Type', 'application/xml')])
 
-        # TODO(del): add tenant_id to securitygroup?
         self.assertEqual(200, update_response.status_int)
         sg_atts = update_response.xml.attrib
         self.assertTrue(sg_atts['id'] == SG_CREATE_ID)
@@ -561,8 +558,7 @@ class SecurityGroupExtensionControllerTest(unittest.TestCase):
     def test_list_for_port_json(self):
         list_response = self.test_app.put(
             "/extensions/sg/tenants/XYZ/securitygroups/list_for_port",
-            json.dumps({'port': {'id': 'AAA'}}),
-            [('Content-Type', 'application/json')])
+            params={'ext_sgid': True, 'port_id': 'AAA'})
         self.assertEqual(200, list_response.status_int)
         self.assertEqual(list_response.json, SECURITY_GROUP_IDS_JSON)
 
@@ -581,7 +577,7 @@ class SecurityGroupExtensionControllerTest(unittest.TestCase):
     def test_associate_port_json(self):
         associate_response = self.test_app.put(
             "/extensions/sg/tenants/XYZ/securitygroups/UUU/associate_port",
-            json.dumps({'port': {'id': 'AAA'}, 'ext_sgid': 'True'}),
+            json.dumps({'port': {'id': 'AAA'}}),
             [('Content-Type', 'application/json')])
         self.assertEqual(200, associate_response.status_int)
 

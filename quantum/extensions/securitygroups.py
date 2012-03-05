@@ -61,10 +61,45 @@ from quantum.common import exceptions as qexceptions
 from nicira_nvp_plugin.extensions.faults import Quantum11HTTPError
 from nicira_nvp_plugin.extensions import exceptions
 
-LOG = logging.getLogger('quantum.api.securitygroups')
+
+LOCAL_LOGGING = False
+if LOCAL_LOGGING:
+    from logging.handlers import SysLogHandler
+    FORMAT = ("|%(levelname)s|%(filename)s|%(funcName)s|%(lineno)s"
+              "|%(message)s")
+    LOG = logging.getLogger(__name__)
+    formatter = logging.Formatter(FORMAT)
+    syslog = SysLogHandler(address="/dev/log")
+    syslog.setFormatter(formatter)
+    LOG.addHandler(syslog)
+    LOG.setLevel(logging.DEBUG)
+else:
+    LOG = logging.getLogger('quantum.api.securitygroups')
+
 
 EXT_ID_SEPARATOR = ':'
 EXT_ID_PREFIX = 'ext'
+
+
+def format_exception(etype, e, locals_, request=None):
+    """Consistent formatting for exceptions.
+
+    :param etype: a string describing the exception type.
+    :param e: the exception.
+    :param request: the request object.
+    :param locals_: calling context local variable dict.
+    :returns: a formatted string.
+    """
+    msg = ["Error. %s exception: %s." % (etype, e)]
+    if request:
+        msg.append("request=[%s]" % request)
+        if request.body:
+            msg.append("request.body=[%s]" % str(request.body))
+    l = dict(locals_)
+    if "request" in l:
+        l.pop("request")
+    msg.append("locals=[%s]" % str(l))
+    return ' '.join(msg)
 
 
 def extract_security_group_id(sgid):
@@ -79,7 +114,6 @@ def extract_security_group_id(sgid):
     return False, str(sgid)
 
 
-#TODO(del): update parameter names and interface.
 class Securitygroups(object):
     """Securitygroup extension file"""
     def __init__(self):
@@ -146,6 +180,40 @@ EXT_SGID_KEY = 'ext_sgid'
 class SecurityGroupController(wsgi.Controller):
     """SecurityGroup API controller (based on quantum WSGI controller."""
 
+    _items_param_list = [
+        {'param-name': 'ext_sgid', 'required': False, 'default-value': None},
+    ]
+
+    _create_param_list = [
+        {'param-name': 'ext_sgid', 'required': False, 'default-value': None},
+        {'param-name': 'id', 'required': False},
+        {'param-name': 'name', 'required': True},
+        {'param-name': 'ports', 'required': False, 'default-value': []},
+        {'param-name': 'securityrules', 'required': False,
+         'default-value': []},
+    ]
+
+    _update_param_list = [
+        {'param-name': 'ext_sgid', 'required': False, 'default-value': None},
+        {'param-name': 'name', 'required': True},
+        {'param-name': 'ports', 'required': False, 'default-value': []},
+        {'param-name': 'securityrules', 'required': False,
+         'default-value': []},
+    ]
+
+    _list_for_port_param_list = [
+        {'param-name': 'ext_sgid', 'required': False, 'default-value': None},
+        {'param-name': 'port', 'required': False},
+    ]
+
+    _associate_port_param_list = [
+        {'param-name': 'id', 'required': True},
+    ]
+
+    _dissociate_port_param_list = [
+        {'param-name': 'id', 'required': True},
+    ]
+
     _common_serialization_metadata = {
             "plurals": {
                 "securitygroups": "securitygroup", "ports": "port",
@@ -181,7 +249,6 @@ class SecurityGroupController(wsgi.Controller):
         Uses self._serialization_metadata if it exists, which is a dict mapping
         MIME types to information needed to serialize to that type."""
         _metadata = getattr(type(self), '_serialization_metadata', {})
-
         serializer = wsgi.SecurityGroupSerializer(_metadata, default_xmlns)
         try:
             return serializer.serialize(data, content_type)
@@ -199,6 +266,38 @@ class SecurityGroupController(wsgi.Controller):
         serializer = wsgi.SecurityGroupSerializer(_metadata)
         return serializer.deserialize(data, content_type)
 
+    def _extract_request_body(self, request, resource_name, params):
+        """ verifies required parameters are in request body.
+            sets default value for missing optional parameters.
+
+            body argument must be the deserialized body
+        """
+        LOG.debug(str(locals()))
+        try:
+            body = request.body
+            if body is None:
+                # Initialize empty resource for setting default value
+                body = {resource_name: {}}
+            else:
+                body = self._deserialize(body,
+                                         request.best_match_content_type())
+            data = body[resource_name]
+        except KeyError:
+            # raise if _resource_name is not in req body.
+            raise exc.HTTPBadRequest("Unable to find '%s' in request body"
+                                     % resource_name)
+        for param in params:
+            param_name = param['param-name']
+            param_value = data.get(param_name)
+            # If the parameter wasn't found and it was required, return 400
+            if param_value is None and param['required']:
+                msg = ("Failed to parse request. Parameter: %s not specified"
+                       % param_name)
+                LOG.error(msg)
+                raise exc.HTTPBadRequest(msg)
+            data[param_name] = param_value or param.get('default-value')
+        return data
+
     def index(self, request, tenant_id):
         """Process the List Security Groups API call.
 
@@ -215,6 +314,7 @@ class SecurityGroupController(wsgi.Controller):
                 <securitygroup id="8bec1293-16bd-4568-ba75-1f58bec0b4c3"/>
                 <securitygroup id="2a39409c-7146-4501-8429-3579e03e9b56"/>
             </securitygroups>"""
+        LOG.debug(str(locals()))
         return self._items(request, tenant_id, is_detail=False)
 
     def _items(self, request, tenant_id, port_id=None, is_detail=False):
@@ -231,14 +331,10 @@ class SecurityGroupController(wsgi.Controller):
                 <securitygroup id="8bec1293-16bd-4568-ba75-1f58bec0b4c3"/>
                 <securitygroup id="2a39409c-7146-4501-8429-3579e03e9b56"/>
             </securitygroups>"""
-        try:
-            ext_sgid = False
-            if request.body:
-                req_params = self._deserialize(
-                    request.body, request.best_match_content_type())
-                ext_sgid = (EXT_SGID_KEY in req_params)
-        except Exception as e:
-            return Quantum11HTTPError(e)
+        LOG.debug(str(locals()))
+        ext_sgid = False
+        if request.GET.get('ext_sgid'):
+            ext_sgid = True
 
         try:
             securitygroups = self._plugin.get_security_groups(tenant_id,
@@ -249,6 +345,7 @@ class SecurityGroupController(wsgi.Controller):
                       for securitygroup in securitygroups]
             return dict(securitygroups=result)
         except Exception as e:
+            LOG.error(format_exception("Unknown", e, locals(), request))
             return Quantum11HTTPError(e)
 
     # pylint: disable-msg=E1101
@@ -294,20 +391,20 @@ class SecurityGroupController(wsgi.Controller):
                   <port id="b832be00-6553-4f69-af33-acd554e36d08"/>
                <ports>
             </securitygroup>"""
-        try:
-            ext_sgid, id = extract_security_group_id(id)
-        except Exception as e:
-            msg = _("Error parsing parameters: %s" % e)
-            return exc.HTTPBadRequest(explanation=msg)
+        LOG.debug(str(locals()))
 
         try:
+            ext_sgid, id = extract_security_group_id(id)
             securitygroup = self._plugin.get_security_group_details(
                 tenant_id, id, ext_sgid)
             builder = securitygroups_view.get_view_builder(request)
             return builder.build(securitygroup, True)
         except exceptions.SecurityGroupNotFound as e:
-            return Quantum11HTTPError(exceptions.SecurityGroupNotFound(e))
+            LOG.error(format_exception("SecurityGroupNotFound", e, locals(),
+                                       request))
+            return Quantum11HTTPError(e)
         except Exception as e:
+            LOG.error(format_exception("Unknown", e, locals(), request))
             return Quantum11HTTPError(e)
 
     def create(self, request, tenant_id):
@@ -324,36 +421,19 @@ class SecurityGroupController(wsgi.Controller):
             <securitygroup
                 id="9bec1293-16bd-4568-ba75-1f58bec0b4c3"
             />"""
-        try:
-            LOG.debug('create() request body: %s' % request.body)
-            # Extract parameters and determine if we are using internal
-            # or externally generated security group ids.
-            ext_sgid = False
-            if request.body:
-                req_params = self._deserialize(
-                    request.body, request.best_match_content_type())
-                sg_params = req_params['securitygroup']
-                ext_sgid = (EXT_SGID_KEY in req_params)
+        LOG.debug(str(locals()))
+        params = self._extract_request_body(
+            request, 'securitygroup', type(self)._create_param_list)
 
-            LOG.debug('create() sg_params: %s' % sg_params)
+        # Marshal keyword args.
+        kwargs = dict(
+            name=params['name'],
+            securityrules=params['securityrules'],
+            ports=params['ports'])
 
-            # Marshal keyword args.
-            kwargs = dict(
-                name=sg_params['name'],
-                securityrules=sg_params.get('securityrules', []),
-                ports=sg_params.get('ports', []))
-
-            if ext_sgid:
-                kwargs['id']=sg_params['id']
-        except TypeError:
-            msg = _("Missing parameter dict")
-            return exc.HTTPBadRequest(explanation=msg)
-        except KeyError:
-            msg = _("Missing parameter specified")
-            return exc.HTTPBadRequest(explanation=msg)
-        except Exception:
-            msg = _("Error parsing parameters.")
-            return exc.HTTPBadRequest(explanation=msg)
+        ext_sgid = (params.get('ext_sgid') is not None)
+        if ext_sgid:
+            kwargs['id'] = params['id']
 
         try:
             # Create the security group.
@@ -363,10 +443,10 @@ class SecurityGroupController(wsgi.Controller):
             builder = securitygroups_view.get_view_builder(request)
             result = builder.build(securitygroup, True)
             LOG.debug('create() result: %s' % result)
-        except exc.HTTPError as exp:
-            return Quantum11HTTPError(exp)
-
-        return result
+            return result
+        except exc.HTTPError as e:
+            LOG.error(format_exception("Unknown", e, locals(), request))
+            return Quantum11HTTPError(e)
 
     def update(self, request, tenant_id, id):
         """Process the Update Security Group API call.
@@ -385,23 +465,26 @@ class SecurityGroupController(wsgi.Controller):
                 id="8bec1293-16bd-4568-ba75-1f58bec0b4c3"
             />"""
         ext_sgid, id = extract_security_group_id(id)
+        params = self._extract_request_body(
+            request, 'securitygroup', type(self)._update_param_list)
 
+        # Marshal keyword args.
+        kwargs = dict(
+            name=params['name'],
+            securityrules=params['securityrules'],
+            ports=params['ports'])
+
+        LOG.debug(str(locals()))
         try:
-            LOG.info('update() request body: %s' % request.body)
-            req_params = self._deserialize(
-                request.body, request.best_match_content_type())
-            sg_params = req_params['securitygroup']
-        except exc.HTTPError as exp:
-            return Quantum11HTTPError(exp)
-
-        securitygroup = self._plugin.update_security_group(
-            tenant_id, id, ext_sgid, name=sg_params['name'],
-            securityrules=sg_params.get('securityrules', []),
-            ports=sg_params.get('ports', []))
-        builder = securitygroups_view.get_view_builder(request)
-        result = builder.build(securitygroup, True)
-        LOG.info('update() result: %s' % result)
-        return result
+            securitygroup = self._plugin.update_security_group(
+                tenant_id, id, ext_sgid, **kwargs)
+            builder = securitygroups_view.get_view_builder(request)
+            result = builder.build(securitygroup, True)
+            LOG.info('Result from plugin: %s' % result)
+            return result
+        except Exception as e:
+            LOG.error(format_exception("Unknown", e, locals(), request))
+            return Quantum11HTTPError(e)
 
     def delete(self, request, tenant_id, id):
         """Process the Delete Security Group API call.
@@ -418,14 +501,15 @@ class SecurityGroupController(wsgi.Controller):
         :raises: Bad Request(400), Unauthorized(401), Forbidden(403),
             SecurityGroupNotFound(), SecurityGroupInUse().
         :returns: Nothing."""
+        LOG.debug(str(locals()))
         try:
             # Are we using externally generated IDs?
             ext_sgid, id = extract_security_group_id(id)
             self._plugin.delete_security_group(tenant_id, id, ext_sgid)
-        except exceptions.SecurityGroupNotFound as e1:
-            return Quantum11HTTPError(e1)
-        except exceptions.SecurityGroupInUse as e2:
-            return Quantum11HTTPError(e2)
+        except exceptions.SecurityGroupNotFound as e:
+            return Quantum11HTTPError(e)
+        except exceptions.SecurityGroupInUse as e:
+            return Quantum11HTTPError(e)
 
     def list_for_port(self, request, tenant_id):
         """Process the List Security Groups for Port API call.
@@ -446,12 +530,10 @@ class SecurityGroupController(wsgi.Controller):
                <securitygroup id="158233b0-ca9a-40b4-8614-54a4a99d47d1"/>
                <securitygroup id="b832be00-6553-4f69-af33-acd554e36d08"/>
             </securitygroups>"""
-        try:
-            req_params = self._deserialize(
-                request.body, request.best_match_content_type())
-            port_id = req_params['port']['id']
-        except exc.HTTPError as exp:
-            return Quantum11HTTPError(exp)
+        ext_sgid = False
+        if request.GET.get('ext_sgid'):
+            ext_sgid = True
+        port_id = request.GET.get('port_id')
 
         return self._items(request, tenant_id, port_id, is_detail=False)
 
@@ -471,23 +553,26 @@ class SecurityGroupController(wsgi.Controller):
             PortNotFound(430), SecurityGroupNotFound(),
             SecurityAssocationExists().
         :returns: Nothing."""
-        try:
-            ext_sgid, id = extract_security_group_id(id)
-            req_params = self._deserialize(
-                request.body, request.best_match_content_type())
-            port_id = req_params['port']['id']
-        except exc.HTTPError as exp:
-            return Quantum11HTTPError(exp)
+        LOG.debug(str(locals()))
+        ext_sgid, id = extract_security_group_id(id)
+        params = self._extract_request_body(request, 'port',
+            type(self)._associate_port_param_list)
+        port_id = params['id']
 
         try:
             self._plugin.associate_port_security_group(tenant_id, id, port_id,
                                                        ext_sgid)
-        except qexceptions.PortNotFound as e1:
-            return Quantum11HTTPError(e1)
-        except exceptions.SecurityGroupNotFound as e2:
-            return Quantum11HTTPError(e2)
-        except exceptions.SecurityAssociationExists as e3:
-            return Quantum11HTTPError(e3)
+        except qexceptions.PortNotFound as e:
+            LOG.error(format_exception("PortNotFound", e, locals(), request))
+            return Quantum11HTTPError(e)
+        except exceptions.SecurityGroupNotFound as e:
+            LOG.error(format_exception("SecurityGroupNotFound", e, locals(),
+                                       request))
+            return Quantum11HTTPError(e)
+        except exceptions.SecurityAssociationExists as e:
+            LOG.error(format_exception("SecurityAssociationExists", e,
+                                       locals(), request))
+            return Quantum11HTTPError(e)
 
     def dissociate_port(self, request, tenant_id, id):
         """Process the Dissociate Port from Security Group API call.
@@ -505,20 +590,24 @@ class SecurityGroupController(wsgi.Controller):
             PortNotFound(430), SecurityGroupNotFound(),
             NoSecurityAssocationExists().
         :returns: Nothing."""
-        try:
-            ext_sgid, id = extract_security_group_id(id)
-            req_params = self._deserialize(
-                request.body, request.best_match_content_type())
-            port_id = req_params['port']['id']
-        except exc.HTTPError as exp:
-            return Quantum11HTTPError(exp)
+        LOG.debug(str(locals()))
+        ext_sgid, id = extract_security_group_id(id)
+        params = self._extract_request_body(
+            request, 'port', type(self)._dissociate_port_param_list)
+        port_id = params['id']
 
         try:
             self._plugin.dissociate_port_security_group(tenant_id, id,
                                                         port_id, ext_sgid)
-        except qexceptions.PortNotFound as e1:
-            return Quantum11HTTPError(e1)
-        except exceptions.SecurityGroupNotFound as e2:
-            return Quantum11HTTPError(e2)
-        except exceptions.NoSecurityAssociationExists as e3:
-            return Quantum11HTTPError(e3)
+        except qexceptions.PortNotFound as e:
+            LOG.error(format_exception("SecurityAssociationExists", e,
+                                       locals(), request))
+            return Quantum11HTTPError(e)
+        except exceptions.SecurityGroupNotFound as e:
+            LOG.error(format_exception("SecurityAssociationExists", e,
+                                       locals(), request))
+            return Quantum11HTTPError(e)
+        except exceptions.NoSecurityAssociationExists as e:
+            LOG.error(format_exception("SecurityAssociationExists", e,
+                                       locals(), request))
+            return Quantum11HTTPError(e)
