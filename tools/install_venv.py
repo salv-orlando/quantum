@@ -31,9 +31,11 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 VENV = os.path.join(ROOT, '.venv')
 PIP_REQUIRES = os.path.join(ROOT, 'tools', 'pip-requires')
+TEST_REQUIRES = os.path.join(ROOT, 'tools', 'test-requires')
 PY_VERSION = "python%s.%s" % (sys.version_info[0], sys.version_info[1])
 
 VENV_EXISTS = bool(os.path.exists(VENV))
+
 
 def die(message, *args):
     print >> sys.stderr, message % args
@@ -59,15 +61,15 @@ def run_command(cmd, redirect_output=True, check_exit_code=True):
 HAS_EASY_INSTALL = bool(run_command(['which', 'easy_install'],
                                     check_exit_code=False).strip())
 HAS_VIRTUALENV = bool(run_command(['which', 'virtualenv'],
-                                    check_exit_code=False).strip())
+                                  check_exit_code=False).strip())
 
 
 def check_dependencies():
     """Make sure virtualenv is in the path."""
 
     if not HAS_VIRTUALENV:
-        raise Exception('Virtualenv not found. ' + \
-                         'Try installing python-virtualenv')
+        raise Exception('Virtualenv not found. '
+                        'Try installing python-virtualenv')
     print 'done.'
 
 
@@ -93,6 +95,10 @@ def install_dependencies(venv=VENV):
     print 'Installing dependencies with pip (this can take a while)...'
     run_command(['tools/with_venv.sh', 'pip', 'install', '-r',
                  PIP_REQUIRES], redirect_output=False)
+    run_command(['tools/with_venv.sh', 'pip', 'install', '-r',
+                 TEST_REQUIRES], redirect_output=False)
+    run_command(['tools/with_venv.sh', 'pip', 'install',
+                 'setuptools_git>=0.4'], redirect_output=False)
 
     # Tell the virtual env how to "import quantum"
     pthfile = os.path.join(venv, "lib", PY_VERSION, "site-packages",

@@ -34,11 +34,9 @@ from nose import core
 sys.path.append(os.getcwd())
 sys.path.append(os.path.dirname(__file__))
 
-
-import quantum.tests.unit
-from quantum.api.api_common import OperationalStatus
 from quantum.common.test_lib import run_tests, test_config
 from quantum.plugins.ryu.tests.unit.utils import patch_fake_ryu_client
+import quantum.tests.unit
 
 
 if __name__ == '__main__':
@@ -48,17 +46,12 @@ if __name__ == '__main__':
     # we should only invoked the tests once
     invoke_once = len(sys.argv) > 1
 
-    test_config['plugin_name'] = "ryu_quantum_plugin.RyuQuantumPlugin"
-    test_config['default_net_op_status'] = OperationalStatus.UP
-    test_config['default_port_op_status'] = OperationalStatus.DOWN
+    test_config['plugin_name_v2'] = "ryu_quantum_plugin.RyuQuantumPluginV2"
 
     cwd = os.getcwd()
     # patch modules for ryu.app.client and ryu.app.rest_nw_id
     # With those, plugin can be tested without ryu installed
     with patch_fake_ryu_client():
-        # to find quantum/etc/plugin/ryu/ryu.ini before chdir()
-        import ryu_quantum_plugin
-
         c = config.Config(stream=sys.stdout,
                           env=os.environ,
                           verbosity=3,

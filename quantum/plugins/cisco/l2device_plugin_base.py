@@ -1,7 +1,6 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
-# Copyright 2011 Cisco Systems, Inc.  All rights reserved.
+# Copyright 2012 Cisco Systems, Inc.  All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -16,11 +15,9 @@
 #    under the License.
 #
 # @author: Sumit Naiksatam, Cisco Systems, Inc.
-#
-"""
 
-import inspect
 from abc import ABCMeta, abstractmethod
+import inspect
 
 
 class L2DevicePluginBase(object):
@@ -125,6 +122,42 @@ class L2DevicePluginBase(object):
 
     @abstractmethod
     def unplug_interface(self, tenant_id, net_id, port_id, **kwargs):
+        """
+        :returns:
+        :raises:
+        """
+        pass
+
+    def create_subnet(self, tenant_id, net_id, ip_version,
+                      subnet_cidr, **kwargs):
+        """
+        :returns:
+        :raises:
+        """
+        pass
+
+    def get_subnets(self, tenant_id, net_id, **kwargs):
+        """
+        :returns:
+        :raises:
+        """
+        pass
+
+    def get_subnet(self, tenant_id, net_id, subnet_id, **kwargs):
+        """
+        :returns:
+        :raises:
+        """
+        pass
+
+    def update_subnet(self, tenant_id, net_id, subnet_id, **kwargs):
+        """
+        :returns:
+        :raises:
+        """
+        pass
+
+    def delete_subnet(self, tenant_id, net_id, subnet_id, **kwargs):
         """
         :returns:
         :raises:

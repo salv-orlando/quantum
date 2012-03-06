@@ -18,27 +18,31 @@
 import logging
 import webob.dec
 
-from quantum import wsgi
 from quantum.api.views import versions as versions_view
+from quantum import wsgi
 
-LOG = logging.getLogger('quantum.api.versions')
+
+LOG = logging.getLogger(__name__)
 
 
-class Versions(wsgi.Application):
+class Versions(object):
+
+    @classmethod
+    def factory(cls, global_config, **local_config):
+        return cls()
 
     @webob.dec.wsgify(RequestClass=wsgi.Request)
     def __call__(self, req):
         """Respond to a request for all Quantum API versions."""
         version_objs = [
             {
-                "id": "v1.0",
+                "id": "v2.0",
                 "status": "CURRENT",
             },
-            {
-                "id": "v1.1",
-                "status": "PROPOSED",
-            },
         ]
+
+        if req.path != '/':
+            return webob.exc.HTTPNotFound()
 
         builder = versions_view.get_view_builder(req)
         versions = [builder.build(version) for version in version_objs]
@@ -53,8 +57,8 @@ class Versions(wsgi.Application):
         }
 
         content_type = req.best_match_content_type()
-        body = wsgi.Serializer(metadata=metadata). \
-                    serialize(response, content_type)
+        body = (wsgi.Serializer(metadata=metadata).
+                serialize(response, content_type))
 
         response = webob.Response()
         response.content_type = content_type

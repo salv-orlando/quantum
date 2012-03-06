@@ -1,4 +1,3 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 # Copyright 2011 Cisco Systems, Inc.  All rights reserved.
@@ -16,17 +15,13 @@
 #    under the License.
 #
 # @author: Sumit Naiksatam, Cisco Systems, Inc.
-#
-"""
 
 import hashlib
 import logging
-import MySQLdb
-import traceback
 
 from quantum.plugins.cisco.common import cisco_constants as const
-from quantum.plugins.cisco.db import api as db
 from quantum.plugins.cisco.db import l2network_db as cdb
+
 
 LOG = logging.getLogger(__name__)
 
@@ -54,8 +49,8 @@ def make_port_dict(port_id, port_state, net_id, attachment):
     return res
 
 
-def make_portprofile_dict(tenant_id, profile_id, profile_name,
-                           qos):
+def make_portprofile_dict(tenant_id, profile_id,
+                          profile_name, qos):
     """Helper funciton"""
     profile_associations = make_portprofile_assc_list(tenant_id,
                                                       profile_id)

@@ -15,11 +15,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
+from abc import abstractmethod
 
-from quantum import wsgi
 from quantum.extensions import extensions
-from abc import  abstractmethod
+from quantum.openstack.common import jsonutils
+from quantum import wsgi
 
 
 class FoxInSocksController(wsgi.Controller):
@@ -61,17 +61,17 @@ class Foxinsocks(object):
     def get_resources(self):
         resources = []
         resource = extensions.ResourceExtension('foxnsocks',
-                                               FoxInSocksController())
+                                                FoxInSocksController())
         resources.append(resource)
         return resources
 
     def get_actions(self):
-        return  [extensions.ActionExtension('dummy_resources',
-                                            'FOXNSOX:add_tweedle',
-                                            self._add_tweedle_handler),
-                 extensions.ActionExtension('dummy_resources',
-                                            'FOXNSOX:delete_tweedle',
-                                            self._delete_tweedle_handler)]
+        return [extensions.ActionExtension('dummy_resources',
+                                           'FOXNSOX:add_tweedle',
+                                           self._add_tweedle_handler),
+                extensions.ActionExtension('dummy_resources',
+                                           'FOXNSOX:delete_tweedle',
+                                           self._delete_tweedle_handler)]
 
     def get_request_extensions(self):
         request_exts = []
@@ -79,25 +79,25 @@ class Foxinsocks(object):
         def _goose_handler(req, res):
             #NOTE: This only handles JSON responses.
             # You can use content type header to test for XML.
-            data = json.loads(res.body)
+            data = jsonutils.loads(res.body)
             data['FOXNSOX:googoose'] = req.GET.get('chewing')
-            res.body = json.dumps(data)
+            res.body = jsonutils.dumps(data)
             return res
 
         req_ext1 = extensions.RequestExtension('GET', '/dummy_resources/:(id)',
-                                                _goose_handler)
+                                               _goose_handler)
         request_exts.append(req_ext1)
 
         def _bands_handler(req, res):
             #NOTE: This only handles JSON responses.
             # You can use content type header to test for XML.
-            data = json.loads(res.body)
+            data = jsonutils.loads(res.body)
             data['FOXNSOX:big_bands'] = 'Pig Bands!'
-            res.body = json.dumps(data)
+            res.body = jsonutils.dumps(data)
             return res
 
         req_ext2 = extensions.RequestExtension('GET', '/dummy_resources/:(id)',
-                                                _bands_handler)
+                                               _bands_handler)
         request_exts.append(req_ext2)
         return request_exts
 

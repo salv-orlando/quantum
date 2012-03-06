@@ -13,35 +13,45 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-import json
+
 import logging
 import os
-import routes
 import unittest
-from quantum.tests.unit import BaseTest
-from webtest import TestApp
+
+import routes
+import webob
 from webtest import AppError
+from webtest import TestApp
 
-
-from quantum import wsgi
-from quantum.api import faults
 from quantum.common import config
 from quantum.common import exceptions
 from quantum.extensions import extensions
-import sys
-print sys.path
-from quantum.plugins.sample.SamplePlugin import QuantumEchoPlugin
-from quantum.tests.unit.extension_stubs import (StubExtension, StubPlugin,
-                                        StubPluginInterface,
-                                        StubBaseAppController,
-                                        ExtensionExpectingPluginInterface)
+from quantum.extensions.extensions import (
+    ExtensionManager,
+    ExtensionMiddleware,
+    PluginAwareExtensionManager,
+)
+from quantum.openstack.common import jsonutils
+from quantum.db.db_base_plugin_v2 import QuantumDbPluginV2
+from quantum.tests.unit import BaseTest
+from quantum.tests.unit.extension_stubs import (
+    ExtensionExpectingPluginInterface,
+    StubBaseAppController,
+    StubExtension,
+    StubPlugin,
+)
 import quantum.tests.unit.extensions
-from quantum.extensions.extensions import (ExtensionManager,
-                                       PluginAwareExtensionManager,
-                                       ExtensionMiddleware)
+from quantum import wsgi
 
-LOG = logging.getLogger('test_extensions')
-test_conf_file = config.find_config_file({}, None, "quantum.conf.test")
+LOG = logging.getLogger('quantum.tests.test_extensions')
+
+ROOTDIR = os.path.dirname(os.path.dirname(__file__))
+ETCDIR = os.path.join(ROOTDIR, 'etc')
+
+
+def etcdir(*p):
+    return os.path.join(ETCDIR, *p)
+
 extensions_path = ':'.join(quantum.tests.unit.extensions.__path__)
 
 
@@ -55,6 +65,15 @@ class ExtensionsTestApp(wsgi.Router):
         super(ExtensionsTestApp, self).__init__(mapper)
 
 
+class FakePluginWithExtension(QuantumDbPluginV2):
+    """A fake plugin used only for extension testing in this file."""
+
+    supported_extension_aliases = ["FOXNSOX"]
+
+    def method_to_support_foxnsox_extension(self, context):
+        self._log("method_to_support_foxnsox_extension", context)
+
+
 class ResourceExtensionTest(unittest.TestCase):
 
     class ResourceExtensionController(wsgi.Controller):
@@ -66,8 +85,7 @@ class ResourceExtensionTest(unittest.TestCase):
             return {'data': {'id': id}}
 
         def notimplemented_function(self, request, id):
-            return faults.Quantum10HTTPError(
-                exceptions.NotImplementedError("notimplemented_function"))
+            return webob.exc.HTTPClientError(NotImplementedError())
 
         def custom_member_action(self, request, id):
             return {'member_action': 'value'}
@@ -80,23 +98,23 @@ class ResourceExtensionTest(unittest.TestCase):
         member = {'notimplemented_function': "GET"}
         res_ext = extensions.ResourceExtension('tweedles', controller,
                                                member_actions=member)
-        test_app = setup_extensions_test_app(SimpleExtensionManager(res_ext))
+        test_app = _setup_extensions_test_app(SimpleExtensionManager(res_ext))
 
         # Ideally we would check for a 501 code here but webtest doesn't take
         # anything that is below 200 or above 400 so we can't actually check
         # it.  It thows AppError instead.
         try:
-            response = \
-                test_app.get("/tweedles/some_id/notimplemented_function")
+            response = (
+                test_app.get("/tweedles/some_id/notimplemented_function"))
             # Shouldn't be reached
             self.assertTrue(False)
         except AppError:
             pass
 
     def test_resource_can_be_added_as_extension(self):
-        res_ext = extensions.ResourceExtension('tweedles',
-                                            self.ResourceExtensionController())
-        test_app = setup_extensions_test_app(SimpleExtensionManager(res_ext))
+        res_ext = extensions.ResourceExtension(
+            'tweedles', self.ResourceExtensionController())
+        test_app = _setup_extensions_test_app(SimpleExtensionManager(res_ext))
         index_response = test_app.get("/tweedles")
         self.assertEqual(200, index_response.status_int)
         self.assertEqual("resource index", index_response.body)
@@ -109,70 +127,71 @@ class ResourceExtensionTest(unittest.TestCase):
         member = {'custom_member_action': "GET"}
         res_ext = extensions.ResourceExtension('tweedles', controller,
                                                member_actions=member)
-        test_app = setup_extensions_test_app(SimpleExtensionManager(res_ext))
+        test_app = _setup_extensions_test_app(SimpleExtensionManager(res_ext))
 
         response = test_app.get("/tweedles/some_id/custom_member_action")
         self.assertEqual(200, response.status_int)
-        self.assertEqual(json.loads(response.body)['member_action'], "value")
+        self.assertEqual(jsonutils.loads(response.body)['member_action'],
+                         "value")
 
     def test_resource_extension_for_get_custom_collection_action(self):
         controller = self.ResourceExtensionController()
         collections = {'custom_collection_action': "GET"}
         res_ext = extensions.ResourceExtension('tweedles', controller,
                                                collection_actions=collections)
-        test_app = setup_extensions_test_app(SimpleExtensionManager(res_ext))
+        test_app = _setup_extensions_test_app(SimpleExtensionManager(res_ext))
 
         response = test_app.get("/tweedles/custom_collection_action")
         self.assertEqual(200, response.status_int)
-        self.assertEqual(json.loads(response.body)['collection'], "value")
+        self.assertEqual(jsonutils.loads(response.body)['collection'], "value")
 
     def test_resource_extension_for_put_custom_collection_action(self):
         controller = self.ResourceExtensionController()
         collections = {'custom_collection_action': "PUT"}
         res_ext = extensions.ResourceExtension('tweedles', controller,
                                                collection_actions=collections)
-        test_app = setup_extensions_test_app(SimpleExtensionManager(res_ext))
+        test_app = _setup_extensions_test_app(SimpleExtensionManager(res_ext))
 
         response = test_app.put("/tweedles/custom_collection_action")
 
         self.assertEqual(200, response.status_int)
-        self.assertEqual(json.loads(response.body)['collection'], 'value')
+        self.assertEqual(jsonutils.loads(response.body)['collection'], 'value')
 
     def test_resource_extension_for_post_custom_collection_action(self):
         controller = self.ResourceExtensionController()
         collections = {'custom_collection_action': "POST"}
         res_ext = extensions.ResourceExtension('tweedles', controller,
                                                collection_actions=collections)
-        test_app = setup_extensions_test_app(SimpleExtensionManager(res_ext))
+        test_app = _setup_extensions_test_app(SimpleExtensionManager(res_ext))
 
         response = test_app.post("/tweedles/custom_collection_action")
 
         self.assertEqual(200, response.status_int)
-        self.assertEqual(json.loads(response.body)['collection'], 'value')
+        self.assertEqual(jsonutils.loads(response.body)['collection'], 'value')
 
     def test_resource_extension_for_delete_custom_collection_action(self):
         controller = self.ResourceExtensionController()
         collections = {'custom_collection_action': "DELETE"}
         res_ext = extensions.ResourceExtension('tweedles', controller,
                                                collection_actions=collections)
-        test_app = setup_extensions_test_app(SimpleExtensionManager(res_ext))
+        test_app = _setup_extensions_test_app(SimpleExtensionManager(res_ext))
 
         response = test_app.delete("/tweedles/custom_collection_action")
 
         self.assertEqual(200, response.status_int)
-        self.assertEqual(json.loads(response.body)['collection'], 'value')
+        self.assertEqual(jsonutils.loads(response.body)['collection'], 'value')
 
     def test_resource_ext_for_formatted_req_on_custom_collection_action(self):
         controller = self.ResourceExtensionController()
         collections = {'custom_collection_action': "GET"}
         res_ext = extensions.ResourceExtension('tweedles', controller,
                                                collection_actions=collections)
-        test_app = setup_extensions_test_app(SimpleExtensionManager(res_ext))
+        test_app = _setup_extensions_test_app(SimpleExtensionManager(res_ext))
 
         response = test_app.get("/tweedles/custom_collection_action.json")
 
         self.assertEqual(200, response.status_int)
-        self.assertEqual(json.loads(response.body)['collection'], "value")
+        self.assertEqual(jsonutils.loads(response.body)['collection'], "value")
 
     def test_resource_ext_for_nested_resource_custom_collection_action(self):
         controller = self.ResourceExtensionController()
@@ -181,16 +200,16 @@ class ResourceExtensionTest(unittest.TestCase):
         res_ext = extensions.ResourceExtension('tweedles', controller,
                                                collection_actions=collections,
                                                parent=parent)
-        test_app = setup_extensions_test_app(SimpleExtensionManager(res_ext))
+        test_app = _setup_extensions_test_app(SimpleExtensionManager(res_ext))
 
         response = test_app.get("/beetles/beetle_id"
                                 "/tweedles/custom_collection_action")
 
         self.assertEqual(200, response.status_int)
-        self.assertEqual(json.loads(response.body)['collection'], "value")
+        self.assertEqual(jsonutils.loads(response.body)['collection'], "value")
 
-    def test_returns_404_for_non_existant_extension(self):
-        test_app = setup_extensions_test_app(SimpleExtensionManager(None))
+    def test_returns_404_for_non_existent_extension(self):
+        test_app = _setup_extensions_test_app(SimpleExtensionManager(None))
 
         response = test_app.get("/non_extistant_extension", status='*')
 
@@ -201,42 +220,46 @@ class ActionExtensionTest(unittest.TestCase):
 
     def setUp(self):
         super(ActionExtensionTest, self).setUp()
-        self.extension_app = setup_extensions_test_app()
+        self.extension_app = _setup_extensions_test_app()
 
     def test_extended_action_for_adding_extra_data(self):
         action_name = 'FOXNSOX:add_tweedle'
         action_params = dict(name='Beetle')
-        req_body = json.dumps({action_name: action_params})
+        req_body = jsonutils.dumps({action_name: action_params})
         response = self.extension_app.post('/dummy_resources/1/action',
-                                     req_body, content_type='application/json')
+                                           req_body,
+                                           content_type='application/json')
         self.assertEqual("Tweedle Beetle Added.", response.body)
 
     def test_extended_action_for_deleting_extra_data(self):
         action_name = 'FOXNSOX:delete_tweedle'
         action_params = dict(name='Bailey')
-        req_body = json.dumps({action_name: action_params})
+        req_body = jsonutils.dumps({action_name: action_params})
         response = self.extension_app.post("/dummy_resources/1/action",
-                                     req_body, content_type='application/json')
+                                           req_body,
+                                           content_type='application/json')
         self.assertEqual("Tweedle Bailey Deleted.", response.body)
 
-    def test_returns_404_for_non_existant_action(self):
-        non_existant_action = 'blah_action'
+    def test_returns_404_for_non_existent_action(self):
+        non_existent_action = 'blah_action'
         action_params = dict(name="test")
-        req_body = json.dumps({non_existant_action: action_params})
+        req_body = jsonutils.dumps({non_existent_action: action_params})
 
         response = self.extension_app.post("/dummy_resources/1/action",
-                                     req_body, content_type='application/json',
-                                     status='*')
+                                           req_body,
+                                           content_type='application/json',
+                                           status='*')
 
         self.assertEqual(404, response.status_int)
 
-    def test_returns_404_for_non_existant_resource(self):
+    def test_returns_404_for_non_existent_resource(self):
         action_name = 'add_tweedle'
         action_params = dict(name='Beetle')
-        req_body = json.dumps({action_name: action_params})
+        req_body = jsonutils.dumps({action_name: action_params})
 
         response = self.extension_app.post("/asdf/1/action", req_body,
-                                   content_type='application/json', status='*')
+                                           content_type='application/json',
+                                           status='*')
         self.assertEqual(404, response.status_int)
 
 
@@ -253,39 +276,39 @@ class RequestExtensionTest(BaseTest):
                            headers={'X-NEW-REQUEST-HEADER': "sox"})
 
         self.assertEqual(response.headers['X-NEW-RESPONSE-HEADER'],
-                                                   "response_header_data")
+                         "response_header_data")
 
     def test_extend_get_resource_response(self):
         def extend_response_data(req, res):
-            data = json.loads(res.body)
+            data = jsonutils.loads(res.body)
             data['FOXNSOX:extended_key'] = req.GET.get('extended_key')
-            res.body = json.dumps(data)
+            res.body = jsonutils.dumps(data)
             return res
 
         app = self._setup_app_with_request_handler(extend_response_data, 'GET')
         response = app.get("/dummy_resources/1?extended_key=extended_data")
 
         self.assertEqual(200, response.status_int)
-        response_data = json.loads(response.body)
+        response_data = jsonutils.loads(response.body)
         self.assertEqual('extended_data',
                          response_data['FOXNSOX:extended_key'])
         self.assertEqual('knox', response_data['fort'])
 
     def test_get_resources(self):
-        app = setup_extensions_test_app()
+        app = _setup_extensions_test_app()
 
         response = app.get("/dummy_resources/1?chewing=newblue")
 
-        response_data = json.loads(response.body)
+        response_data = jsonutils.loads(response.body)
         self.assertEqual('newblue', response_data['FOXNSOX:googoose'])
         self.assertEqual("Pig Bands!", response_data['FOXNSOX:big_bands'])
 
     def test_edit_previously_uneditable_field(self):
 
         def _update_handler(req, res):
-            data = json.loads(res.body)
+            data = jsonutils.loads(res.body)
             data['uneditable'] = req.params['uneditable']
-            res.body = json.dumps(data)
+            res.body = jsonutils.dumps(data)
             return res
 
         base_app = TestApp(setup_base_app())
@@ -294,16 +317,17 @@ class RequestExtensionTest(BaseTest):
         self.assertEqual(response.json['uneditable'], "original_value")
 
         ext_app = self._setup_app_with_request_handler(_update_handler,
-                                                            'PUT')
+                                                       'PUT')
         ext_response = ext_app.put("/dummy_resources/1",
-                                    {'uneditable': "new_value"})
+                                   {'uneditable': "new_value"})
         self.assertEqual(ext_response.json['uneditable'], "new_value")
 
     def _setup_app_with_request_handler(self, handler, verb):
         req_ext = extensions.RequestExtension(verb,
-                                   '/dummy_resources/:(id)', handler)
+                                              '/dummy_resources/:(id)',
+                                              handler)
         manager = SimpleExtensionManager(None, None, req_ext)
-        return setup_extensions_test_app(manager)
+        return _setup_extensions_test_app(manager)
 
 
 class ExtensionManagerTest(unittest.TestCase):
@@ -381,7 +405,7 @@ class PluginAwareExtensionManagerTest(unittest.TestCase):
         ext_mgr = PluginAwareExtensionManager('',
                                               PluginWithExpectedInterface())
         ext_mgr.add_extension(
-                ExtensionExpectingPluginInterface("supported_extension"))
+            ExtensionExpectingPluginInterface("supported_extension"))
 
         self.assertTrue("supported_extension" in ext_mgr.extensions)
 
@@ -418,7 +442,7 @@ class ExtensionControllerTest(unittest.TestCase):
 
     def setUp(self):
         super(ExtensionControllerTest, self).setUp()
-        self.test_app = setup_extensions_test_app()
+        self.test_app = _setup_extensions_test_app()
 
     def test_index_gets_all_registerd_extensions(self):
         response = self.test_app.get("/extensions")
@@ -430,13 +454,13 @@ class ExtensionControllerTest(unittest.TestCase):
 
     def test_extension_can_be_accessed_by_alias(self):
         foxnsox_extension = self.test_app.get("/extensions/FOXNSOX").json
-
+        foxnsox_extension = foxnsox_extension['extension']
         self.assertEqual(foxnsox_extension["alias"], "FOXNSOX")
         self.assertEqual(foxnsox_extension["namespace"],
                          "http://www.fox.in.socks/api/ext/pie/v1.0")
 
-    def test_show_returns_not_found_for_non_existant_extension(self):
-        response = self.test_app.get("/extensions/non_existant", status="*")
+    def test_show_returns_not_found_for_non_existent_extension(self):
+        response = self.test_app.get("/extensions/non_existent", status="*")
 
         self.assertEqual(response.status_int, 404)
 
@@ -448,21 +472,26 @@ def app_factory(global_conf, **local_conf):
 
 
 def setup_base_app():
-    options = {'config_file': test_conf_file}
-    conf, app = config.load_paste_app('extensions_test_app', options, None)
+    config_file = 'quantum.conf.test'
+    args = ['--config-file', etcdir(config_file)]
+    config.parse(args=args)
+    app = config.load_paste_app('extensions_test_app')
     return app
 
 
 def setup_extensions_middleware(extension_manager=None):
     extension_manager = (extension_manager or
-                         PluginAwareExtensionManager(extensions_path,
-                                                     QuantumEchoPlugin()))
-    options = {'config_file': test_conf_file}
-    conf, app = config.load_paste_app('extensions_test_app', options, None)
-    return ExtensionMiddleware(app, conf, ext_mgr=extension_manager)
+                         PluginAwareExtensionManager(
+                             extensions_path,
+                             FakePluginWithExtension()))
+    config_file = 'quantum.conf.test'
+    args = ['--config-file', etcdir(config_file)]
+    config.parse(args=args)
+    app = config.load_paste_app('extensions_test_app')
+    return ExtensionMiddleware(app, ext_mgr=extension_manager)
 
 
-def setup_extensions_test_app(extension_manager=None):
+def _setup_extensions_test_app(extension_manager=None):
     return TestApp(setup_extensions_middleware(extension_manager))
 
 

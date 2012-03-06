@@ -17,203 +17,352 @@
 # @author: Brad Hall, Nicira Networks, Inc.
 # @author: Dan Wendlandt, Nicira Networks, Inc.
 # @author: Dave Lapsley, Nicira Networks, Inc.
+# @author: Aaron Rosen, Nicira Networks, Inc.
+# @author: Bob Kukura, Red Hat, Inc.
 
-import ConfigParser
-import logging as LOG
-from optparse import OptionParser
+import logging
 import os
-import sys
 
-from quantum.api.api_common import OperationalStatus
+from quantum.api.v2 import attributes
+from quantum.common import constants
 from quantum.common import exceptions as q_exc
-from quantum.common.config import find_config_file
-from quantum.quantum_plugin_base import QuantumPluginBase
+from quantum.common import topics
+from quantum.db import api as db
+from quantum.db import db_base_plugin_v2
+from quantum.db import dhcp_rpc_base
+from quantum.db import l3_db
+from quantum.db import models_v2
+from quantum.openstack.common import context
+from quantum.openstack.common import cfg
+from quantum.openstack.common import rpc
+from quantum.openstack.common.rpc import dispatcher
+from quantum.openstack.common.rpc import proxy
+from quantum.plugins.openvswitch.common import config
+from quantum.plugins.openvswitch import ovs_db_v2
+from quantum import policy
 
-import quantum.db.api as db
-import ovs_db
 
-CONF_FILE = find_config_file(
-  {"plugin": "openvswitch"},
-  None, "ovs_quantum_plugin.ini")
-
-LOG.basicConfig(level=LOG.WARN)
-LOG.getLogger("ovs_quantum_plugin")
+LOG = logging.getLogger(__name__)
 
 
-class VlanMap(object):
-    vlans = {}
-    net_ids = {}
-    free_vlans = set()
+class OVSRpcCallbacks(dhcp_rpc_base.DhcpRpcCallbackMixin):
 
-    def __init__(self):
-        self.vlans.clear()
-        self.net_ids.clear()
-        self.free_vlans = set(xrange(2, 4094))
+    # Set RPC API version to 1.0 by default.
+    RPC_API_VERSION = '1.0'
 
-    def set_vlan(self, vlan_id, network_id):
-        self.vlans[vlan_id] = network_id
-        self.net_ids[network_id] = vlan_id
+    def __init__(self, context, notifier):
+        self.context = context
+        self.notifier = notifier
 
-    def acquire(self, network_id):
-        if len(self.free_vlans):
-            vlan = self.free_vlans.pop()
-            self.set_vlan(vlan, network_id)
-            # LOG.debug("VlanMap::acquire %s -> %s", x, network_id)
-            return vlan
+    def create_rpc_dispatcher(self):
+        '''Get the rpc dispatcher for this manager.
+
+        If a manager would like to set an rpc API version, or support more than
+        one class as the target of rpc messages, override this method.
+        '''
+        return dispatcher.RpcDispatcher([self])
+
+    def get_device_details(self, context, **kwargs):
+        """Agent requests device details"""
+        agent_id = kwargs.get('agent_id')
+        device = kwargs.get('device')
+        LOG.debug("Device %s details requested from %s", device, agent_id)
+        port = ovs_db_v2.get_port(device)
+        if port:
+            vlan_id = ovs_db_v2.get_vlan(port['network_id'])
+            entry = {'device': device,
+                     'vlan_id': vlan_id,
+                     'network_id': port['network_id'],
+                     'port_id': port['id'],
+                     'admin_state_up': port['admin_state_up']}
+            # Set the port status to UP
+            ovs_db_v2.set_port_status(port['id'], constants.PORT_STATUS_ACTIVE)
         else:
-            raise Exception("No free vlans..")
+            entry = {'device': device}
+            LOG.debug("%s can not be found in database", device)
+        return entry
 
-    def get(self, vlan_id):
-        return self.vlans.get(vlan_id, None)
-
-    def release(self, network_id):
-        vlan = self.net_ids.get(network_id, None)
-        if vlan is not None:
-            self.free_vlans.add(vlan)
-            del self.vlans[vlan]
-            del self.net_ids[network_id]
-            # LOG.debug("VlanMap::release %s", vlan)
+    def update_device_down(self, context, **kwargs):
+        """Device no longer exists on agent"""
+        # (TODO) garyk - live migration and port status
+        agent_id = kwargs.get('agent_id')
+        device = kwargs.get('device')
+        LOG.debug("Device %s no longer exists on %s", device, agent_id)
+        port = ovs_db_v2.get_port(device)
+        if port:
+            entry = {'device': device,
+                     'exists': True}
+            # Set port status to DOWN
+            ovs_db_v2.set_port_status(port['id'], constants.PORT_STATUS_DOWN)
         else:
-            LOG.error("No vlan found with network \"%s\"", network_id)
+            entry = {'device': device,
+                     'exists': False}
+            LOG.debug("%s can not be found in database", device)
+        return entry
+
+    def tunnel_sync(self, context, **kwargs):
+        """Update new tunnel.
+
+        Updates the datbase with the tunnel IP. All listening agents will also
+        be notified about the new tunnel IP.
+        """
+        tunnel_ip = kwargs.get('tunnel_ip')
+        # Update the database with the IP
+        tunnel = ovs_db_v2.add_tunnel(tunnel_ip)
+        tunnels = ovs_db_v2.get_tunnels()
+        entry = dict()
+        entry['tunnels'] = tunnels
+        # Notify all other listening agents
+        self.notifier.tunnel_update(self.context, tunnel.ip_address,
+                                    tunnel.id)
+        # Return the list of tunnels IP's to the agent
+        return entry
 
 
-class OVSQuantumPlugin(QuantumPluginBase):
+class AgentNotifierApi(proxy.RpcProxy):
+    '''Agent side of the linux bridge rpc API.
+
+    API version history:
+        1.0 - Initial version.
+
+    '''
+
+    BASE_RPC_API_VERSION = '1.0'
+
+    def __init__(self, topic):
+        super(AgentNotifierApi, self).__init__(
+            topic=topic, default_version=self.BASE_RPC_API_VERSION)
+        self.topic_network_delete = topics.get_topic_name(topic,
+                                                          topics.NETWORK,
+                                                          topics.DELETE)
+        self.topic_port_update = topics.get_topic_name(topic,
+                                                       topics.PORT,
+                                                       topics.UPDATE)
+        self.topic_tunnel_update = topics.get_topic_name(topic,
+                                                         config.TUNNEL,
+                                                         topics.UPDATE)
+
+    def network_delete(self, context, network_id):
+        self.fanout_cast(context,
+                         self.make_msg('network_delete',
+                                       network_id=network_id),
+                         topic=self.topic_network_delete)
+
+    def port_update(self, context, port, vlan_id):
+        self.fanout_cast(context,
+                         self.make_msg('port_update',
+                                       port=port,
+                                       vlan_id=vlan_id),
+                         topic=self.topic_port_update)
+
+    def tunnel_update(self, context, tunnel_ip, tunnel_id):
+        self.fanout_cast(context,
+                         self.make_msg('tunnel_update',
+                                       tunnel_ip=tunnel_ip,
+                                       tunnel_id=tunnel_id),
+                         topic=self.topic_tunnel_update)
+
+
+class OVSQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
+                         l3_db.L3_NAT_db_mixin):
+    """Implement the Quantum abstractions using Open vSwitch.
+
+    Depending on whether tunneling is enabled, either a GRE tunnel or
+    a new VLAN is created for each network. An agent is relied upon to
+    perform the actual OVS configuration on each host.
+
+    The provider extension is also supported. As discussed in
+    https://bugs.launchpad.net/quantum/+bug/1023156, this class could
+    be simplified, and filtering on extended attributes could be
+    handled, by adding support for extended attributes to the
+    QuantumDbPluginV2 base class. When that occurs, this class should
+    be updated to take advantage of it.
+    """
+
+    # This attribute specifies whether the plugin supports or not
+    # bulk operations. Name mangling is used in order to ensure it
+    # is qualified by class
+    __native_bulk_support = True
+    supported_extension_aliases = ["provider", "os-quantum-router"]
 
     def __init__(self, configfile=None):
-        config = ConfigParser.ConfigParser()
-        if configfile is None:
-            if os.path.exists(CONF_FILE):
-                configfile = CONF_FILE
-            else:
-                configfile = find_config(os.path.abspath(
-                        os.path.dirname(__file__)))
-        if configfile is None:
-            raise Exception("Configuration file \"%s\" doesn't exist" %
-              (configfile))
-        LOG.debug("Using configuration file: %s" % configfile)
-        config.read(configfile)
-        LOG.debug("Config: %s" % config)
-
-        options = {"sql_connection": config.get("DATABASE", "sql_connection")}
+        self.enable_tunneling = cfg.CONF.OVS.enable_tunneling
+        options = {"sql_connection": cfg.CONF.DATABASE.sql_connection}
+        options.update({'base': models_v2.model_base.BASEV2})
+        sql_max_retries = cfg.CONF.DATABASE.sql_max_retries
+        options.update({"sql_max_retries": sql_max_retries})
+        reconnect_interval = cfg.CONF.DATABASE.reconnect_interval
+        options.update({"reconnect_interval": reconnect_interval})
         db.configure_db(options)
 
-        self.vmap = VlanMap()
-        # Populate the map with anything that is already present in the
-        # database
-        vlans = ovs_db.get_vlans()
-        for x in vlans:
-            vlan_id, network_id = x
-            # LOG.debug("Adding already populated vlan %s -> %s"
-            #                                   % (vlan_id, network_id))
-            self.vmap.set_vlan(vlan_id, network_id)
+        # update the vlan_id table based on current configuration
+        ovs_db_v2.update_vlan_id_pool()
+        self.agent_rpc = cfg.CONF.AGENT.rpc
+        self.setup_rpc()
 
-    def get_all_networks(self, tenant_id, **kwargs):
-        nets = []
-        for x in db.network_list(tenant_id):
-            LOG.debug("Adding network: %s" % x.uuid)
-            nets.append(self._make_net_dict(str(x.uuid), x.name,
-                                            None, x.op_status))
-        return nets
+    def setup_rpc(self):
+        # RPC support
+        self.topic = topics.PLUGIN
+        self.context = context.RequestContext('quantum', 'quantum',
+                                              is_admin=False)
+        self.conn = rpc.create_connection(new=True)
+        self.notifier = AgentNotifierApi(topics.AGENT)
+        self.callbacks = OVSRpcCallbacks(self.context, self.notifier)
+        self.dispatcher = self.callbacks.create_rpc_dispatcher()
+        self.conn.create_consumer(self.topic, self.dispatcher,
+                                  fanout=False)
+        # Consume from all consumers in a thread
+        self.conn.consume_in_thread()
 
-    def _make_net_dict(self, net_id, net_name, ports, op_status):
-        res = {'net-id': net_id,
-                'net-name': net_name,
-                'net-op-status': op_status}
-        if ports:
-            res['net-ports'] = ports
-        return res
+    # TODO(rkukura) Use core mechanism for attribute authorization
+    # when available.
 
-    def create_network(self, tenant_id, net_name, **kwargs):
-        net = db.network_create(tenant_id, net_name,
-                          op_status=OperationalStatus.UP)
-        LOG.debug("Created network: %s" % net)
-        vlan_id = self.vmap.acquire(str(net.uuid))
-        ovs_db.add_vlan_binding(vlan_id, str(net.uuid))
-        return self._make_net_dict(str(net.uuid), net.name, [],
-                                        net.op_status)
+    def _check_provider_view_auth(self, context, network):
+        return policy.check(context,
+                            "extension:provider_network:view",
+                            network)
 
-    def delete_network(self, tenant_id, net_id):
-        db.validate_network_ownership(tenant_id, net_id)
-        net = db.network_get(net_id)
+    def _enforce_provider_set_auth(self, context, network):
+        return policy.enforce(context,
+                              "extension:provider_network:set",
+                              network)
 
-        # Verify that no attachments are plugged into the network
-        for port in db.port_list(net_id):
-            if port.interface_id:
-                raise q_exc.NetworkInUse(net_id=net_id)
-        net = db.network_destroy(net_id)
-        ovs_db.remove_vlan_binding(net_id)
-        self.vmap.release(net_id)
-        return self._make_net_dict(str(net.uuid), net.name, [],
-                                        net.op_status)
+    def _extend_network_dict(self, context, network):
+        if self._check_provider_view_auth(context, network):
+            if not self.enable_tunneling:
+                network['provider:vlan_id'] = ovs_db_v2.get_vlan(
+                    network['id'], context.session)
 
-    def get_network_details(self, tenant_id, net_id):
-        db.validate_network_ownership(tenant_id, net_id)
-        net = db.network_get(net_id)
-        ports = self.get_all_ports(tenant_id, net_id)
-        return self._make_net_dict(str(net.uuid), net.name,
-                                    ports, net.op_status)
+    def _process_provider_create(self, context, attrs):
+        network_type = attrs.get('provider:network_type')
+        physical_network = attrs.get('provider:physical_network')
+        vlan_id = attrs.get('provider:vlan_id')
 
-    def update_network(self, tenant_id, net_id, **kwargs):
-        db.validate_network_ownership(tenant_id, net_id)
-        net = db.network_update(net_id, tenant_id, **kwargs)
-        return self._make_net_dict(str(net.uuid), net.name,
-                                        None, net.op_status)
+        network_type_set = attributes.is_attr_set(network_type)
+        physical_network_set = attributes.is_attr_set(physical_network)
+        vlan_id_set = attributes.is_attr_set(vlan_id)
 
-    def _make_port_dict(self, port):
-        if port.state == "ACTIVE":
-            op_status = port.op_status
+        if not (network_type_set or physical_network_set or vlan_id_set):
+            return (None, None, None)
+
+        # Authorize before exposing plugin details to client
+        self._enforce_provider_set_auth(context, attrs)
+
+        if not network_type_set:
+            msg = _("provider:network_type required")
+            raise q_exc.InvalidInput(error_message=msg)
+        elif network_type == 'flat':
+            msg = _("plugin does not support flat networks")
+            raise q_exc.InvalidInput(error_message=msg)
+        # REVISIT(rkukura) to be enabled in phase 3
+        #    if vlan_id_set:
+        #        msg = _("provider:vlan_id specified for flat network")
+        #        raise q_exc.InvalidInput(error_message=msg)
+        #    else:
+        #        vlan_id = db.FLAT_VLAN_ID
+        elif network_type == 'vlan':
+            if not vlan_id_set:
+                msg = _("provider:vlan_id required")
+                raise q_exc.InvalidInput(error_message=msg)
         else:
-            op_status = OperationalStatus.DOWN
+            msg = _("invalid provider:network_type %s" % network_type)
+            raise q_exc.InvalidInput(error_message=msg)
 
-        return {'port-id': str(port.uuid),
-                'port-state': port.state,
-                'port-op-status': op_status,
-                'net-id': port.network_id,
-                'attachment': port.interface_id}
+        if physical_network_set:
+            msg = _("plugin does not support specifying physical_network")
+            raise q_exc.InvalidInput(error_message=msg)
+        # REVISIT(rkukura) to be enabled in phase 3
+        #    if physical_network not in self.physical_networks:
+        #        msg = _("unknown provider:physical_network %s" %
+        #                physical_network)
+        #        raise q_exc.InvalidInput(error_message=msg)
+        #elif 'default' in self.physical_networks:
+        #    physical_network = 'default'
+        #else:
+        #    msg = _("provider:physical_network required")
+        #    raise q_exc.InvalidInput(error_message=msg)
 
-    def get_all_ports(self, tenant_id, net_id, **kwargs):
-        ids = []
-        db.validate_network_ownership(tenant_id, net_id)
-        ports = db.port_list(net_id)
-        # This plugin does not perform filtering at the moment
-        return [{'port-id': str(p.uuid)} for p in ports]
+        return (network_type, physical_network, vlan_id)
 
-    def create_port(self, tenant_id, net_id, port_state=None, **kwargs):
-        LOG.debug("Creating port with network_id: %s" % net_id)
-        db.validate_network_ownership(tenant_id, net_id)
-        port = db.port_create(net_id, port_state,
-                                op_status=OperationalStatus.DOWN)
-        return self._make_port_dict(port)
+    def _check_provider_update(self, context, attrs):
+        network_type = attrs.get('provider:network_type')
+        physical_network = attrs.get('provider:physical_network')
+        vlan_id = attrs.get('provider:vlan_id')
 
-    def delete_port(self, tenant_id, net_id, port_id):
-        db.validate_port_ownership(tenant_id, net_id, port_id)
-        port = db.port_destroy(port_id, net_id)
-        return self._make_port_dict(port)
+        network_type_set = attributes.is_attr_set(network_type)
+        physical_network_set = attributes.is_attr_set(physical_network)
+        vlan_id_set = attributes.is_attr_set(vlan_id)
 
-    def update_port(self, tenant_id, net_id, port_id, **kwargs):
-        """
-        Updates the state of a port on the specified Virtual Network.
-        """
-        db.validate_port_ownership(tenant_id, net_id, port_id)
-        port = db.port_get(port_id, net_id)
-        db.port_update(port_id, net_id, **kwargs)
-        return self._make_port_dict(port)
+        if not (network_type_set or physical_network_set or vlan_id_set):
+            return
 
-    def get_port_details(self, tenant_id, net_id, port_id):
-        db.validate_port_ownership(tenant_id, net_id, port_id)
-        port = db.port_get(port_id, net_id)
-        return self._make_port_dict(port)
+        # Authorize before exposing plugin details to client
+        self._enforce_provider_set_auth(context, attrs)
 
-    def plug_interface(self, tenant_id, net_id, port_id, remote_iface_id):
-        db.validate_port_ownership(tenant_id, net_id, port_id)
-        db.port_set_attachment(port_id, net_id, remote_iface_id)
+        msg = _("plugin does not support updating provider attributes")
+        raise q_exc.InvalidInput(error_message=msg)
 
-    def unplug_interface(self, tenant_id, net_id, port_id):
-        db.validate_port_ownership(tenant_id, net_id, port_id)
-        db.port_set_attachment(port_id, net_id, "")
-        db.port_update(port_id, net_id, op_status=OperationalStatus.DOWN)
+    def create_network(self, context, network):
+        (network_type, physical_network,
+         vlan_id) = self._process_provider_create(context,
+                                                  network['network'])
 
-    def get_interface_details(self, tenant_id, net_id, port_id):
-        db.validate_port_ownership(tenant_id, net_id, port_id)
-        res = db.port_get(port_id, net_id)
-        return res.interface_id
+        net = super(OVSQuantumPluginV2, self).create_network(context, network)
+        try:
+            if not network_type:
+                vlan_id = ovs_db_v2.reserve_vlan_id(context.session)
+            else:
+                ovs_db_v2.reserve_specific_vlan_id(vlan_id, context.session)
+        except Exception:
+            super(OVSQuantumPluginV2, self).delete_network(context, net['id'])
+            raise
+
+        LOG.debug("Created network: %s" % net['id'])
+        ovs_db_v2.add_vlan_binding(vlan_id, str(net['id']), context.session)
+        self._extend_network_dict(context, net)
+        return net
+
+    def update_network(self, context, id, network):
+        self._check_provider_update(context, network['network'])
+
+        net = super(OVSQuantumPluginV2, self).update_network(context, id,
+                                                             network)
+        self._extend_network_dict(context, net)
+        return net
+
+    def delete_network(self, context, id):
+        vlan_id = ovs_db_v2.get_vlan(id)
+        result = super(OVSQuantumPluginV2, self).delete_network(context, id)
+        ovs_db_v2.release_vlan_id(vlan_id)
+        if self.agent_rpc:
+            self.notifier.network_delete(self.context, id)
+        return result
+
+    def get_network(self, context, id, fields=None, verbose=None):
+        net = super(OVSQuantumPluginV2, self).get_network(context, id,
+                                                          None, verbose)
+        self._extend_network_dict(context, net)
+        return self._fields(net, fields)
+
+    def get_networks(self, context, filters=None, fields=None, verbose=None):
+        nets = super(OVSQuantumPluginV2, self).get_networks(context, filters,
+                                                            None, verbose)
+        for net in nets:
+            self._extend_network_dict(context, net)
+        # TODO(rkukura): Filter on extended attributes.
+        return [self._fields(net, fields) for net in nets]
+
+    def update_port(self, context, id, port):
+        if self.agent_rpc:
+            original_port = super(OVSQuantumPluginV2, self).get_port(context,
+                                                                     id)
+        port = super(OVSQuantumPluginV2, self).update_port(context, id, port)
+        if self.agent_rpc:
+            if original_port['admin_state_up'] != port['admin_state_up']:
+                vlan_id = ovs_db_v2.get_vlan(port['network_id'])
+                self.notifier.port_update(self.context, port, vlan_id)
+        return port
+
+    def delete_port(self, context, id):
+        self.disassociate_floatingips(context, id)
+        return super(OVSQuantumPluginV2, self).delete_port(context, id)

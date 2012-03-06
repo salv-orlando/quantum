@@ -1,4 +1,3 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 # Copyright 2011 Cisco Systems, Inc.  All rights reserved.
@@ -16,8 +15,7 @@
 #    under the License.
 #
 # @author: Sumit Naiksatam, Cisco Systems, Inc.
-#
-"""
+
 
 PLUGINS = 'PLUGINS'
 INVENTORY = 'INVENTORY'
@@ -119,6 +117,7 @@ UCS_PLUGIN = 'ucs_plugin'
 NEXUS_PLUGIN = 'nexus_plugin'
 UCS_INVENTORY = 'ucs_inventory'
 NEXUS_INVENTORY = 'nexus_inventory'
+VSWITCH_PLUGIN = 'vswitch_plugin'
 
 PLUGIN_OBJ_REF = 'plugin-obj-ref'
 PARAM_LIST = 'param-list'
@@ -163,3 +162,9 @@ ASSOCIATION_STATUS = 'association_status'
 ATTACHED = 'attached'
 
 DETACHED = 'detached'
+
+NETWORK = 'network'
+PORT = 'port'
+BASE_PLUGIN_REF = 'base_plugin_ref'
+CONTEXT = 'context'
+SUBNET = 'subnet'

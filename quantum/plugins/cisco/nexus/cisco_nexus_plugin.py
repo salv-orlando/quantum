@@ -23,7 +23,7 @@ PlugIn for Nexus OS driver
 import logging
 
 from quantum.common import exceptions as exc
-from quantum.common import utils
+from quantum.openstack.common import importutils
 from quantum.plugins.cisco.common import cisco_constants as const
 from quantum.plugins.cisco.common import cisco_credentials as cred
 from quantum.plugins.cisco.db import api as db
@@ -31,6 +31,7 @@ from quantum.plugins.cisco.db import l2network_db as cdb
 from quantum.plugins.cisco.db import nexus_db as nxos_db
 from quantum.plugins.cisco.l2device_plugin_base import L2DevicePluginBase
 from quantum.plugins.cisco.nexus import cisco_nexus_configuration as conf
+
 
 LOG = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ class NexusPlugin(L2DevicePluginBase):
         """
         Extracts the configuration parameters from the configuration file
         """
-        self._client = utils.import_object(conf.NEXUS_DRIVER)
+        self._client = importutils.import_object(conf.NEXUS_DRIVER)
         LOG.debug("Loaded driver %s\n" % conf.NEXUS_DRIVER)
         self._nexus_ip = conf.NEXUS_IP_ADDRESS
         self._nexus_username = cred.Store.getUsername(conf.NEXUS_IP_ADDRESS)
@@ -70,10 +71,11 @@ class NexusPlugin(L2DevicePluginBase):
         for this VLAN
         """
         LOG.debug("NexusPlugin:create_network() called\n")
-        self._client.create_vlan(vlan_name, str(vlan_id), self._nexus_ip,
-                self._nexus_username, self._nexus_password,
-                self._nexus_first_port, self._nexus_second_port,
-                self._nexus_ssh_port)
+        self._client.create_vlan(
+            vlan_name, str(vlan_id), self._nexus_ip,
+            self._nexus_username, self._nexus_password,
+            self._nexus_first_port, self._nexus_second_port,
+            self._nexus_ssh_port)
         nxos_db.add_nexusport_binding(self._nexus_first_port, str(vlan_id))
         nxos_db.add_nexusport_binding(self._nexus_second_port, str(vlan_id))
 
@@ -97,7 +99,8 @@ class NexusPlugin(L2DevicePluginBase):
         nxos_db.remove_nexusport_binding(vlan_id)
         net = self._get_network(tenant_id, net_id)
         if net:
-            self._client.delete_vlan(str(vlan_id), self._nexus_ip,
+            self._client.delete_vlan(
+                str(vlan_id), self._nexus_ip,
                 self._nexus_username, self._nexus_password,
                 self._nexus_first_port, self._nexus_second_port,
                 self._nexus_ssh_port)

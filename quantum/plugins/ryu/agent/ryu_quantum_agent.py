@@ -19,47 +19,26 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 # @author: Isaku Yamahata
-import ConfigParser
+
 import logging as LOG
-import signal
 import sys
 import time
-from optparse import OptionParser
-from sqlalchemy.ext.sqlsoup import SqlSoup
-from subprocess import PIPE, Popen
 
 from ryu.app import rest_nw_id
 from ryu.app.client import OFPClient
+from sqlalchemy.ext.sqlsoup import SqlSoup
+
+from quantum.agent.linux import ovs_lib
+from quantum.agent.linux.ovs_lib import VifPort
+from quantum.common import config as logging_config
+from quantum.common import constants
+from quantum.openstack.common import cfg
+from quantum.plugins.ryu.common import config
 
 
-OP_STATUS_UP = "UP"
-OP_STATUS_DOWN = "DOWN"
-
-
-class VifPort:
-    """
-    A class to represent a VIF (i.e., a port that has 'iface-id' and 'vif-mac'
-    attributes set).
-    """
-    def __init__(self, port_name, ofport, vif_id, vif_mac, switch):
-        self.port_name = port_name
-        self.ofport = ofport
-        self.vif_id = vif_id
-        self.vif_mac = vif_mac
-        self.switch = switch
-
-    def __str__(self):
-        return ("iface-id=%s, vif_mac=%s, port_name=%s, ofport=%s, "
-                "bridge name = %s" % (self.vif_id,
-                                      self.vif_mac,
-                                      self.port_name,
-                                      self.ofport,
-                                      self.switch.br_name))
-
-
-class OVSBridge:
-    def __init__(self, br_name):
-        self.br_name = br_name
+class OVSBridge(ovs_lib.OVSBridge):
+    def __init__(self, br_name, root_helper):
+        ovs_lib.OVSBridge.__init__(self, br_name, root_helper)
         self.datapath_id = None
 
     def find_datapath_id(self):
@@ -70,53 +49,12 @@ class OVSBridge:
         dp_id = res.strip().strip('"')
         self.datapath_id = dp_id
 
-    def run_cmd(self, args):
-        pipe = Popen(args, stdout=PIPE)
-        retval = pipe.communicate()[0]
-        if pipe.returncode == -(signal.SIGALRM):
-            LOG.debug("## timeout running command: " + " ".join(args))
-        return retval
-
-    def run_vsctl(self, args):
-        full_args = ["ovs-vsctl", "--timeout=2"] + args
-        return self.run_cmd(full_args)
-
     def set_controller(self, target):
         methods = ("ssl", "tcp", "unix", "pssl", "ptcp", "punix")
         args = target.split(":")
         if not args[0] in methods:
             target = "tcp:" + target
         self.run_vsctl(["set-controller", self.br_name, target])
-
-    def db_get_map(self, table, record, column):
-        str_ = self.run_vsctl(["get", table, record, column]).rstrip("\n\r")
-        return self.db_str_to_map(str_)
-
-    def db_get_val(self, table, record, column):
-        return self.run_vsctl(["get", table, record, column]).rstrip("\n\r")
-
-    @staticmethod
-    def db_str_to_map(full_str):
-        list = full_str.strip("{}").split(", ")
-        ret = {}
-        for elem in list:
-            if elem.find("=") == -1:
-                continue
-            arr = elem.split("=")
-            ret[arr[0]] = arr[1].strip("\"")
-        return ret
-
-    def get_port_name_list(self):
-        res = self.run_vsctl(["list-ports", self.br_name])
-        return res.split("\n")[:-1]
-
-    def get_xapi_iface_id(self, xs_vif_uuid):
-        return self.run_cmd(
-                        ["xe",
-                        "vif-param-get",
-                        "param-name=other-config",
-                        "param-key=nicira-iface-id",
-                        "uuid=%s" % xs_vif_uuid]).strip()
 
     def _vifport(self, name, external_ids):
         ofport = self.db_get_val("Interface", name, "ofport")
@@ -190,7 +128,8 @@ def check_ofp_mode(db):
 
 
 class OVSQuantumOFPRyuAgent:
-    def __init__(self, integ_br, db):
+    def __init__(self, integ_br, db, root_helper):
+        self.root_helper = root_helper
         (ofp_controller_addr, ofp_rest_api_addr) = check_ofp_mode(db)
 
         self.nw_id_external = rest_nw_id.NW_ID_EXTERNAL
@@ -198,7 +137,7 @@ class OVSQuantumOFPRyuAgent:
         self._setup_integration_br(integ_br, ofp_controller_addr)
 
     def _setup_integration_br(self, integ_br, ofp_controller_addr):
-        self.int_br = OVSBridge(integ_br)
+        self.int_br = OVSBridge(integ_br, self.root_helper)
         self.int_br.find_datapath_id()
         self.int_br.set_controller(ofp_controller_addr)
         for port in self.int_br.get_external_ports():
@@ -209,7 +148,10 @@ class OVSQuantumOFPRyuAgent:
 
     def _all_bindings(self, db):
         """return interface id -> port which include network id bindings"""
-        return dict((port.interface_id, port) for port in db.ports.all())
+        return dict((port.device_id, port) for port in db.ports.all())
+
+    def _set_port_status(self, port, status):
+        port.status = status
 
     def daemon_loop(self, db):
         # on startup, register all existing ports
@@ -223,7 +165,8 @@ class OVSQuantumOFPRyuAgent:
                 net_id = all_bindings[port.vif_id].network_id
                 local_bindings[port.vif_id] = net_id
                 self._port_update(net_id, port)
-                all_bindings[port.vif_id].op_status = OP_STATUS_UP
+                self._set_port_status(all_bindings[port.vif_id],
+                                      constants.PORT_STATUS_ACTIVE)
                 LOG.info("Updating binding to net-id = %s for %s",
                          net_id, str(port))
         db.commit()
@@ -251,10 +194,12 @@ class OVSQuantumOFPRyuAgent:
                     LOG.info("Removing binding to net-id = %s for %s",
                              old_b, str(port))
                     if port.vif_id in all_bindings:
-                        all_bindings[port.vif_id].op_status = OP_STATUS_DOWN
+                        self._set_port_status(all_bindings[port.vif_id],
+                                              constants.PORT_STATUS_DOWN)
                 if not new_b:
                     if port.vif_id in all_bindings:
-                        all_bindings[port.vif_id].op_status = OP_STATUS_UP
+                        self._set_port_status(all_bindings[port.vif_id],
+                                              constants.PORT_STATUS_ACTIVE)
                     LOG.info("Adding binding to net-id = %s for %s",
                              new_b, str(port))
 
@@ -262,7 +207,8 @@ class OVSQuantumOFPRyuAgent:
                 if vif_id not in new_vif_ports:
                     LOG.info("Port Disappeared: %s", vif_id)
                     if vif_id in all_bindings:
-                        all_bindings[vif_id].op_status = OP_STATUS_DOWN
+                        self._set_port_status(all_bindings[port.vif_id],
+                                              constants.PORT_STATUS_DOWN)
 
             old_vif_ports = new_vif_ports
             old_local_bindings = new_local_bindings
@@ -271,38 +217,19 @@ class OVSQuantumOFPRyuAgent:
 
 
 def main():
-    usagestr = "%prog [OPTIONS] <config file>"
-    parser = OptionParser(usage=usagestr)
-    parser.add_option("-v", "--verbose", dest="verbose",
-      action="store_true", default=False, help="turn on verbose logging")
+    cfg.CONF(args=sys.argv, project='quantum')
 
-    options, args = parser.parse_args()
+    # (TODO) gary - swap with common logging
+    logging_config.setup_logging(cfg.CONF)
 
-    if options.verbose:
-        LOG.basicConfig(level=LOG.DEBUG)
-    else:
-        LOG.basicConfig(level=LOG.WARN)
-
-    if len(args) != 1:
-        parser.print_help()
-        sys.exit(1)
-
-    config_file = args[0]
-    config = ConfigParser.ConfigParser()
-    try:
-        config.read(config_file)
-    except Exception, e:
-        LOG.error("Unable to parse config file \"%s\": %s",
-                  config_file, str(e))
-
-    integ_br = config.get("OVS", "integration-bridge")
-
-    options = {"sql_connection": config.get("DATABASE", "sql_connection")}
+    integ_br = cfg.CONF.OVS.integration_bridge
+    root_helper = cfg.CONF.AGENT.root_helper
+    options = {"sql_connection": cfg.CONF.DATABASE.sql_connection}
     db = SqlSoup(options["sql_connection"])
 
     LOG.info("Connecting to database \"%s\" on %s",
              db.engine.url.database, db.engine.url.host)
-    plugin = OVSQuantumOFPRyuAgent(integ_br, db)
+    plugin = OVSQuantumOFPRyuAgent(integ_br, db, root_helper)
     plugin.daemon_loop(db)
 
     sys.exit(0)

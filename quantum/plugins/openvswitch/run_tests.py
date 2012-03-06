@@ -25,10 +25,7 @@ To run all tests::
     PLUGIN_DIR=quantum/plugins/openvswitch ./run_tests.sh
 """
 
-import gettext
-import logging
 import os
-import unittest
 import sys
 
 from nose import config
@@ -37,11 +34,9 @@ from nose import core
 sys.path.append(os.getcwd())
 sys.path.append(os.path.dirname(__file__))
 
-
-from quantum.api.api_common import OperationalStatus
 from quantum.common.test_lib import run_tests, test_config
 import quantum.tests.unit
-from tests.unit.test_vlan_map import VlanMapTest
+
 
 if __name__ == '__main__':
     exit_status = False
@@ -50,9 +45,7 @@ if __name__ == '__main__':
     # we should only invoked the tests once
     invoke_once = len(sys.argv) > 1
 
-    test_config['plugin_name'] = "ovs_quantum_plugin.OVSQuantumPlugin"
-    test_config['default_net_op_status'] = OperationalStatus.UP
-    test_config['default_port_op_status'] = OperationalStatus.DOWN
+    test_config['plugin_name_v2'] = "ovs_quantum_plugin.OVSQuantumPluginV2"
 
     cwd = os.getcwd()
     c = config.Config(stream=sys.stdout,

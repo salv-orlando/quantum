@@ -22,18 +22,17 @@ Configuration consolidation for the Nexus Driver
 This module will export the configuration parameters
 from the nexus.ini file
 """
-import os
 
-from quantum.common.config import find_config_file
+from quantum.common.utils import find_config_file
 from quantum.plugins.cisco.common import cisco_configparser as confp
 
-CP = confp.CiscoConfigParser(find_config_file({'plugin': 'cisco'}, None,
+
+CP = confp.CiscoConfigParser(find_config_file({'plugin': 'cisco'},
                              "nexus.ini"))
 
 SECTION = CP['SWITCH']
 NEXUS_IP_ADDRESS = SECTION['nexus_ip_address']
-NEXUS_FIRST_PORT = SECTION['nexus_first_port']
-NEXUS_SECOND_PORT = SECTION['nexus_second_port']
+NEXUS_PORTS = SECTION['ports']
 NEXUS_SSH_PORT = SECTION['nexus_ssh_port']
 
 SECTION = CP['DRIVER']

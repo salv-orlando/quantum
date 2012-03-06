@@ -16,34 +16,21 @@
 #    under the License.
 # @author: Somik Behera, Nicira Networks, Inc.
 
-
 """
 Quantum's Manager class is responsible for parsing a config file and
 instantiating the correct plugin that concretely implement quantum_plugin_base
 class.
 The caller should make sure that QuantumManager is a singleton.
 """
-import gettext
+
 import logging
-import os
 
-gettext.install('quantum', unicode=1)
-
-from quantum.common import utils
-from quantum.common.config import find_config_file
 from quantum.common.exceptions import ClassNotFound
-from quantum_plugin_base import QuantumPluginBase
-
-LOG = logging.getLogger('quantum.manager')
-CONFIG_FILE = "plugins.ini"
-LOG = logging.getLogger('quantum.manager')
+from quantum.openstack.common import cfg
+from quantum.openstack.common import importutils
 
 
-def find_config(basepath):
-    for root, dirs, files in os.walk(basepath):
-        if CONFIG_FILE in files:
-            return os.path.join(root, CONFIG_FILE)
-    return None
+LOG = logging.getLogger(__name__)
 
 
 class QuantumManager(object):
@@ -55,34 +42,25 @@ class QuantumManager(object):
         if not options:
             options = {}
 
-        if config_file:
-            config_file = [config_file]
-
-        self.configuration_file = find_config_file(options, config_file,
-                                                   CONFIG_FILE)
-        if not 'plugin_provider' in options:
-            options['plugin_provider'] = \
-                utils.get_plugin_from_config(self.configuration_file)
-        LOG.debug("Plugin location:%s", options['plugin_provider'])
-
+        # NOTE(jkoelker) Testing for the subclass with the __subclasshook__
+        #                breaks tach monitoring. It has been removed
+        #                intentianally to allow v2 plugins to be monitored
+        #                for performance metrics.
+        plugin_provider = cfg.CONF.core_plugin
+        LOG.debug("Plugin location:%s", plugin_provider)
         # If the plugin can't be found let them know gracefully
         try:
-            plugin_klass = utils.import_class(options['plugin_provider'])
+            LOG.info("Loading Plugin: %s" % plugin_provider)
+            plugin_klass = importutils.import_class(plugin_provider)
         except ClassNotFound:
-            raise Exception("Plugin not found.  You can install a " \
-                            "plugin with: pip install <plugin-name>\n" \
+            LOG.exception("Error loading plugin")
+            raise Exception("Plugin not found.  You can install a "
+                            "plugin with: pip install <plugin-name>\n"
                             "Example: pip install quantum-sample-plugin")
-
-        if not issubclass(plugin_klass, QuantumPluginBase):
-            raise Exception("Configured Quantum plug-in " \
-                            "didn't pass compatibility test")
-        else:
-            LOG.debug("Successfully imported Quantum plug-in." \
-                      "All compatibility tests passed")
         self.plugin = plugin_klass()
 
     @classmethod
-    def get_plugin(cls, options=None, config_file=None):
+    def get_plugin(cls):
         if cls._instance is None:
-            cls._instance = cls(options, config_file)
+            cls._instance = cls()
         return cls._instance.plugin

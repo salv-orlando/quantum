@@ -1,4 +1,3 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 # Copyright 2011 Cisco Systems, Inc.  All rights reserved.
@@ -19,23 +18,22 @@
 # @author: Peter Strunk, Cisco Systems, Inc.
 # @author: Atul Gaikad, Cisco Systems, Inc.
 # @author: Tyler Smith, Cisco Systems, Inc.
-#
-"""
 
+import logging
 import unittest
-import logging as LOG
 
 from quantum.common import exceptions as exc
-from quantum.common import utils
-from quantum.plugins.cisco import l2network_plugin_configuration as conf
+from quantum.openstack.common import importutils
 from quantum.plugins.cisco.common import cisco_constants as const
 from quantum.plugins.cisco.common import cisco_credentials as creds
-from quantum.plugins.cisco.models import l2network_multi_blade
 from quantum.plugins.cisco.db import api as db
 from quantum.plugins.cisco.db import l2network_db as cdb
+from quantum.plugins.cisco import l2network_plugin_configuration as conf
+from quantum.plugins.cisco.models import l2network_multi_blade
 
-LOG.basicConfig(level=LOG.WARN)
-LOG.getLogger(__name__)
+
+logging.basicConfig(level=logging.WARN)
+LOG = logging.getLogger(__name__)
 
 
 # Set some data to use in tests
@@ -50,7 +48,7 @@ vlan_id = "102"
 
 
 def vlan_name(id):
-    return "q-%svlan" % id
+    return "q-%svlan" % id[0:10]
 
 
 class TestMultiBlade(unittest.TestCase):
@@ -72,26 +70,25 @@ class TestMultiBlade(unittest.TestCase):
         self.port_id = 0
 
         # Create the multiblade object
-        self._l2network_multiblade = l2network_multi_blade. \
-                     L2NetworkMultiBlade()
-        self.plugin_key = "quantum.plugins.cisco.ucs.cisco_ucs_plugin" + \
-                            ".UCSVICPlugin"
+        self._l2network_multiblade = (
+            l2network_multi_blade.L2NetworkMultiBlade())
+        self.plugin_key = (
+            "quantum.plugins.cisco.ucs.cisco_ucs_plugin.UCSVICPlugin")
 
         # Get UCS inventory to make sure all UCSs are affected by tests
         for key in conf.PLUGINS[const.PLUGINS].keys():
             if key in conf.PLUGINS[const.INVENTORY].keys():
-                self._inventory[key] = utils.import_object(
-                    conf.PLUGINS[const.INVENTORY][key])
+                plugin_obj = conf.PLUGINS[const.INVENTORY][key]
+                self._inventory[key] = importutils.import_object(plugin_obj)
 
-        self.ucs_count = self._inventory['ucs_plugin'].\
-                             _inventory.__len__()
+        self.ucs_count = self._inventory['ucs_plugin']._inventory.__len__()
 
     def tearDown(self):
         """Tear down our tests"""
         try:
             port = db.port_get(self.net_id, self.port_id)
             self._l2network_multiblade.delete_port([tenant_id, self.net_id,
-                                                self.port_id])
+                                                    self.port_id])
         except exc.NetworkNotFound:
             # We won't always have a port to remove
             pass
@@ -113,29 +110,20 @@ class TestMultiBlade(unittest.TestCase):
 
         # Create the network in the test DB, then with the model
         self.net_id = db.network_create(tenant_id, net_name)[const.UUID]
-        networks = self._l2network_multiblade.create_network([tenant_id,
-                                                   net_name,
-                                                   self.net_id,
-                                                   vlan_name(self.net_id),
-                                                   vlan_id])
+        networks = self._l2network_multiblade.create_network([
+            tenant_id,
+            net_name,
+            self.net_id,
+            vlan_name(self.net_id),
+            vlan_id,
+        ])
+        cdb.add_vlan_binding(vlan_id, vlan_name(self.net_id), self.net_id)
 
-        self.assertEqual(networks.__len__(), self.ucs_count)
         for network in networks:
             self.assertEqual(network[const.NET_ID], self.net_id)
             self.assertEqual(network[const.NET_NAME], net_name)
 
         LOG.debug("test_create_network - END")
-
-    def test_create_networkDNE(self):
-        """Support for the Quantum core API call"""
-        LOG.debug("test_create_networkDNE - START")
-
-        self.assertRaises(exc.NetworkNotFound,
-                          self._l2network_multiblade.create_network,
-                          [tenant_id, net_name, net_id,
-                           vlan_name(net_id), vlan_id])
-
-        LOG.debug("test_create_networkDNE - END")
 
     def test_delete_network(self):
         """Support for the Quantum core API call"""
@@ -151,9 +139,9 @@ class TestMultiBlade(unittest.TestCase):
         cdb.add_vlan_binding(vlan_id, vlan_name(self.net_id), self.net_id)
 
         networks = self._l2network_multiblade.delete_network([tenant_id,
-                                                   self.net_id])
-
-        self.assertEqual(networks.__len__(), self.ucs_count)
+                                                              self.net_id])
+        cdb.remove_vlan_binding(self.net_id)
+        db.network_destroy(self.net_id)
         for network in networks:
             self.assertEqual(network[const.NET_ID], self.net_id)
             self.assertEqual(network[const.NET_NAME], net_name)
@@ -181,13 +169,16 @@ class TestMultiBlade(unittest.TestCase):
                                                    self.net_id,
                                                    vlan_name(self.net_id),
                                                    vlan_id])
+        cdb.add_vlan_binding(vlan_id, vlan_name(self.net_id), self.net_id)
 
-        db.network_update(self.net_id, tenant_id, name=new_net_name)
-        networks = self._l2network_multiblade.update_network([tenant_id,
-                                                   self.net_id,
-                                                   {'name': new_net_name}])
+        net_details = db.network_update(self.net_id, tenant_id,
+                                        name=new_net_name)
+        networks = self._l2network_multiblade.update_network([
+            tenant_id,
+            self.net_id,
+            {'name': new_net_name},
+        ])
 
-        self.assertEqual(networks.__len__(), self.ucs_count)
         for network in networks:
             self.assertEqual(network[const.NET_ID], self.net_id)
             self.assertEqual(network[const.NET_NAME], new_net_name)
@@ -218,12 +209,13 @@ class TestMultiBlade(unittest.TestCase):
                                                    self.net_id,
                                                    vlan_name(self.net_id),
                                                    vlan_id])
+        cdb.add_vlan_binding(vlan_id, vlan_name(self.net_id), self.net_id)
 
         self.port_id = db.port_create(self.net_id, port_state)[const.UUID]
         port = self._l2network_multiblade.create_port([tenant_id,
-                                                self.net_id,
-                                                port_state,
-                                                self.port_id])
+                                                       self.net_id,
+                                                       port_state,
+                                                       self.port_id])
 
         self.assertEqual(self.port_id, port[0][const.PORTID])
         LOG.debug("test_create_port - END")
@@ -237,6 +229,7 @@ class TestMultiBlade(unittest.TestCase):
                                                    self.net_id,
                                                    vlan_name(self.net_id),
                                                    vlan_id])
+        cdb.add_vlan_binding(vlan_id, vlan_name(self.net_id), self.net_id)
 
         self.port_id = db.port_create(self.net_id, port_state)[const.UUID]
         self._l2network_multiblade.create_port([tenant_id,
@@ -244,8 +237,8 @@ class TestMultiBlade(unittest.TestCase):
                                                 port_state, self.port_id])
 
         port = self._l2network_multiblade.delete_port([tenant_id,
-                                                self.net_id,
-                                                self.port_id])
+                                                       self.net_id,
+                                                       self.port_id])
 
         self.assertEqual(self.port_id, port[0][const.PORTID])
 
@@ -293,8 +286,8 @@ class TestMultiBlade(unittest.TestCase):
                                                 self.net_id,
                                                 port_state, self.port_id])
 
-        interface = self._l2network_multiblade.plug_interface([tenant_id,
-                              self.net_id, self.port_id, interface_id])
+        interface = self._l2network_multiblade.plug_interface(
+            [tenant_id, self.net_id, self.port_id, interface_id])
         port = db.port_set_attachment(self.net_id, self.port_id, interface_id)
 
         self.assertEqual(self.port_id, interface[0][const.PORTID])
@@ -357,10 +350,11 @@ class TestMultiBlade(unittest.TestCase):
                                                 port_state, self.port_id])
 
         self._l2network_multiblade.plug_interface([tenant_id, self.net_id,
-                                                  self.port_id, interface_id])
+                                                   self.port_id, interface_id])
         db.port_set_attachment(self.net_id, self.port_id, interface_id)
         interface = self._l2network_multiblade.unplug_interface([tenant_id,
-                                            self.net_id, self.port_id])
+                                                                 self.net_id,
+                                                                 self.port_id])
 
         self.assertEqual(self.port_id, interface[0][const.PORTID])
         LOG.debug("test_unplug_interface - END")

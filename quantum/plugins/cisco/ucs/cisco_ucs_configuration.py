@@ -1,4 +1,3 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 # Copyright 2011 Cisco Systems, Inc.  All rights reserved.
@@ -17,14 +16,13 @@
 #
 # @author: Sumit Naiksatam, Cisco Systems, Inc.
 #
-"""
 
-import os
-from quantum.common.config import find_config_file
+from quantum.common.utils import find_config_file
 from quantum.plugins.cisco.common import cisco_configparser as confp
 
-CP = confp.CiscoConfigParser(find_config_file({'plugin': 'cisco'}, [],
-                             'ucs.ini'))
+
+CP = confp.CiscoConfigParser(find_config_file({'plugin': 'cisco'},
+                                              'ucs.ini'))
 
 SECTION = CP['UCSM']
 UCSM_IP_ADDRESS = SECTION['ip_address']
@@ -36,7 +34,7 @@ PROFILE_NAME_PREFIX = SECTION['profile_name_prefix']
 SECTION = CP['DRIVER']
 UCSM_DRIVER = SECTION['name']
 
-CP = confp.CiscoConfigParser(find_config_file({'plugin': 'cisco'}, [],
-                             'ucs_inventory.ini'))
+CP = confp.CiscoConfigParser(find_config_file({'plugin': 'cisco'},
+                                              'ucs_inventory.ini'))
 
 INVENTORY = CP.walk(CP.dummy)

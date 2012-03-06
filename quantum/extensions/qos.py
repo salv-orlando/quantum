@@ -1,4 +1,3 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 # Copyright 2011 Cisco Systems, Inc.  All rights reserved.
@@ -16,17 +15,18 @@
 #    under the License.
 #
 # @author: Ying Liu, Cisco Systems, Inc.
-#
-"""
+
 import logging
 
 from webob import exc
-from quantum.extensions import _qos_view as qos_view
+
 from quantum.api import api_common as common
+from quantum.extensions import _qos_view as qos_view
 from quantum.extensions import extensions
 from quantum.manager import QuantumManager
 from quantum.plugins.cisco.common import cisco_exceptions as exception
 from quantum.plugins.cisco.common import cisco_faults as faults
+from quantum import wsgi
 
 
 LOG = logging.getLogger('quantum.api.qoss')
@@ -73,15 +73,15 @@ class Qos(object):
                                              parent=parent_resource)]
 
 
-class QosController(common.QuantumController):
+class QosController(common.QuantumController, wsgi.Controller):
     """ qos API controller
         based on QuantumController """
 
-    _qos_ops_param_list = [{
-        'param-name': 'qos_name',
-        'required': True}, {
-        'param-name': 'qos_desc',
-        'required': True}]
+    _qos_ops_param_list = [
+        {'param-name': 'qos_name', 'required': True},
+        {'param-name': 'qos_desc', 'required': True},
+    ]
+
     _serialization_metadata = {
         "application/xml": {
             "attributes": {
@@ -102,16 +102,14 @@ class QosController(common.QuantumController):
         """ Returns a list of qoss. """
         qoss = self._plugin.get_all_qoss(tenant_id)
         builder = qos_view.get_view_builder(request)
-        result = [builder.build(qos, is_detail)['qos']
-                  for qos in qoss]
+        result = [builder.build(qos, is_detail)['qos'] for qos in qoss]
         return dict(qoss=result)
 
     # pylint: disable-msg=E1101
     def show(self, request, tenant_id, id):
         """ Returns qos details for the given qos id """
         try:
-            qos = self._plugin.get_qos_details(
-                            tenant_id, id)
+            qos = self._plugin.get_qos_details(tenant_id, id)
             builder = qos_view.get_view_builder(request)
             #build response with details
             result = builder.build(qos, True)
@@ -123,15 +121,15 @@ class QosController(common.QuantumController):
         """ Creates a new qos for a given tenant """
         #look for qos name in request
         try:
-            req_params = \
-                self._parse_request_params(request,
-                                           self._qos_ops_param_list)
+            body = self._deserialize(request.body, request.get_content_type())
+            req_body = self._prepare_request_body(body,
+                                                  self._qos_ops_param_list)
+            req_params = req_body[self._resource_name]
         except exc.HTTPError as exp:
             return faults.Fault(exp)
-        qos = self._plugin.\
-                       create_qos(tenant_id,
-                                          req_params['qos_name'],
-                                          req_params['qos_desc'])
+        qos = self._plugin.create_qos(tenant_id,
+                                      req_params['qos_name'],
+                                      req_params['qos_desc'])
         builder = qos_view.get_view_builder(request)
         result = builder.build(qos)
         return dict(qoss=result)
@@ -139,15 +137,15 @@ class QosController(common.QuantumController):
     def update(self, request, tenant_id, id):
         """ Updates the name for the qos with the given id """
         try:
-            req_params = \
-                self._parse_request_params(request,
-                                           self._qos_ops_param_list)
+            body = self._deserialize(request.body, request.get_content_type())
+            req_body = self._prepare_request_body(body,
+                                                  self._qos_ops_param_list)
+            req_params = req_body[self._resource_name]
         except exc.HTTPError as exp:
             return faults.Fault(exp)
         try:
-            qos = self._plugin.\
-            rename_qos(tenant_id,
-                        id, req_params['qos_name'])
+            qos = self._plugin.rename_qos(tenant_id, id,
+                                          req_params['qos_name'])
 
             builder = qos_view.get_view_builder(request)
             result = builder.build(qos, True)

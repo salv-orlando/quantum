@@ -19,46 +19,29 @@
 # If ../quantum/__init__.py exists, add ../ to Python search path, so that
 # it will override what happens to be installed in /usr/(local/)lib/python...
 
-import gettext
 import optparse
 import os
 import sys
 
-
-possible_topdir = os.path.normpath(os.path.join(os.path.abspath(sys.argv[0]),
-                                   os.pardir,
-                                   os.pardir))
-if os.path.exists(os.path.join(possible_topdir, 'quantum', '__init__.py')):
-    sys.path.insert(0, possible_topdir)
-
-gettext.install('quantum', unicode=1)
-
 from quantum import service
 from quantum.common import config
-
-
-def create_options(parser):
-    """
-    Sets up the CLI and config-file options that may be
-    parsed and program commands.
-    :param parser: The option parser
-    """
-    config.add_common_options(parser)
-    config.add_log_options(parser)
+from quantum.openstack.common import cfg
+from quantum.version import version_string
 
 
 def main():
-    oparser = optparse.OptionParser(version='%%prog VERSION')
-    create_options(oparser)
-    (options, args) = config.parse_options(oparser)
-
+    # the configuration will be read into the cfg.CONF global data structure
+    config.parse(sys.argv)
+    if not cfg.CONF.config_file:
+        sys.exit("ERROR: Unable to find configuration file via the default"
+                 " search paths (~/.quantum/, ~/, /etc/quantum/, /etc/) and"
+                 " the '--config-file' option!")
     try:
-        quantum_service = service.serve_wsgi(service.QuantumApiService,
-                                     options=options,
-                                     args=args)
+        quantum_service = service.serve_wsgi(service.QuantumApiService)
         quantum_service.wait()
     except RuntimeError, e:
         sys.exit("ERROR: %s" % e)
+
 
 if __name__ == "__main__":
     main()

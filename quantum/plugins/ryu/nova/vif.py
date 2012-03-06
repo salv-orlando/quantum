@@ -17,12 +17,13 @@
 
 import httplib
 
-from nova import flags
-from nova import log as logging
-from nova import utils
-from nova.openstack.common import cfg
-from nova.virt.libvirt import vif as libvirt_vif
 from ryu.app.client import OFPClient
+
+from nova import flags
+from nova.openstack.common import cfg
+from nova.openstack.common import log as logging
+from nova import utils
+from nova.virt.libvirt import vif as libvirt_vif
 
 
 LOG = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ ryu_libvirt_ovs_driver_opt = cfg.StrOpt('libvirt_ovs_ryu_api_host',
                                         help='Openflow Ryu REST API host:port')
 
 FLAGS = flags.FLAGS
-FLAGS.add_option(ryu_libvirt_ovs_driver_opt)
+FLAGS.register_opt(ryu_libvirt_ovs_driver_opt)
 
 
 def _get_datapath_id(bridge_name):
@@ -59,15 +60,22 @@ class LibvirtOpenVswitchOFPRyuDriver(libvirt_vif.LibvirtOpenVswitchDriver):
         dev = self.get_dev_name(iface_id)
         return _get_port_no(dev)
 
-    def plug(self, instance, network, mapping):
+    def plug(self, instance, vif):
         result = super(LibvirtOpenVswitchOFPRyuDriver, self).plug(
-            instance, network, mapping)
+            instance, vif)
+        network, mapping = vif
         port_no = self._get_port_no(mapping)
-        self.ryu_client.create_port(network['id'],
-                                    self.datapath_id, port_no)
+        try:
+            self.ryu_client.create_port(network['id'], self.datapath_id,
+                                        port_no)
+        except httplib.HTTPException as e:
+            res = e.args[0]
+            if res.status != httplib.CONFLICT:
+                raise
         return result
 
-    def unplug(self, instance, network, mapping):
+    def unplug(self, instance, vif):
+        network, mapping = vif
         port_no = self._get_port_no(mapping)
         try:
             self.ryu_client.delete_port(network['id'],
@@ -76,5 +84,4 @@ class LibvirtOpenVswitchOFPRyuDriver(libvirt_vif.LibvirtOpenVswitchDriver):
             res = e.args[0]
             if res.status != httplib.NOT_FOUND:
                 raise
-        super(LibvirtOpenVswitchOFPRyuDriver, self).unplug(instance, network,
-                                                           mapping)
+        super(LibvirtOpenVswitchOFPRyuDriver, self).unplug(instance, vif)

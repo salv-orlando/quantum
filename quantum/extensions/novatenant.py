@@ -1,4 +1,3 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 # Copyright 2011 Cisco Systems, Inc.  All rights reserved.
@@ -16,16 +15,16 @@
 #    under the License.
 #
 # @author: Ying Liu, Cisco Systems, Inc.
-#
-"""
+
 from webob import exc
 
-from quantum.extensions import _novatenant_view as novatenant_view
 from quantum.api import api_common as common
 from quantum.common import exceptions as qexception
+from quantum.extensions import _novatenant_view as novatenant_view
 from quantum.extensions import extensions
 from quantum.manager import QuantumManager
 from quantum.plugins.cisco.common import cisco_faults as faults
+from quantum import wsgi
 
 
 class Novatenant(object):
@@ -72,19 +71,18 @@ class Novatenant(object):
                                              member_actions=member_actions)]
 
 
-class NovatenantsController(common.QuantumController):
+class NovatenantsController(common.QuantumController, wsgi.Controller):
     """ Novatenant API controller
         based on QuantumController """
 
-    _Novatenant_ops_param_list = [{
-        'param-name': 'novatenant_name',
-        'required': True}]
+    _Novatenant_ops_param_list = [
+        {'param-name': 'novatenant_name', 'required': True},
+    ]
 
-    _schedule_host_ops_param_list = [{
-        'param-name': 'instance_id',
-        'required': True}, {
-        'param-name': 'instance_desc',
-        'required': True}]
+    _schedule_host_ops_param_list = [
+        {'param-name': 'instance_id', 'required': True},
+        {'param-name': 'instance_desc', 'required': True},
+    ]
 
     _serialization_metadata = {
         "application/xml": {
@@ -121,16 +119,19 @@ class NovatenantsController(common.QuantumController):
         content_type = request.best_match_content_type()
 
         try:
-            req_params = \
-                self._parse_request_params(request,
-                                           self._schedule_host_ops_param_list)
+            body = self._deserialize(request.body, content_type)
+            req_body = self._prepare_request_body(
+                body, self._schedule_host_ops_param_list)
+            req_params = req_body[self._resource_name]
+
         except exc.HTTPError as exp:
             return faults.Fault(exp)
         instance_id = req_params['instance_id']
         instance_desc = req_params['instance_desc']
         try:
-            host = self._plugin.\
-            schedule_host(tenant_id, instance_id, instance_desc)
+            host = self._plugin.schedule_host(tenant_id,
+                                              instance_id,
+                                              instance_desc)
             builder = novatenant_view.get_view_builder(request)
             result = builder.build_host(host)
             return result
@@ -140,16 +141,19 @@ class NovatenantsController(common.QuantumController):
     def associate_port(self, request, tenant_id, id):
         content_type = request.best_match_content_type()
         try:
-            req_params = \
-                self._parse_request_params(request,
-                                           self._schedule_host_ops_param_list)
+            body = self._deserialize(request.body, content_type)
+            req_body = self._prepare_request_body(
+                body, self._schedule_host_ops_param_list)
+            req_params = req_body[self._resource_name]
+
         except exc.HTTPError as exp:
             return faults.Fault(exp)
         instance_id = req_params['instance_id']
         instance_desc = req_params['instance_desc']
         try:
-            vif = self._plugin. \
-            associate_port(tenant_id, instance_id, instance_desc)
+            vif = self._plugin.associate_port(tenant_id,
+                                              instance_id,
+                                              instance_desc)
             builder = novatenant_view.get_view_builder(request)
             result = builder.build_vif(vif)
             return result
@@ -159,9 +163,11 @@ class NovatenantsController(common.QuantumController):
     def detach_port(self, request, tenant_id, id):
         content_type = request.best_match_content_type()
         try:
-            req_params = \
-                self._parse_request_params(request,
-                                           self._schedule_host_ops_param_list)
+            body = self._deserialize(request.body, content_type)
+            req_body = self._prepare_request_body(
+                body, self._schedule_host_ops_param_list)
+            req_params = req_body[self._resource_name]
+
         except exc.HTTPError as exp:
             return faults.Fault(exp)
 
@@ -169,8 +175,9 @@ class NovatenantsController(common.QuantumController):
         instance_desc = req_params['instance_desc']
 
         try:
-            vif = self._plugin. \
-            detach_port(tenant_id, instance_id, instance_desc)
+            vif = self._plugin.detach_port(tenant_id,
+                                           instance_id,
+                                           instance_desc)
             builder = novatenant_view.get_view_builder(request)
             result = builder.build_result(True)
             return result

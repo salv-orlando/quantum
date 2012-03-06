@@ -1,4 +1,3 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 # Copyright 2011 Cisco Systems, Inc.  All rights reserved.
@@ -16,8 +15,7 @@
 #    under the License.
 #
 # @author: Ying Liu, Cisco Systems, Inc.
-#
-"""
+
 import webob.dec
 
 from quantum import wsgi
@@ -27,16 +25,17 @@ class Fault(webob.exc.HTTPException):
     """Error codes for API faults"""
 
     _fault_names = {
-            400: "malformedRequest",
-            401: "unauthorized",
-            421: "PortprofileInUse",
-            450: "PortprofileNotFound",
-            451: "CredentialNotFound",
-            452: "QoSNotFound",
-            453: "NovatenantNotFound",
-            454: "MultiportNotFound",
-            470: "serviceUnavailable",
-            471: "pluginFault"}
+        400: "malformedRequest",
+        401: "unauthorized",
+        421: "PortprofileInUse",
+        450: "PortprofileNotFound",
+        451: "CredentialNotFound",
+        452: "QoSNotFound",
+        453: "NovatenantNotFound",
+        454: "MultiportNotFound",
+        470: "serviceUnavailable",
+        471: "pluginFault"
+    }
 
     def __init__(self, exception):
         """Create a Fault for the given webob.exc.exception."""
@@ -55,8 +54,8 @@ class Fault(webob.exc.HTTPException):
                 'message': self.wrapped_exc.explanation}}
         # 'code' is an attribute on the fault tag itself
         content_type = req.best_match_content_type()
-        self.wrapped_exc.body = wsgi.Serializer().\
-        serialize(fault_data, content_type)
+        self.wrapped_exc.body = wsgi.Serializer().serialize(
+            fault_data, content_type)
         self.wrapped_exc.content_type = content_type
         return self.wrapped_exc
 
@@ -73,7 +72,7 @@ class PortprofileNotFound(webob.exc.HTTPClientError):
     code = 450
     title = 'Portprofile Not Found'
     explanation = ('Unable to find a Portprofile with'
-                   + ' the specified identifier.')
+                   ' the specified identifier.')
 
 
 class PortNotFound(webob.exc.HTTPClientError):
@@ -102,7 +101,7 @@ class CredentialNotFound(webob.exc.HTTPClientError):
     code = 451
     title = 'Credential Not Found'
     explanation = ('Unable to find a Credential with'
-                   + ' the specified identifier.')
+                   ' the specified identifier.')
 
 
 class QosNotFound(webob.exc.HTTPClientError):
@@ -117,7 +116,7 @@ class QosNotFound(webob.exc.HTTPClientError):
     code = 452
     title = 'QoS Not Found'
     explanation = ('Unable to find a QoS with'
-                   + ' the specified identifier.')
+                   ' the specified identifier.')
 
 
 class NovatenantNotFound(webob.exc.HTTPClientError):
@@ -132,7 +131,7 @@ class NovatenantNotFound(webob.exc.HTTPClientError):
     code = 453
     title = 'Nova tenant Not Found'
     explanation = ('Unable to find a Novatenant with'
-                   + ' the specified identifier.')
+                   ' the specified identifier.')
 
 
 class MultiportNotFound(webob.exc.HTTPClientError):
@@ -147,7 +146,7 @@ class MultiportNotFound(webob.exc.HTTPClientError):
     code = 454
     title = 'Multiport Not Found'
     explanation = ('Unable to find Multiport with'
-                   + ' the specified identifier.')
+                   ' the specified identifier.')
 
 
 class RequestedStateInvalid(webob.exc.HTTPClientError):

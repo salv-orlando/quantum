@@ -1,4 +1,3 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 # Copyright 2011 Cisco Systems, Inc.  All rights reserved.
@@ -16,8 +15,7 @@
 #    under the License.
 #
 # @author: Ying Liu, Cisco Systems, Inc.
-#
-"""
+
 import logging
 
 from webob import exc
@@ -26,8 +24,9 @@ from quantum.api import api_common as common
 from quantum.api.views import ports as port_view
 from quantum.extensions import extensions
 from quantum.manager import QuantumManager
-from quantum.plugins.cisco.common import cisco_exceptions as exception
 from quantum.plugins.cisco.common import cisco_faults as faults
+from quantum import wsgi
+
 
 LOG = logging.getLogger('quantum.api.multiports')
 
@@ -72,17 +71,15 @@ class Multiport(object):
                                              parent=parent_resource)]
 
 
-class MultiportController(common.QuantumController):
+class MultiportController(common.QuantumController, wsgi.Controller):
     """ multiport API controller
         based on QuantumController """
 
-    _multiport_ops_param_list = [{
-        'param-name': 'net_id_list',
-        'required': True}, {
-        'param-name': 'status',
-        'required': True}, {
-        'param-name': 'ports_desc',
-        'required': True}]
+    _multiport_ops_param_list = [
+        {'param-name': 'net_id_list', 'required': True},
+        {'param-name': 'status', 'required': True},
+        {'param-name': 'ports_desc', 'required': True},
+    ]
 
     _serialization_metadata = {
         "application/xml": {
@@ -95,22 +92,23 @@ class MultiportController(common.QuantumController):
     def __init__(self, plugin):
         self._resource_name = 'multiport'
         self._plugin = plugin
+        self.version = "1.0"
 
     # pylint: disable-msg=E1101,W0613
     def create(self, request, tenant_id):
         """ Creates a new multiport for a given tenant """
         try:
-            req_params = \
-                self._parse_request_params(request,
-                                           self._multiport_ops_param_list)
+            body = self._deserialize(request.body, request.get_content_type())
+            req_body = self._prepare_request_body(
+                body, self._multiport_ops_param_list)
+            req_params = req_body[self._resource_name]
+
         except exc.HTTPError as exp:
             return faults.Fault(exp)
-        multiports = self._plugin.\
-                       create_multiport(tenant_id,
-                                          req_params['net_id_list'],
-                                          req_params['status'],
-                                          req_params['ports_desc'])
-        builder = port_view.get_view_builder(request)
-        result = [builder.build(port)['port']
-                      for port in multiports]
+        multiports = self._plugin.create_multiport(tenant_id,
+                                                   req_params['net_id_list'],
+                                                   req_params['status'],
+                                                   req_params['ports_desc'])
+        builder = port_view.get_view_builder(request, self.version)
+        result = [builder.build(port)['port'] for port in multiports]
         return dict(ports=result)

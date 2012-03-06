@@ -18,181 +18,36 @@
 # @author: Brad Hall, Nicira Networks, Inc.
 # @author: Dan Wendlandt, Nicira Networks, Inc.
 # @author: Dave Lapsley, Nicira Networks, Inc.
+# @author: Aaron Rosen, Nicira Networks, Inc.
 
-import ConfigParser
-import logging as LOG
+import logging
 import sys
 import time
-import signal
 
-from optparse import OptionParser
-from sqlalchemy.ext.sqlsoup import SqlSoup
-from subprocess import *
+import eventlet
+from sqlalchemy.ext import sqlsoup
 
+from quantum.agent import rpc as agent_rpc
+from quantum.agent.linux import ovs_lib
+from quantum.agent.linux import utils
+from quantum.common import constants
+from quantum.common import config as logging_config
+from quantum.common import topics
+from quantum.openstack.common import cfg
+from quantum.openstack.common import context
+from quantum.openstack.common import rpc
+from quantum.openstack.common.rpc import dispatcher
+from quantum.plugins.openvswitch.common import config
 
-# Global constants.
-OP_STATUS_UP = "UP"
-OP_STATUS_DOWN = "DOWN"
+logging.basicConfig()
+LOG = logging.getLogger(__name__)
 
 # A placeholder for dead vlans.
 DEAD_VLAN_TAG = "4095"
 
-REFRESH_INTERVAL = 2
-
 
 # A class to represent a VIF (i.e., a port that has 'iface-id' and 'vif-mac'
 # attributes set).
-class VifPort:
-    def __init__(self, port_name, ofport, vif_id, vif_mac, switch):
-        self.port_name = port_name
-        self.ofport = ofport
-        self.vif_id = vif_id
-        self.vif_mac = vif_mac
-        self.switch = switch
-
-    def __str__(self):
-        return "iface-id=" + self.vif_id + ", vif_mac=" + \
-          self.vif_mac + ", port_name=" + self.port_name + \
-          ", ofport=" + self.ofport + ", bridge name = " + self.switch.br_name
-
-
-class OVSBridge:
-    def __init__(self, br_name):
-        self.br_name = br_name
-
-    def run_cmd(self, args):
-        # LOG.debug("## running command: " + " ".join(args))
-        p = Popen(args, stdout=PIPE)
-        retval = p.communicate()[0]
-        if p.returncode == -(signal.SIGALRM):
-            LOG.debug("## timeout running command: " + " ".join(args))
-        return retval
-
-    def run_vsctl(self, args):
-        full_args = ["ovs-vsctl", "--timeout=2"] + args
-        return self.run_cmd(full_args)
-
-    def reset_bridge(self):
-        self.run_vsctl(["--", "--if-exists", "del-br", self.br_name])
-        self.run_vsctl(["add-br", self.br_name])
-
-    def delete_port(self, port_name):
-        self.run_vsctl(["--", "--if-exists", "del-port", self.br_name,
-          port_name])
-
-    def set_db_attribute(self, table_name, record, column, value):
-        args = ["set", table_name, record, "%s=%s" % (column, value)]
-        self.run_vsctl(args)
-
-    def clear_db_attribute(self, table_name, record, column):
-        args = ["clear", table_name, record, column]
-        self.run_vsctl(args)
-
-    def run_ofctl(self, cmd, args):
-        full_args = ["ovs-ofctl", cmd, self.br_name] + args
-        return self.run_cmd(full_args)
-
-    def remove_all_flows(self):
-        self.run_ofctl("del-flows", [])
-
-    def get_port_ofport(self, port_name):
-        return self.db_get_val("Interface", port_name, "ofport")
-
-    def add_flow(self, **dict):
-        if "actions" not in dict:
-            raise Exception("must specify one or more actions")
-        if "priority" not in dict:
-            dict["priority"] = "0"
-
-        flow_str = "priority=%s" % dict["priority"]
-        if "match" in dict:
-            flow_str += "," + dict["match"]
-        flow_str += ",actions=%s" % (dict["actions"])
-        self.run_ofctl("add-flow", [flow_str])
-
-    def delete_flows(self, **dict):
-        all_args = []
-        if "priority" in dict:
-            all_args.append("priority=%s" % dict["priority"])
-        if "match" in dict:
-            all_args.append(dict["match"])
-        if "actions" in dict:
-            all_args.append("actions=%s" % (dict["actions"]))
-        flow_str = ",".join(all_args)
-        self.run_ofctl("del-flows", [flow_str])
-
-    def add_tunnel_port(self, port_name, remote_ip):
-        self.run_vsctl(["add-port", self.br_name, port_name])
-        self.set_db_attribute("Interface", port_name, "type", "gre")
-        self.set_db_attribute("Interface", port_name, "options", "remote_ip=" +
-            remote_ip)
-        self.set_db_attribute("Interface", port_name, "options", "in_key=flow")
-        self.set_db_attribute("Interface", port_name, "options",
-            "out_key=flow")
-        return self.get_port_ofport(port_name)
-
-    def add_patch_port(self, local_name, remote_name):
-        self.run_vsctl(["add-port", self.br_name, local_name])
-        self.set_db_attribute("Interface", local_name, "type", "patch")
-        self.set_db_attribute("Interface", local_name, "options", "peer=" +
-                              remote_name)
-        return self.get_port_ofport(local_name)
-
-    def db_get_map(self, table, record, column):
-        str = self.run_vsctl(["get", table, record, column]).rstrip("\n\r")
-        return self.db_str_to_map(str)
-
-    def db_get_val(self, table, record, column):
-        return self.run_vsctl(["get", table, record, column]).rstrip("\n\r")
-
-    def db_str_to_map(self, full_str):
-        list = full_str.strip("{}").split(", ")
-        ret = {}
-        for e in list:
-            if e.find("=") == -1:
-                continue
-            arr = e.split("=")
-            ret[arr[0]] = arr[1].strip("\"")
-        return ret
-
-    def get_port_name_list(self):
-        res = self.run_vsctl(["list-ports", self.br_name])
-        return res.split("\n")[0:-1]
-
-    def get_port_stats(self, port_name):
-        return self.db_get_map("Interface", port_name, "statistics")
-
-    def get_xapi_iface_id(self, xs_vif_uuid):
-        return self.run_cmd(
-                        ["xe",
-                        "vif-param-get",
-                        "param-name=other-config",
-                        "param-key=nicira-iface-id",
-                        "uuid=%s" % xs_vif_uuid]).strip()
-
-    # returns a VIF object for each VIF port
-    def get_vif_ports(self):
-        edge_ports = []
-        port_names = self.get_port_name_list()
-        for name in port_names:
-            external_ids = self.db_get_map("Interface", name, "external_ids")
-            ofport = self.db_get_val("Interface", name, "ofport")
-            if "iface-id" in external_ids and "attached-mac" in external_ids:
-                p = VifPort(name, ofport, external_ids["iface-id"],
-                            external_ids["attached-mac"], self)
-                edge_ports.append(p)
-            elif "xs-vif-uuid" in external_ids and \
-                 "attached-mac" in external_ids:
-                # if this is a xenserver and iface-id is not automatically
-                # synced to OVS from XAPI, we grab it from XAPI directly
-                iface_id = self.get_xapi_iface_id(external_ids["xs-vif-uuid"])
-                p = VifPort(name, ofport, iface_id,
-                            external_ids["attached-mac"], self)
-                edge_ports.append(p)
-
-        return edge_ports
-
-
 class LocalVLANMapping:
     def __init__(self, vlan, lsw_id, vif_ids=None):
         if vif_ids is None:
@@ -205,46 +60,170 @@ class LocalVLANMapping:
         return "lv-id = %s ls-id = %s" % (self.vlan, self.lsw_id)
 
 
+class Port(object):
+    """Represents a quantum port.
+
+    Class stores port data in a ORM-free way, so attributres are
+    still available even if a row has been deleted.
+    """
+
+    def __init__(self, p):
+        self.id = p.id
+        self.network_id = p.network_id
+        self.device_id = p.device_id
+        self.admin_state_up = p.admin_state_up
+        self.status = p.status
+
+    def __eq__(self, other):
+        '''Compare only fields that will cause us to re-wire.'''
+        try:
+            return (self and other
+                    and self.id == other.id
+                    and self.admin_state_up == other.admin_state_up)
+        except:
+            return False
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return hash(self.id)
+
+
+class OVSRpcCallbacks():
+
+    # Set RPC API version to 1.0 by default.
+    RPC_API_VERSION = '1.0'
+
+    def __init__(self, context, int_br, local_ip=None, tun_br=None):
+        self.context = context
+        self.int_br = int_br
+        # Tunneling variables
+        self.local_ip = local_ip
+        self.tun_br = tun_br
+
+    def network_delete(self, context, **kwargs):
+        LOG.debug("network_delete received")
+        network_id = kwargs.get('network_id')
+        # (TODO) garyk delete the bridge interface
+        LOG.debug("Delete %s", network_id)
+
+    def port_update(self, context, **kwargs):
+        LOG.debug("port_update received")
+        port = kwargs.get('port')
+        vif_port = self.int_br.get_vif_port_by_id(port['id'])
+        if vif_port:
+            if port['admin_state_up']:
+                vlan_id = kwargs.get('vlan_id')
+                # create the networking for the port
+                self.int_br.set_db_attribute("Port", vif_port.port_name,
+                                             "tag", str(vlan_id))
+                self.int_br.delete_flows(in_port=vif_port.ofport)
+            else:
+                self.int_br.clear_db_attribute("Port", vif_port.port_name,
+                                               "tag")
+
+    def tunnel_update(self, context, **kwargs):
+        LOG.debug("tunnel_update received")
+        tunnel_ip = kwargs.get('tunnel_ip')
+        tunnel_id = kwargs.get('tunnel_id')
+        if tunnel_ip == self.local_ip:
+            return
+        tun_name = 'gre-%s' % tunnel_id
+        self.tun_br.add_tunnel_port(tun_name, tunnel_ip)
+
+    def create_rpc_dispatcher(self):
+        '''Get the rpc dispatcher for this manager.
+
+        If a manager would like to set an rpc API version, or support more than
+        one class as the target of rpc messages, override this method.
+        '''
+        return dispatcher.RpcDispatcher([self])
+
+
 class OVSQuantumAgent(object):
 
-    def __init__(self, integ_br):
+    def __init__(self, integ_br, root_helper, polling_interval,
+                 reconnect_interval, rpc):
+        self.root_helper = root_helper
         self.setup_integration_br(integ_br)
+        self.polling_interval = polling_interval
+        self.reconnect_interval = reconnect_interval
+        self.rpc = rpc
+        if rpc:
+            self.setup_rpc(integ_br)
+
+    def setup_rpc(self, integ_br):
+        mac = utils.get_interface_mac(integ_br)
+        self.agent_id = '%s' % (mac.replace(":", ""))
+        self.topic = topics.AGENT
+        self.plugin_rpc = agent_rpc.PluginApi(topics.PLUGIN)
+
+        # RPC network init
+        self.context = context.RequestContext('quantum', 'quantum',
+                                              is_admin=False)
+        # Handle updates from service
+        self.callbacks = OVSRpcCallbacks(self.context, self.int_br)
+        self.dispatcher = self.callbacks.create_rpc_dispatcher()
+        # Define the listening consumers for the agent
+        consumers = [[topics.PORT, topics.UPDATE],
+                     [topics.NETWORK, topics.DELETE]]
+        self.connection = agent_rpc.create_consumers(self.dispatcher,
+                                                     self.topic,
+                                                     consumers)
 
     def port_bound(self, port, vlan_id):
-        self.int_br.set_db_attribute("Port", port.port_name, "tag",
-                str(vlan_id))
-        self.int_br.delete_flows(match="in_port=%s" % port.ofport)
+        self.int_br.set_db_attribute("Port", port.port_name,
+                                     "tag", str(vlan_id))
+        self.int_br.delete_flows(in_port=port.ofport)
 
     def port_unbound(self, port, still_exists):
         if still_exists:
             self.int_br.clear_db_attribute("Port", port.port_name, "tag")
 
     def setup_integration_br(self, integ_br):
-        self.int_br = OVSBridge(integ_br)
+        self.int_br = ovs_lib.OVSBridge(integ_br, self.root_helper)
         self.int_br.remove_all_flows()
         # switch all traffic using L2 learning
         self.int_br.add_flow(priority=1, actions="normal")
 
-    def daemon_loop(self, db):
+    def db_loop(self, db_connection_url):
+        '''Main processing loop for Non-Tunneling Agent.
+
+        :param options: database information - in the event need to reconnect
+        '''
         self.local_vlan_map = {}
         old_local_bindings = {}
         old_vif_ports = {}
+        db_connected = False
 
         while True:
+            if not db_connected:
+                time.sleep(self.reconnect_interval)
+                db = sqlsoup.SqlSoup(db_connection_url)
+                db_connected = True
+                LOG.info("Connecting to database \"%s\" on %s" %
+                         (db.engine.url.database, db.engine.url.host))
 
             all_bindings = {}
             try:
                 ports = db.ports.all()
-            except:
-                ports = []
+            except Exception, e:
+                LOG.info("Unable to get port bindings! Exception: %s" % e)
+                db_connected = False
+                continue
+
             for port in ports:
-                all_bindings[port.interface_id] = port
+                all_bindings[port.id] = port
 
             vlan_bindings = {}
             try:
                 vlan_binds = db.vlan_bindings.all()
-            except:
-                vlan_binds = []
+            except Exception, e:
+                LOG.info("Unable to get vlan bindings! Exception: %s" % e)
+                db_connected = False
+                continue
+
             for bind in vlan_binds:
                 vlan_bindings[bind.network_id] = bind.vlan_id
 
@@ -261,7 +240,8 @@ class OVSQuantumAgent(object):
                     self.int_br.set_db_attribute("Port", p.port_name, "tag",
                                                  DEAD_VLAN_TAG)
                     self.int_br.add_flow(priority=2,
-                           match="in_port=%s" % p.ofport, actions="drop")
+                                         in_port=p.ofport,
+                                         actions="drop")
 
                 old_b = old_local_bindings.get(p.vif_id, None)
                 new_b = new_local_bindings.get(p.vif_id, None)
@@ -269,10 +249,11 @@ class OVSQuantumAgent(object):
                 if old_b != new_b:
                     if old_b is not None:
                         LOG.info("Removing binding to net-id = %s for %s"
-                          % (old_b, str(p)))
+                                 % (old_b, str(p)))
                         self.port_unbound(p, True)
                         if p.vif_id in all_bindings:
-                            all_bindings[p.vif_id].op_status = OP_STATUS_DOWN
+                            all_bindings[p.vif_id].status = (
+                                constants.PORT_STATUS_DOWN)
                     if new_b is not None:
                         # If we don't have a binding we have to stick it on
                         # the dead vlan
@@ -280,9 +261,11 @@ class OVSQuantumAgent(object):
                         vlan_id = vlan_bindings.get(net_id, DEAD_VLAN_TAG)
                         self.port_bound(p, vlan_id)
                         if p.vif_id in all_bindings:
-                            all_bindings[p.vif_id].op_status = OP_STATUS_UP
-                        LOG.info("Adding binding to net-id = %s " \
-                             "for %s on vlan %s" % (new_b, str(p), vlan_id))
+                            all_bindings[p.vif_id].status = (
+                                constants.PORT_STATUS_ACTIVE)
+                        LOG.info(("Adding binding to net-id = %s "
+                                  "for %s on vlan %s") %
+                                 (new_b, str(p), vlan_id))
 
             for vif_id in old_vif_ports:
                 if vif_id not in new_vif_ports:
@@ -291,12 +274,116 @@ class OVSQuantumAgent(object):
                         old_b = old_local_bindings[vif_id]
                         self.port_unbound(old_vif_ports[vif_id], False)
                     if vif_id in all_bindings:
-                        all_bindings[vif_id].op_status = OP_STATUS_DOWN
+                        all_bindings[vif_id].status = (
+                            constants.PORT_STATUS_DOWN)
 
             old_vif_ports = new_vif_ports
             old_local_bindings = new_local_bindings
-            db.commit()
-            time.sleep(REFRESH_INTERVAL)
+            try:
+                db.commit()
+            except Exception, e:
+                LOG.info("Unable to commit to database! Exception: %s" % e)
+                db.rollback()
+                old_local_bindings = {}
+                old_vif_ports = {}
+
+            time.sleep(self.polling_interval)
+
+    def update_ports(self, registered_ports):
+        ports = self.int_br.get_vif_port_set()
+        if ports == registered_ports:
+            return
+        added = ports - registered_ports
+        removed = registered_ports - ports
+        return {'current': ports,
+                'added': added,
+                'removed': removed}
+
+    def treat_devices_added(self, devices):
+        resync = False
+        for device in devices:
+            LOG.info("Port %s added", device)
+            try:
+                details = self.plugin_rpc.get_device_details(self.context,
+                                                             device,
+                                                             self.agent_id)
+            except Exception as e:
+                LOG.debug("Unable to get port details for %s: %s", device, e)
+                resync = True
+                continue
+            if 'port_id' in details:
+                LOG.info("Port %s updated. Details: %s", device, details)
+                port = self.int_br.get_vif_port_by_id(details['port_id'])
+                if port:
+                    if details['admin_state_up']:
+                        self.port_bound(port, details['vlan_id'])
+                    else:
+                        self.port_unbound(port, True)
+            else:
+                LOG.debug("Device %s not defined on plugin", device)
+        return resync
+
+    def treat_devices_removed(self, devices):
+        resync = False
+        for device in devices:
+            LOG.info("Attachment %s removed", device)
+            try:
+                details = self.plugin_rpc.update_device_down(self.context,
+                                                             device,
+                                                             self.agent_id)
+            except Exception as e:
+                LOG.debug("port_removed failed for %s: %s", device, e)
+                resync = True
+            if details['exists']:
+                LOG.info("Port %s updated.", device)
+                # Nothing to do regarding local networking
+            else:
+                LOG.debug("Device %s not defined on plugin", device)
+        return resync
+
+    def process_network_ports(self, port_info):
+        resync_a = False
+        resync_b = False
+        if 'added' in port_info:
+            resync_a = self.treat_devices_added(port_info['added'])
+        if 'removed' in port_info:
+            resync_b = self.treat_devices_removed(port_info['removed'])
+        # If one of the above opertaions fails => resync with plugin
+        return (resync_a | resync_b)
+
+    def rpc_loop(self):
+        sync = True
+        ports = set()
+
+        while True:
+            start = time.time()
+            if sync:
+                LOG.info("Agent out of sync with plugin!")
+                ports.clear()
+                sync = False
+
+            port_info = self.update_ports(ports)
+
+            # notify plugin about port deltas
+            if port_info:
+                LOG.debug("Agent loop has new devices!")
+                # If treat devices fails - indicates must resync with plugin
+                sync = self.process_network_ports(port_info)
+                ports = port_info['current']
+
+            # sleep till end of polling interval
+            elapsed = (time.time() - start)
+            if (elapsed < self.polling_interval):
+                time.sleep(self.polling_interval - elapsed)
+            else:
+                LOG.debug("Loop iteration exceeded interval (%s vs. %s)!",
+                          self.polling_interval, elapsed)
+
+    def daemon_loop(self, db_connection_url):
+        if self.rpc:
+            self.rpc_loop()
+        else:
+            self.db_loop(db_connection_url)
 
 
 class OVSQuantumTunnelAgent(object):
@@ -323,19 +410,55 @@ class OVSQuantumTunnelAgent(object):
     # Upper bound on available vlans.
     MAX_VLAN_TAG = 4094
 
-    def __init__(self, integ_br, tun_br, remote_ip_file, local_ip):
+    def __init__(self, integ_br, tun_br, local_ip, root_helper,
+                 polling_interval, reconnect_interval, rpc):
         '''Constructor.
 
         :param integ_br: name of the integration bridge.
         :param tun_br: name of the tunnel bridge.
-        :param remote_ip_file: name of file containing list of hypervisor IPs.
-        :param local_ip: local IP address of this hypervisor.'''
+        :param local_ip: local IP address of this hypervisor.
+        :param root_helper: utility to use when running shell cmds.
+        :param polling_interval: interval (secs) to poll DB.
+        :param reconnect_internal: retry interval (secs) on DB error.
+        :param rpc: if True use RPC interface to interface with plugin.
+        '''
+        self.root_helper = root_helper
         self.available_local_vlans = set(
             xrange(OVSQuantumTunnelAgent.MIN_VLAN_TAG,
                    OVSQuantumTunnelAgent.MAX_VLAN_TAG))
         self.setup_integration_br(integ_br)
         self.local_vlan_map = {}
-        self.setup_tunnel_br(tun_br, remote_ip_file, local_ip)
+
+        self.polling_interval = polling_interval
+        self.reconnect_interval = reconnect_interval
+
+        self.local_ip = local_ip
+        self.tunnel_count = 0
+        self.setup_tunnel_br(tun_br)
+        self.rpc = rpc
+        if rpc:
+            self.setup_rpc(integ_br)
+
+    def setup_rpc(self, integ_br):
+        mac = utils.get_interface_mac(integ_br)
+        self.agent_id = '%s%s' % ('ovs', (mac.replace(":", "")))
+        self.topic = topics.AGENT
+        self.plugin_rpc = agent_rpc.PluginApi(topics.PLUGIN)
+
+        # RPC network init
+        self.context = context.RequestContext('quantum', 'quantum',
+                                              is_admin=False)
+        # Handle updates from service
+        self.callbacks = OVSRpcCallbacks(self.context, self.int_br,
+                                         self.local_ip, self.tun_br)
+        self.dispatcher = self.callbacks.create_rpc_dispatcher()
+        # Define the listening consumers for the agent
+        consumers = [[topics.PORT, topics.UPDATE],
+                     [topics.NETWORK, topics.DELETE],
+                     [config.TUNNEL, topics.UPDATE]]
+        self.connection = agent_rpc.create_consumers(self.dispatcher,
+                                                     self.topic,
+                                                     consumers)
 
     def provision_local_vlan(self, net_uuid, lsw_id):
         '''Provisions a local VLAN.
@@ -349,14 +472,14 @@ class OVSQuantumTunnelAgent(object):
         self.local_vlan_map[net_uuid] = LocalVLANMapping(lvid, lsw_id)
 
         # outbound
-        self.tun_br.add_flow(priority=4, match="in_port=%s,dl_vlan=%s" %
-                            (self.patch_int_ofport, lvid),
-                             actions="set_tunnel:%s,normal" % (lsw_id))
-
-        # inbound
-        self.tun_br.add_flow(priority=3, match="tun_id=%s" % lsw_id,
-                             actions="mod_vlan_vid:%s,output:%s" % (lvid,
-                             self.patch_int_ofport))
+        self.tun_br.add_flow(priority=4, in_port=self.patch_int_ofport,
+                             dl_vlan=lvid,
+                             actions="set_tunnel:%s,normal" % lsw_id)
+        # inbound bcast/mcast
+        self.tun_br.add_flow(priority=3, tun_id=lsw_id,
+                             dl_dst="01:00:00:00:00:00/01:00:00:00:00:00",
+                             actions="mod_vlan_vid:%s,output:%s" %
+                             (lvid, self.patch_int_ofport))
 
     def reclaim_local_vlan(self, net_uuid, lvm):
         '''Reclaim a local VLAN.
@@ -365,15 +488,16 @@ class OVSQuantumTunnelAgent(object):
         :param lvm: a LocalVLANMapping object that tracks (vlan, lsw_id,
             vif_ids) mapping.'''
         LOG.info("reclaming vlan = %s from net-id = %s" % (lvm.vlan, net_uuid))
-        self.tun_br.delete_flows(match="tun_id=%s" % lvm.lsw_id)
-        self.tun_br.delete_flows(match="dl_vlan=%s" % lvm.vlan)
+        self.tun_br.delete_flows(tun_id=lvm.lsw_id)
+        self.tun_br.delete_flows(dl_vlan=lvm.vlan)
         del self.local_vlan_map[net_uuid]
         self.available_local_vlans.add(lvm.vlan)
 
     def port_bound(self, port, net_uuid, lsw_id):
-        '''Bind port to net_uuid/lsw_id.
+        '''Bind port to net_uuid/lsw_id and install flow for inbound traffic
+        to vm.
 
-        :param port: a VifPort object.
+        :param port: a ovslib.VifPort object.
         :param net_uuid: the net_uuid this port is to be associated with.
         :param lsw_id: the logical switch this port is to be associated with.
         '''
@@ -382,9 +506,14 @@ class OVSQuantumTunnelAgent(object):
         lvm = self.local_vlan_map[net_uuid]
         lvm.vif_ids.append(port.vif_id)
 
+        # inbound unicast
+        self.tun_br.add_flow(priority=3, tun_id=lsw_id, dl_dst=port.vif_mac,
+                             actions="mod_vlan_vid:%s,normal" % lvm.vlan)
+
         self.int_br.set_db_attribute("Port", port.port_name, "tag",
                                      str(lvm.vlan))
-        self.int_br.delete_flows(match="in_port=%s" % port.ofport)
+        if int(port.ofport) != -1:
+            self.int_br.delete_flows(in_port=port.ofport)
 
     def port_unbound(self, port, net_uuid):
         '''Unbind port.
@@ -392,11 +521,11 @@ class OVSQuantumTunnelAgent(object):
         Removes corresponding local vlan mapping object if this is its last
         VIF.
 
-        :param port: a VifPort object.
+        :param port: a ovslib.VifPort object.
         :param net_uuid: the net_uuid this port is associated with.'''
         if net_uuid not in self.local_vlan_map:
-            LOG.info('port_unbound() net_uuid %s not in local_vlan_map'
-                     % net_uuid)
+            LOG.info('port_unbound() net_uuid %s not in local_vlan_map' %
+                     net_uuid)
             return
         lvm = self.local_vlan_map[net_uuid]
 
@@ -411,11 +540,10 @@ class OVSQuantumTunnelAgent(object):
     def port_dead(self, port):
         '''Once a port has no binding, put it on the "dead vlan".
 
-        :param port: a VifPort object.'''
+        :param port: a ovs_lib.VifPort object.'''
         self.int_br.set_db_attribute("Port", port.port_name, "tag",
                                      DEAD_VLAN_TAG)
-        self.int_br.add_flow(priority=2,
-                             match="in_port=%s" % port.ofport, actions="drop")
+        self.int_br.add_flow(priority=2, in_port=port.ofport, actions="drop")
 
     def setup_integration_br(self, integ_br):
         '''Setup the integration bridge.
@@ -423,7 +551,7 @@ class OVSQuantumTunnelAgent(object):
         Create patch ports and remove all existing flows.
 
         :param integ_br: the name of the integration bridge.'''
-        self.int_br = OVSBridge(integ_br)
+        self.int_br = ovs_lib.OVSBridge(integ_br, self.root_helper)
         self.int_br.delete_port("patch-tun")
         self.patch_tun_ofport = self.int_br.add_patch_port("patch-tun",
                                                            "patch-int")
@@ -431,248 +559,309 @@ class OVSQuantumTunnelAgent(object):
         # switch all traffic using L2 learning
         self.int_br.add_flow(priority=1, actions="normal")
 
-    def setup_tunnel_br(self, tun_br, remote_ip_file, local_ip):
+    def setup_tunnel_br(self, tun_br):
         '''Setup the tunnel bridge.
 
-        Reads in list of IP addresses. Creates GRE tunnels to each of these
-        addresses and then clears out existing flows. local_ip is the address
-        of the local node. A tunnel is not created to this IP address.
+        Creates tunnel bridge, and links it to the integration bridge
+        using a patch port.
 
-        :param tun_br: the name of the tunnel bridge.
-        :param remote_ip_file: path to file that contains list of destination
-            IP addresses.
-        :param local_ip: the ip address of this node.'''
-        self.tun_br = OVSBridge(tun_br)
+        :param tun_br: the name of the tunnel bridge.'''
+        self.tun_br = ovs_lib.OVSBridge(tun_br, self.root_helper)
         self.tun_br.reset_bridge()
         self.patch_int_ofport = self.tun_br.add_patch_port("patch-int",
                                                            "patch-tun")
-        try:
-            with open(remote_ip_file, 'r') as f:
-                remote_ip_list = f.readlines()
-                clean_ips = (x.rstrip() for x in remote_ip_list)
-                tunnel_ips = (x for x in clean_ips if x != local_ip and x)
-                for i, remote_ip in enumerate(tunnel_ips):
-                    self.tun_br.add_tunnel_port("gre-" + str(i), remote_ip)
-        except Exception, e:
-            LOG.error("Error configuring tunnels: '%s' %s"
-                      % (remote_ip_file, str(e)))
-            raise
-
         self.tun_br.remove_all_flows()
-        # default drop
         self.tun_br.add_flow(priority=1, actions="drop")
 
-    def get_db_port_bindings(self, db):
-        '''Get database port bindings from central Quantum database.
+    def manage_tunnels(self, tunnel_ips, old_tunnel_ips, db):
+        if self.local_ip in tunnel_ips:
+            tunnel_ips.remove(self.local_ip)
+        else:
+            db.tunnel_ips.insert(ip_address=self.local_ip)
 
-        The central quantum database 'ovs_quantum' resides on the openstack
-        mysql server.
+        new_tunnel_ips = tunnel_ips - old_tunnel_ips
+        if new_tunnel_ips:
+            LOG.info("adding tunnels to: %s" % new_tunnel_ips)
+            for ip in new_tunnel_ips:
+                tun_name = "gre-" + str(self.tunnel_count)
+                self.tun_br.add_tunnel_port(tun_name, ip)
+                self.tunnel_count += 1
 
-        :returns: a dictionary containing port bindings.'''
-        ports = []
-        try:
-            ports = db.ports.all()
-        except Exception, e:
-            LOG.info("Exception accessing db.ports: %s" % e)
+    def rollback_until_success(self, db):
+        while True:
+            time.sleep(self.reconnect_interval)
+            try:
+                db.rollback()
+                break
+            except:
+                LOG.exception("Problem connecting to database")
 
-        return dict([(port.interface_id, port) for port in ports])
+    def db_loop(self, db_connection_url):
+        '''Main processing loop for Tunneling Agent.
 
-    def get_db_vlan_bindings(self, db):
-        '''Get database vlan bindings from central Quantum database.
-
-        The central quantum database 'ovs_quantum' resides on the openstack
-        mysql server.
-
-        :returns: a dictionary containing vlan bindings.'''
-        lsw_id_binds = []
-        try:
-            lsw_id_binds.extend(db.vlan_bindings.all())
-        except Exception, e:
-            LOG.info("Exception accessing db.vlan_bindings: %s" % e)
-
-        return dict([(bind.network_id, bind.vlan_id)
-            for bind in lsw_id_binds])
-
-    def daemon_loop(self, db):
-        '''Main processing loop (not currently used).
-
-        :param db: reference to database layer.
+        :param options: database information - in the event need to reconnect
         '''
         old_local_bindings = {}
         old_vif_ports = {}
+        old_tunnel_ips = set()
+
+        db = sqlsoup.SqlSoup(db_connection_url)
+        LOG.info("Connecting to database \"%s\" on %s" %
+                 (db.engine.url.database, db.engine.url.host))
 
         while True:
-            # Get bindings from db.
-            all_bindings = self.get_db_port_bindings(db)
-            all_bindings_vif_port_ids = set(all_bindings.keys())
-            lsw_id_bindings = self.get_db_vlan_bindings(db)
+            try:
+                all_bindings = dict((p.id, Port(p))
+                                    for p in db.ports.all())
+                all_bindings_vif_port_ids = set(all_bindings)
+                lsw_id_bindings = dict((bind.network_id, bind.vlan_id)
+                                       for bind in db.vlan_bindings.all())
 
-            # Get bindings from OVS bridge.
-            vif_ports = self.int_br.get_vif_ports()
-            new_vif_ports = dict([(p.vif_id, p) for p in vif_ports])
-            new_vif_ports_ids = set(new_vif_ports.keys())
+                tunnel_ips = set(x.ip_address for x in db.tunnel_ips.all())
+                self.manage_tunnels(tunnel_ips, old_tunnel_ips, db)
 
-            old_vif_ports_ids = set(old_vif_ports.keys())
-            dead_vif_ports_ids = new_vif_ports_ids - all_bindings_vif_port_ids
-            dead_vif_ports = [new_vif_ports[p] for p in dead_vif_ports_ids]
-            disappeared_vif_ports_ids = old_vif_ports_ids - new_vif_ports_ids
-            new_local_bindings_ids = all_bindings_vif_port_ids.intersection(
-                new_vif_ports_ids)
-            new_local_bindings = dict([(p, all_bindings.get(p))
-                for p in new_vif_ports_ids])
-            new_bindings = set((p, old_local_bindings.get(p),
-                new_local_bindings.get(p)) for p in new_vif_ports_ids)
-            changed_bindings = set([b for b in new_bindings
-                if b[2] != b[1]])
+                # Get bindings from OVS bridge.
+                vif_ports = self.int_br.get_vif_ports()
+                new_vif_ports = dict([(p.vif_id, p) for p in vif_ports])
+                new_vif_ports_ids = set(new_vif_ports.keys())
 
-            LOG.debug('all_bindings: %s' % all_bindings)
-            LOG.debug('lsw_id_bindings: %s' % lsw_id_bindings)
-            LOG.debug('old_vif_ports_ids: %s' % old_vif_ports_ids)
-            LOG.debug('dead_vif_ports_ids: %s' % dead_vif_ports_ids)
-            LOG.debug('old_vif_ports_ids: %s' % old_vif_ports_ids)
-            LOG.debug('new_local_bindings_ids: %s' % new_local_bindings_ids)
-            LOG.debug('new_local_bindings: %s' % new_local_bindings)
-            LOG.debug('new_bindings: %s' % new_bindings)
-            LOG.debug('changed_bindings: %s' % changed_bindings)
+                old_vif_ports_ids = set(old_vif_ports.keys())
+                dead_vif_ports_ids = (new_vif_ports_ids -
+                                      all_bindings_vif_port_ids)
+                dead_vif_ports = [new_vif_ports[p] for p in dead_vif_ports_ids]
+                disappeared_vif_ports_ids = (old_vif_ports_ids -
+                                             new_vif_ports_ids)
+                new_local_bindings_ids = (all_bindings_vif_port_ids.
+                                          intersection(new_vif_ports_ids))
+                new_local_bindings = dict([(p, all_bindings.get(p))
+                                           for p in new_vif_ports_ids])
+                new_bindings = set(
+                    (p, old_local_bindings.get(p),
+                     new_local_bindings.get(p)) for p in new_vif_ports_ids)
+                changed_bindings = set([b for b in new_bindings
+                                        if b[2] != b[1]])
 
-            # Take action.
-            for p in dead_vif_ports:
-                LOG.info("No quantum binding for port " + str(p)
-                         + "putting on dead vlan")
-                self.port_dead(p)
+                LOG.debug('all_bindings: %s', all_bindings)
+                LOG.debug('lsw_id_bindings: %s', lsw_id_bindings)
+                LOG.debug('new_vif_ports_ids: %s', new_vif_ports_ids)
+                LOG.debug('dead_vif_ports_ids: %s', dead_vif_ports_ids)
+                LOG.debug('old_vif_ports_ids: %s', old_vif_ports_ids)
+                LOG.debug('new_local_bindings_ids: %s',
+                          new_local_bindings_ids)
+                LOG.debug('new_local_bindings: %s', new_local_bindings)
+                LOG.debug('new_bindings: %s', new_bindings)
+                LOG.debug('changed_bindings: %s', changed_bindings)
 
-            for b in changed_bindings:
-                port_id, old_port, new_port = b
-                p = new_vif_ports[port_id]
-                if old_port:
-                    old_net_uuid = old_port.network_id
-                    LOG.info("Removing binding to net-id = " +
-                             old_net_uuid + " for " + str(p)
-                             + " added to dead vlan")
-                    self.port_unbound(p, old_net_uuid)
-                    if not new_port:
-                        self.port_dead(p)
+                # Take action.
+                for p in dead_vif_ports:
+                    LOG.info("No quantum binding for port " + str(p)
+                             + "putting on dead vlan")
+                    self.port_dead(p)
 
-                if new_port:
-                    new_net_uuid = new_port.network_id
-                    if new_net_uuid not in lsw_id_bindings:
-                        LOG.warn("No ls-id binding found for net-id '%s'" %
-                            new_net_uuid)
-                        continue
+                for b in changed_bindings:
+                    port_id, old_port, new_port = b
+                    p = new_vif_ports[port_id]
+                    if old_port:
+                        old_net_uuid = old_port.network_id
+                        LOG.info("Removing binding to net-id = " +
+                                 old_net_uuid + " for " + str(p)
+                                 + " added to dead vlan")
+                        self.port_unbound(p, old_net_uuid)
+                        if p.vif_id in all_bindings:
+                            all_bindings[p.vif_id].status = (
+                                constants.PORT_STATUS_DOWN)
+                        if not new_port:
+                            self.port_dead(p)
 
-                    lsw_id = lsw_id_bindings[new_net_uuid]
-                    try:
+                    if new_port:
+                        new_net_uuid = new_port.network_id
+                        if new_net_uuid not in lsw_id_bindings:
+                            LOG.warn("No ls-id binding found for net-id '%s'" %
+                                     new_net_uuid)
+                            continue
+
+                        lsw_id = lsw_id_bindings[new_net_uuid]
                         self.port_bound(p, new_net_uuid, lsw_id)
-                        LOG.info("Port " + str(p) + " on net-id = "
-                                 + new_net_uuid + " bound to " +
-                                 str(self.local_vlan_map[new_net_uuid]))
-                    except Exception, e:
-                        LOG.info("Unable to bind Port " + str(p) +
-                            " on netid = " + new_net_uuid + " to "
-                            + str(self.local_vlan_map[new_net_uuid]))
+                        all_bindings[p.vif_id].status = (
+                            constants.PORT_STATUS_ACTIVE)
+                        LOG.info("Port %s on net-id = %s bound to %s " % (
+                                 str(p), new_net_uuid,
+                                 str(self.local_vlan_map[new_net_uuid])))
 
-            for vif_id in disappeared_vif_ports_ids:
-                LOG.info("Port Disappeared: " + vif_id)
-                old_port = old_local_bindings.get(vif_id)
-                if old_port:
-                    try:
+                for vif_id in disappeared_vif_ports_ids:
+                    LOG.info("Port Disappeared: " + vif_id)
+                    if vif_id in all_bindings:
+                        all_bindings[vif_id].status = (
+                            constants.PORT_STATUS_DOWN)
+                    old_port = old_local_bindings.get(vif_id)
+                    if old_port:
                         self.port_unbound(old_vif_ports[vif_id],
                                           old_port.network_id)
-                    except Exception:
-                        LOG.info("Unable to unbind Port " + str(p) +
-                                 " on net-id = " + old_port.network_uuid)
+                # commit any DB changes and expire
+                # data loaded from the database
+                db.commit()
 
-            old_vif_ports = new_vif_ports
-            old_local_bindings = new_local_bindings
-            time.sleep(REFRESH_INTERVAL)
+                # sleep and re-initialize state for next pass
+                time.sleep(self.polling_interval)
+                old_tunnel_ips = tunnel_ips
+                old_vif_ports = new_vif_ports
+                old_local_bindings = new_local_bindings
+
+            except:
+                LOG.exception("Main-loop Exception:")
+                self.rollback_until_success(db)
+
+    def update_ports(self, registered_ports):
+        ports = self.int_br.get_vif_port_set()
+        if ports == registered_ports:
+            return
+        added = ports - registered_ports
+        removed = registered_ports - ports
+        return {'current': ports,
+                'added': added,
+                'removed': removed}
+
+    def treat_devices_added(self, devices):
+        resync = False
+        for device in devices:
+            LOG.info("Port %s added", device)
+            try:
+                details = self.plugin_rpc.get_device_details(self.context,
+                                                             device,
+                                                             self.agent_id)
+            except Exception as e:
+                LOG.debug("Unable to get port details for %s: %s", device, e)
+                resync = True
+                continue
+            if 'port_id' in details:
+                LOG.info("Port %s updated. Details: %s", device, details)
+                port = self.int_br.get_vif_port_by_id(details['port_id'])
+                if port:
+                    if details['admin_state_up']:
+                        self.port_bound(port, details['network_id'],
+                                        details['vlan_id'])
+                    else:
+                        self.port_unbound(port, details['network_id'])
+            else:
+                LOG.debug("Device %s not defined on plugin", device)
+        return resync
+
+    def treat_devices_removed(self, devices):
+        resync = False
+        for device in devices:
+            LOG.info("Attachment %s removed", device)
+            try:
+                details = self.plugin_rpc.update_device_down(self.context,
+                                                             device,
+                                                             self.agent_id)
+            except Exception as e:
+                LOG.debug("port_removed failed for %s: %s", device, e)
+                resync = True
+            if details['exists']:
+                LOG.info("Port %s updated.", device)
+                # Nothing to do regarding local networking
+            else:
+                LOG.debug("Device %s not defined on plugin", device)
+        return resync
+
+    def process_network_ports(self, port_info):
+        resync_a = False
+        resync_b = False
+        if 'added' in port_info:
+            resync_a = self.treat_devices_added(port_info['added'])
+        if 'removed' in port_info:
+            resync_b = self.treat_devices_removed(port_info['removed'])
+        # If one of the above opertaions fails => resync with plugin
+        return (resync_a | resync_b)
+
+    def tunnel_sync(self):
+        resync = False
+        try:
+            details = self.plugin_rpc.tunnel_sync(self.context, self.local_ip)
+            tunnels = details['tunnels']
+            for tunnel in tunnels:
+                if self.local_ip != tunnel['ip_address']:
+                    tun_name = 'gre-%s' % tunnel['id']
+                    self.tun_br.add_tunnel_port(tun_name, tunnel['ip_address'])
+        except Exception as e:
+            LOG.debug("Unable to sync tunnel IP %s: %s", self.local_ip, e)
+            resync = True
+        return resync
+
+    def rpc_loop(self):
+        sync = True
+        ports = set()
+        tunnel_sync = True
+
+        while True:
+            start = time.time()
+            if sync:
+                LOG.info("Agent out of sync with plugin!")
+                ports.clear()
+                sync = False
+
+            # Notify the plugin of tunnel IP
+            if tunnel_sync:
+                LOG.info("Agent tunnel out of sync with plugin!")
+                tunnel_sync = self.tunnel_sync()
+
+            port_info = self.update_ports(ports)
+
+            # notify plugin about port deltas
+            if port_info:
+                LOG.debug("Agent loop has new devices!")
+                # If treat devices fails - indicates must resync with plugin
+                sync = self.process_network_ports(port_info)
+                ports = port_info['current']
+
+            # sleep till end of polling interval
+            elapsed = (time.time() - start)
+            if (elapsed < self.polling_interval):
+                time.sleep(self.polling_interval - elapsed)
+            else:
+                LOG.debug("Loop iteration exceeded interval (%s vs. %s)!",
+                          self.polling_interval, elapsed)
+
+    def daemon_loop(self, db_connection_url):
+        if self.rpc:
+            self.rpc_loop()
+        else:
+            self.db_loop(db_connection_url)
 
 
 def main():
-    usagestr = "%prog [OPTIONS] <config file>"
-    parser = OptionParser(usage=usagestr)
-    parser.add_option("-v", "--verbose", dest="verbose",
-      action="store_true", default=False, help="turn on verbose logging")
+    cfg.CONF(args=sys.argv, project='quantum')
 
-    options, args = parser.parse_args()
-
-    if options.verbose:
-        LOG.basicConfig(level=LOG.DEBUG)
-    else:
-        LOG.basicConfig(level=LOG.WARN)
-
-    if len(args) != 1:
-        parser.print_help()
-        sys.exit(1)
-
-    config_file = args[0]
-    config = ConfigParser.ConfigParser()
-    try:
-        config.read(config_file)
-    except Exception, e:
-        LOG.error("Unable to parse config file \"%s\": %s"
-                  % (config_file, str(e)))
-        raise e
+    # (TODO) gary - swap with common logging
+    logging_config.setup_logging(cfg.CONF)
 
     # Determine which agent type to use.
-    enable_tunneling = False
-    try:
-        enable_tunneling = config.getboolean("OVS", "enable-tunneling")
-    except Exception, e:
-        pass
-
-    # Get common parameters.
-    try:
-        integ_br = config.get("OVS", "integration-bridge")
-        if not len(integ_br):
-            raise Exception('Empty integration-bridge in configuration file.')
-
-        db_connection_url = config.get("DATABASE", "sql_connection")
-        if not len(db_connection_url):
-            raise Exception('Empty db_connection_url in configuration file.')
-
-    except Exception, e:
-        LOG.error("Error parsing common params in config_file: '%s': %s"
-                  % (config_file, str(e)))
-        sys.exit(1)
+    enable_tunneling = cfg.CONF.OVS.enable_tunneling
+    integ_br = cfg.CONF.OVS.integration_bridge
+    db_connection_url = cfg.CONF.DATABASE.sql_connection
+    polling_interval = cfg.CONF.AGENT.polling_interval
+    reconnect_interval = cfg.CONF.DATABASE.reconnect_interval
+    root_helper = cfg.CONF.AGENT.root_helper
+    rpc = cfg.CONF.AGENT.rpc
 
     if enable_tunneling:
         # Get parameters for OVSQuantumTunnelAgent
-        try:
-            # Mandatory parameter.
-            tun_br = config.get("OVS", "tunnel-bridge")
-            if not len(tun_br):
-                raise Exception('Empty tunnel-bridge in configuration file.')
-
-            # Mandatory parameter.
-            remote_ip_file = config.get("OVS", "remote-ip-file")
-            if not len(remote_ip_file):
-                raise Exception('Empty remote-ip-file in configuration file.')
-
-            # Mandatory parameter.
-            remote_ip_file = config.get("OVS", "remote-ip-file")
-            local_ip = config.get("OVS", "local-ip")
-            if not len(local_ip):
-                raise Exception('Empty local-ip in configuration file.')
-        except Exception, e:
-            LOG.error("Error parsing tunnel params in config_file: '%s': %s"
-                      % (config_file, str(e)))
-            sys.exit(1)
-
-        plugin = OVSQuantumTunnelAgent(integ_br, tun_br, remote_ip_file,
-                                       local_ip)
+        tun_br = cfg.CONF.OVS.tunnel_bridge
+        # Mandatory parameter.
+        local_ip = cfg.CONF.OVS.local_ip
+        plugin = OVSQuantumTunnelAgent(integ_br, tun_br, local_ip, root_helper,
+                                       polling_interval, reconnect_interval,
+                                       rpc)
     else:
         # Get parameters for OVSQuantumAgent.
-        plugin = OVSQuantumAgent(integ_br)
+        plugin = OVSQuantumAgent(integ_br, root_helper, polling_interval,
+                                 reconnect_interval, rpc)
 
     # Start everything.
-    options = {"sql_connection": db_connection_url}
-    db = SqlSoup(options["sql_connection"])
-    LOG.info("Connecting to database \"%s\" on %s" %
-             (db.engine.url.database, db.engine.url.host))
-
-    plugin.daemon_loop(db)
+    plugin.daemon_loop(db_connection_url)
 
     sys.exit(0)
 
 if __name__ == "__main__":
+    eventlet.monkey_patch()
     main()

@@ -1,4 +1,3 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 # Copyright 2011 Cisco Systems, Inc.  All rights reserved.
@@ -17,21 +16,20 @@
 #
 # @author: Sumit Naiksatam, Cisco Systems, Inc.
 #
-"""
 
 import logging
 
-from quantum.common import exceptions as exc
-from quantum.common import utils
-from quantum.plugins.cisco.common import cisco_exceptions as cexc
+from quantum.openstack.common import importutils
 from quantum.plugins.cisco.common import cisco_constants as const
 from quantum.plugins.cisco.common import cisco_credentials as cred
+from quantum.plugins.cisco.common import cisco_exceptions as cexc
 from quantum.plugins.cisco.common import cisco_utils as cutil
 from quantum.plugins.cisco.db import api as db
 from quantum.plugins.cisco.db import l2network_db as cdb
 from quantum.plugins.cisco.db import ucs_db as udb
 from quantum.plugins.cisco.l2device_plugin_base import L2DevicePluginBase
 from quantum.plugins.cisco.ucs import cisco_ucs_configuration as conf
+
 
 LOG = logging.getLogger(__name__)
 
@@ -40,7 +38,7 @@ class UCSVICPlugin(L2DevicePluginBase):
     """UCS Device Plugin"""
 
     def __init__(self):
-        self._driver = utils.import_object(conf.UCSM_DRIVER)
+        self._driver = importutils.import_object(conf.UCSM_DRIVER)
         LOG.debug("Loaded driver %s\n" % conf.UCSM_DRIVER)
         # TODO (Sumit) Make the counter per UCSM
         self._port_profile_counter = 0
@@ -115,8 +113,8 @@ class UCSVICPlugin(L2DevicePluginBase):
             ports_on_net.append(new_port)
 
         new_network = cutil.make_net_dict(network[const.UUID],
-                                              network[const.NETWORKNAME],
-                                              ports_on_net)
+                                          network[const.NETWORKNAME],
+                                          ports_on_net)
 
         return new_network
 
@@ -166,16 +164,16 @@ class UCSVICPlugin(L2DevicePluginBase):
                                                      conf.DEFAULT_VLAN_NAME,
                                                      conf.DEFAULT_VLAN_ID)
         profile_name = new_port_profile[const.PROFILE_NAME]
-        rsvd_nic_dict = ucs_inventory.\
-                reserve_blade_interface(self._ucsm_ip, chassis_id,
-                                        blade_id, blade_data_dict,
-                                        tenant_id, port_id,
-                                        profile_name)
+        rsvd_nic_dict = ucs_inventory.reserve_blade_interface(
+            self._ucsm_ip, chassis_id,
+            blade_id, blade_data_dict,
+            tenant_id, port_id,
+            profile_name)
         port_binding = udb.update_portbinding(port_id,
-                                       portprofile_name=profile_name,
-                                       vlan_name=conf.DEFAULT_VLAN_NAME,
-                                       vlan_id=conf.DEFAULT_VLAN_ID,
-                                       qos=qos)
+                                              portprofile_name=profile_name,
+                                              vlan_name=conf.DEFAULT_VLAN_NAME,
+                                              vlan_id=conf.DEFAULT_VLAN_ID,
+                                              qos=qos)
         return port_binding
 
     def delete_port(self, tenant_id, net_id, port_id, **kwargs):
@@ -254,8 +252,8 @@ class UCSVICPlugin(L2DevicePluginBase):
         return udb.update_portbinding(port_id, vlan_name=new_vlan_name,
                                       vlan_id=conf.DEFAULT_VLAN_ID)
 
-    def create_multiport(self, tenant_id, net_id_list, ports_num, port_id_list,
-                     **kwargs):
+    def create_multiport(self, tenant_id, net_id_list, ports_num,
+                         port_id_list, **kwargs):
         """
         Creates a port on the specified Virtual Network.
         """
@@ -269,21 +267,22 @@ class UCSVICPlugin(L2DevicePluginBase):
         blade_data_dict = least_rsvd_blade_dict[const.LEAST_RSVD_BLADE_DATA]
         port_binding_list = []
         for port_id, net_id in zip(port_id_list, net_id_list):
-            new_port_profile = \
-                    self._create_port_profile(tenant_id, net_id, port_id,
-                                              conf.DEFAULT_VLAN_NAME,
-                                              conf.DEFAULT_VLAN_ID)
+            new_port_profile = self._create_port_profile(
+                tenant_id, net_id, port_id,
+                conf.DEFAULT_VLAN_NAME,
+                conf.DEFAULT_VLAN_ID)
             profile_name = new_port_profile[const.PROFILE_NAME]
-            rsvd_nic_dict = ucs_inventory.\
-                    reserve_blade_interface(self._ucsm_ip, chassis_id,
-                                            blade_id, blade_data_dict,
-                                            tenant_id, port_id,
-                                            profile_name)
-            port_binding = udb.update_portbinding(port_id,
-                                           portprofile_name=profile_name,
-                                           vlan_name=conf.DEFAULT_VLAN_NAME,
-                                           vlan_id=conf.DEFAULT_VLAN_ID,
-                                           qos=qos)
+            rsvd_nic_dict = ucs_inventory.reserve_blade_interface(
+                self._ucsm_ip, chassis_id,
+                blade_id, blade_data_dict,
+                tenant_id, port_id,
+                profile_name)
+            port_binding = udb.update_portbinding(
+                port_id,
+                portprofile_name=profile_name,
+                vlan_name=conf.DEFAULT_VLAN_NAME,
+                vlan_id=conf.DEFAULT_VLAN_ID,
+                qos=qos)
             port_binding_list.append(port_binding)
         return port_binding_list
 
@@ -298,8 +297,7 @@ class UCSVICPlugin(L2DevicePluginBase):
 
     def _get_profile_name(self, port_id):
         """Returns the port profile name based on the port UUID"""
-        profile_name = conf.PROFILE_NAME_PREFIX \
-                + cutil.get16ByteUUID(port_id)
+        profile_name = conf.PROFILE_NAME_PREFIX + cutil.get16ByteUUID(port_id)
         return profile_name
 
     def _get_vlan_name_for_network(self, tenant_id, network_id):

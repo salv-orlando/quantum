@@ -21,20 +21,22 @@ Utility methods for working with WSGI servers
 
 import logging
 import sys
+from xml.dom import minidom
+from xml.parsers import expat
+
 import eventlet.wsgi
 eventlet.patcher.monkey_patch(all=False, socket=True)
+from lxml import etree
 import routes.middleware
 import webob.dec
 import webob.exc
 
-from lxml import etree
-from xml.dom import minidom
-from xml.parsers import expat
-
 from quantum.common import exceptions as exception
-from quantum.common import utils
+from quantum import context
+from quantum.openstack.common import jsonutils
 
-LOG = logging.getLogger('quantum.common.wsgi')
+
+LOG = logging.getLogger(__name__)
 
 
 class WritableLogger(object):
@@ -87,6 +89,33 @@ class Middleware(object):
     simply call its wrapped app, or you can override __call__ to customize its
     behavior.
     """
+
+    @classmethod
+    def factory(cls, global_config, **local_config):
+        """Used for paste app factories in paste.deploy config files.
+
+        Any local configuration (that is, values under the [filter:APPNAME]
+        section of the paste config) will be passed into the `__init__` method
+        as kwargs.
+
+        A hypothetical configuration would look like:
+
+            [filter:analytics]
+            redis_host = 127.0.0.1
+            paste.filter_factory = nova.api.analytics:Analytics.factory
+
+        which would result in a call to the `Analytics` class as
+
+            import nova.api.analytics
+            analytics.Analytics(app_from_paste, redis_host='127.0.0.1')
+
+        You could of course re-implement the `factory` method in subclasses,
+        but using the kwarg passing it shouldn't be necessary.
+
+        """
+        def _factory(app):
+            return cls(app, **local_config)
+        return _factory
 
     def __init__(self, application):
         self.application = application
@@ -152,6 +181,12 @@ class Request(webob.Request):
             return type
         return None
 
+    @property
+    def context(self):
+        if 'quantum.context' not in self.environ:
+            self.environ['quantum.context'] = context.get_admin_context()
+        return self.environ['quantum.context']
+
 
 class ActionDispatcher(object):
     """Maps method name to local methods through action name."""
@@ -180,7 +215,7 @@ class JSONDictSerializer(DictSerializer):
     """Default JSON request body serialization"""
 
     def default(self, data):
-        return utils.dumps(data)
+        return jsonutils.dumps(data)
 
 
 class XMLDictSerializer(DictSerializer):
@@ -202,6 +237,12 @@ class XMLDictSerializer(DictSerializer):
         node = self._to_xml_node(doc, self.metadata, root_key, data[root_key])
 
         return self.to_xml_string(node)
+
+    def __call__(self, data):
+        # Provides a migration path to a cleaner WSGI layer, this
+        # "default" stuff and extreme extensibility isn't being used
+        # like originally intended
+        return self.default(data)
 
     def to_xml_string(self, node, has_atom=False):
         self._add_xmlns(node, has_atom)
@@ -308,8 +349,8 @@ class ResponseSerializer(object):
         }
         self.body_serializers.update(body_serializers or {})
 
-        self.headers_serializer = headers_serializer or \
-                                    ResponseHeadersSerializer()
+        self.headers_serializer = (headers_serializer or
+                                   ResponseHeaderSerializer())
 
     def serialize(self, response_data, content_type, action='default'):
         """Serialize a dict into a string and wrap in a wsgi.Request object.
@@ -353,7 +394,7 @@ class JSONDeserializer(TextDeserializer):
 
     def _from_json(self, datastring):
         try:
-            return utils.loads(datastring)
+            return jsonutils.loads(datastring)
         except ValueError:
             msg = _("cannot understand JSON")
             raise exception.MalformedRequestBody(reason=msg)
@@ -426,6 +467,10 @@ class XMLDeserializer(TextDeserializer):
     def default(self, datastring):
         return {'body': self._from_xml(datastring)}
 
+    def __call__(self, datastring):
+        # Adding a migration path to allow us to remove unncessary classes
+        return self.default(datastring)
+
 
 class RequestHeadersDeserializer(ActionDispatcher):
     """Default request headers deserializer"""
@@ -447,8 +492,8 @@ class RequestDeserializer(object):
         }
         self.body_deserializers.update(body_deserializers or {})
 
-        self.headers_deserializer = headers_deserializer or \
-                                        RequestHeadersDeserializer()
+        self.headers_deserializer = (headers_deserializer or
+                                     RequestHeadersDeserializer())
 
     def deserialize(self, request):
         """Extract necessary pieces of the request.
@@ -729,7 +774,7 @@ class Resource(Application):
         """WSGI method that controls (de)serialization and method dispatch."""
 
         LOG.info("%(method)s %(url)s" % {"method": request.method,
-                                          "url": request.url})
+                                         "url": request.url})
 
         try:
             action, args, accept = self.deserializer.deserialize(request)
@@ -749,6 +794,12 @@ class Resource(Application):
         except webob.exc.HTTPException as ex:
             LOG.info(_("HTTP exception thrown: %s"), unicode(ex))
             action_result = Fault(ex,
+                                  self._xmlns,
+                                  self._fault_body_function)
+        except Exception:
+            LOG.exception("Internal error")
+            # Do not include the traceback to avoid returning it to clients.
+            action_result = Fault(webob.exc.HTTPServerError(),
                                   self._xmlns,
                                   self._fault_body_function)
 
@@ -850,14 +901,21 @@ class Controller(object):
         arg_dict['request'] = req
         result = method(**arg_dict)
 
-        if isinstance(result, dict):
-            content_type = req.best_match_content_type()
-            default_xmlns = self.get_default_xmlns(req)
-            body = self._serialize(result, content_type, default_xmlns)
+        if isinstance(result, dict) or result is None:
+            if result is None:
+                status = 204
+                content_type = ''
+                body = None
+            else:
+                status = 200
+                content_type = req.best_match_content_type()
+                default_xmlns = self.get_default_xmlns(req)
+                body = self._serialize(result, content_type, default_xmlns)
 
-            response = webob.Response()
-            response.headers['Content-Type'] = content_type
-            response.body = str(body)
+            response = webob.Response(status=status,
+                                      content_type=content_type,
+                                      body=body)
+
             msg_dict = dict(url=req.url, status=response.status_int)
             msg = _("%(url)s returned with HTTP %(status)d") % msg_dict
             LOG.debug(msg)
@@ -949,7 +1007,7 @@ class Serializer(object):
             raise exception.InvalidContentType(content_type=content_type)
 
     def _from_json(self, datastring):
-        return utils.loads(datastring)
+        return jsonutils.loads(datastring)
 
     def _from_xml(self, datastring):
         xmldata = self.metadata.get('application/xml', {})
@@ -980,7 +1038,7 @@ class Serializer(object):
             return result
 
     def _to_json(self, data):
-        return utils.dumps(data)
+        return jsonutils.dumps(data)
 
     def _to_xml(self, data):
         metadata = self.metadata.get('application/xml', {})
