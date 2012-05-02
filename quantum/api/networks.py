@@ -50,19 +50,36 @@ class Controller(common.QuantumController):
 
     def _item(self, request, tenant_id, network_id,
               net_details=True, port_details=False):
-        # We expect get_network_details to return information
-        # concerning logical ports as well.
-        network = self._plugin.get_network_details(
-                            tenant_id, network_id)
-        # Doing this in the API is inefficient
-        # TODO(salvatore-orlando): This should be fixed with Bug #834012
-        # Don't pass filter options
-        ports_data = None
-        if port_details:
-            port_list = self._plugin.get_all_ports(tenant_id, network_id)
-            ports_data = [self._plugin.get_port_details(
-                                   tenant_id, network_id, port['port-id'])
-                      for port in port_list]
+        # XXX UP STREAM WARNING:
+        # This function depends on
+        # commit:1494b0e293457bfc2a4fc2c8edbb9308339e4678
+        # from the nvp quantum plugin which adds new options to
+        # get_all_ports() and get_network_details(), which subsequently
+        # breaks compatibility with plugins that do not support these new
+        # options.
+        network = {}
+        ports_data = []
+        if not port_details:
+            network = self._plugin.get_network_details(
+                                tenant_id, network_id,
+                                filter_opts={"network": True})
+        else:
+            # port_details is a super set and we can get all the info
+            # from just get_all_ports
+            ports_verbose = self._plugin.get_all_ports(
+                               tenant_id, network_id, verbose=True)
+            # construct full network info whether or not net_details is
+            # true or false, since that flag will just control what will
+            # be read, doesn't matter if we always populate full
+            network['net-id'] = network_id
+            network['net-name'] = ports_verbose['lswitch-display-name']
+            # construct the ports_data now
+            ports_list = ports_verbose['ids']
+            for p in port_list:
+                port_data = {'port-id': p['port-id'],
+                             'attachment': p['vif-uuid'],
+                             'port-state': p['admin-status']}
+                ports_data.append(port_data)
         builder = networks_view.get_view_builder(request, self.version)
         result = builder.build(network, net_details,
                                ports_data, port_details)['network']
