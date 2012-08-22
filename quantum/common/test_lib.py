@@ -160,7 +160,7 @@ class _NullColorizer(object):
 
 
 class QuantumTestResult(result.TextTestResult):
-    def __init__(self, *args, **kw):
+    def __init__(self, plugin, *args, **kw):
         result.TextTestResult.__init__(self, *args, **kw)
         self._last_case = None
         self.colorizer = None
@@ -249,16 +249,29 @@ class QuantumTestResult(result.TextTestResult):
                 '    %s' % str(test.test).ljust(60))
             self.stream.flush()
 
+    def printSummary(self, start, stop):
+        plugin_name = (test_config.get(
+            'plugin_name_v2',
+            'quantum.db.db_base_plugin_v2.QuantumDBpluginV2'))
+        self.stream.writeln("Results for plugin: %s" % plugin_name)
+        super(QuantumTestResult, self).printSummary(start, stop)
+
 
 class QuantumTestRunner(core.TextTestRunner):
+
+    def __init__(self, plugin, *args, **kwargs):
+        super(QuantumTestRunner, self).__init__(*args, **kwargs)
+        self._plugin = plugin
+
     def _makeResult(self):
-        return QuantumTestResult(self.stream,
+        return QuantumTestResult(self._plugin,
+                                 self.stream,
                                  self.descriptions,
                                  self.verbosity,
                                  self.config)
 
 
-def run_tests(c=None):
+def run_tests(c=None, plugin=''):
     logger = logging.getLogger()
     hdlr = logging.StreamHandler()
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
@@ -274,10 +287,21 @@ def run_tests(c=None):
     if not c:
         return True
 
-    runner = QuantumTestRunner(stream=c.stream,
+    runner = QuantumTestRunner(plugin=plugin,
+                               stream=c.stream,
                                verbosity=c.verbosity,
                                config=c)
     return not core.run(config=c, testRunner=runner)
+
+
+def run_core_tests_only():
+    """Determine whether only core unit tests should be executed"""
+    # Check whether the user wants core tests only
+    core_tests_only = "--core_tests_only" in sys.argv
+    if core_tests_only:
+        # do not feed nose options it does not know about
+        sys.argv.remove("--core_tests_only")
+    return core_tests_only
 
 # describes parameters used by different unit/functional tests
 # a plugin-specific testing mechanism should import this dictionary

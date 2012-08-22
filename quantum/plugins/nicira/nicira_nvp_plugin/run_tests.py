@@ -39,6 +39,7 @@ sys.path.append(os.getcwd())
 sys.path.append(os.path.dirname(__file__))
 sys.path.append(os.path.abspath(NICIRA_PATH))
 
+import quantum.common.test_lib as test_lib
 from quantum.common.test_lib import run_tests, test_config
 from quantum.openstack.common import cfg
 import quantum.tests.unit
@@ -52,9 +53,12 @@ if __name__ == '__main__':
     # remove the value
     test_config['config_files'] = []
 
+    # Check whether the user wants core tests only
+    core_tests_only = test_lib.run_core_tests_only()
+
     # if a single test case was specified,
     # we should only invoked the tests once
-    invoke_once = len(sys.argv) > 1
+
     # this will allow us to pass --config-file to run_tests.sh for
     # running the unit tests against a real backend
     # if --config-file has been specified, remove it from sys.argv
@@ -64,6 +68,10 @@ if __name__ == '__main__':
             sys.argv.pop(sys.argv.index(CONFIG_FILE_OPT) + 1))
         # and the option itself
         sys.argv.remove(CONFIG_FILE_OPT)
+
+    # NOTE(salvatore-orlando): this would make invoke_once true
+    # even if we are asking nose to print coverage data
+    invoke_once = len(sys.argv) > 1
 
     # if no config file available, inject one for fake backend tests
     if not test_config.get('config_files'):
@@ -95,7 +103,7 @@ if __name__ == '__main__':
         instance.return_value.request.side_effect = _fake_request
 
     exit_status = run_tests(c)
-    if invoke_once:
+    if invoke_once or core_tests_only:
         sys.exit(0)
 
     os.chdir(cwd)

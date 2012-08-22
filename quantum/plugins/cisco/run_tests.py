@@ -32,12 +32,21 @@ from nose import config
 sys.path.append(os.getcwd())
 sys.path.append(os.path.dirname(__file__))
 
+import quantum.common.test_lib as test_lib
 from quantum.common.test_lib import run_tests, test_config
 
 
 def main():
 
     test_config['plugin_name'] = "l2network_plugin.L2Network"
+
+    # Check whether the user wants core tests only
+    # in this case we should exit
+    # NOTE(salvatore-orlando): I'd love to run the basic unit tests
+    # against the cisco plugin as well
+    if test_lib.run_core_tests_only():
+        sys.exit(0)
+
     cwd = os.getcwd()
     os.chdir(cwd)
     working_dir = os.path.abspath("quantum/plugins/cisco")

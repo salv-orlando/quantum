@@ -34,16 +34,19 @@ from nose import core
 sys.path.append(os.getcwd())
 sys.path.append(os.path.dirname(__file__))
 
+import quantum.common.test_lib as test_lib
 from quantum.common.test_lib import run_tests, test_config
 
 if __name__ == '__main__':
     exit_status = False
 
-    # if a single test case was specified,
-    # we should only invoked the tests once
-    invoke_once = len(sys.argv) > 1
+    # check whether we want to run core tests
+    # for metaplugin this will imply no test will be
+    # executed at all
+    if test_lib.run_core_tests_only():
+        sys.exit(0)
 
-    test_config['plugin_name'] = "meta_quantum_plugin.MetaPluginV2"
+    test_config['plugin_name_v2'] = "meta_quantum_plugin.MetaPluginV2"
 
     cwd = os.getcwd()
 

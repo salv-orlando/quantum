@@ -59,24 +59,39 @@ if [ $coverage -eq 1 ]; then
 fi
 
 function run_tests {
-  # Just run the test suites in current environment
-  ${wrapper} rm -f ./$PLUGIN_DIR/tests.sqlite
-  if [ $verbose -eq 1 ]; then
-    ${wrapper} $NOSETESTS
-  else
-    ${wrapper} $NOSETESTS 2> run_tests.log
-  fi
-  # If we get some short import error right away, print the error log directly
-  RESULT=$?
-  if [ "$RESULT" -ne "0" ];
-  then
-    ERRSIZE=`wc -l run_tests.log | awk '{print \$1}'`
-    if [ $verbose -eq 0 -a "$ERRSIZE" -lt "40" ];
+  for plugin_dir in ${PLUGIN_ARRAY[*]}
+  do
+    echo "Running core unit tests from "$plugin_dir
+    echo "-----------------------------------------"
+    CORE_ONLY=`[[ $plugin_dir == "." || $RUN_PLUGIN_TESTS ]] && echo "" || echo "--core_tests_only"`
+    NOSETESTS="python ./$plugin_dir/run_tests.py $CORE_ONLY $noseopts $noseargs"
+    if [ -n "$plugin_dir" ]
     then
-        cat run_tests.log
+      if ! [ -f ./$plugin_dir/run_tests.py ]
+        then
+  	      echo "Could not find run_tests.py in plugin directory $plugin_dir"
+       	  exit 1
+   	    fi
     fi
-  fi
-  return $RESULT
+
+    if [ $verbose -eq 1 ]; then
+      ${wrapper} $NOSETESTS
+    else
+      ${wrapper} $NOSETESTS 2> run_tests.log
+    fi
+    # If we get some short import error right away, print the error log directly
+    RESULT=$?
+    if [ "$RESULT" -ne "0" ];
+    then
+      ERRSIZE=`wc -l run_tests.log | awk '{print \$1}'`
+      if [ $verbose -eq 0 -a "$ERRSIZE" -lt "40" ];
+      then
+        cat run_tests.log
+      fi
+      # stop in case of error
+      return $RESULT
+    fi
+  done
 }
 
 function run_pylint {
@@ -105,16 +120,6 @@ function run_pep8 {
   ${wrapper} pep8 $PEP8_OPTIONS $PEP8_INCLUDE
 }
 
-NOSETESTS="python ./$PLUGIN_DIR/run_tests.py $noseopts $noseargs"
-
-if [ -n "$PLUGIN_DIR" ]
-then
-    if ! [ -f ./$PLUGIN_DIR/run_tests.py ]
-    then
-        echo "Could not find run_tests.py in plugin directory $PLUGIN_DIR"
-        exit 1
-    fi
-fi
 
 if [ $never_venv -eq 0 ]
 then
@@ -157,13 +162,24 @@ if [ $just_pylint -eq 1 ]; then
 fi
 
 RV=0
+PLUGIN_PATH=${PLUGIN_PATH:-"./quantum/plugins/"}
+PLUGINS=${PLUGINS:-"cisco linuxbridge metaplugin openvswitch nec nicira/nicira_nvp_plugin"}
+
+if [[ -z $PLUGIN_DIR ]]; then
+  PLUGIN_ARRAY=( $PLUGINS )
+  # The '.' array item will cause to run tests against db_plugin
+  PLUGIN_ARRAY=( "." `echo ${PLUGIN_ARRAY[@]/#/$PLUGIN_PATH}` )
+else
+  PLUGIN_ARRAY=( $PLUGIN_DIR )
+  RUN_PLUGIN_TESTS=1
+fi
+
 if [ $no_pep8 -eq 1 ]; then
     run_tests
     RV=$?
 else
     run_tests && run_pep8 || RV=1
 fi
-
 
 if [ $coverage -eq 1 ]; then
     echo "Generating coverage report in covhtml/"

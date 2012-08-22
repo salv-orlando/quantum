@@ -34,6 +34,7 @@ from nose import core
 sys.path.append(os.getcwd())
 sys.path.append(os.path.dirname(__file__))
 
+import quantum.common.test_lib as test_lib
 from quantum.common.test_lib import run_tests, test_config
 from quantum.plugins.ryu.tests.unit.utils import patch_fake_ryu_client
 import quantum.tests.unit
@@ -42,8 +43,13 @@ import quantum.tests.unit
 if __name__ == '__main__':
     exit_status = False
 
+    # Check whether the user wants core tests only
+    core_tests_only = test_lib.run_core_tests_only()
+
     # if a single test case was specified,
     # we should only invoked the tests once
+    # NOTE(salvatore-orlando): this would make invoke_once true
+    # even if we are asking nose to print coverage data
     invoke_once = len(sys.argv) > 1
 
     test_config['plugin_name_v2'] = "ryu_quantum_plugin.RyuQuantumPluginV2"
@@ -62,7 +68,7 @@ if __name__ == '__main__':
 
         exit_status = run_tests(c)
 
-    if invoke_once:
+    if invoke_once or core_tests_only:
         sys.exit(0)
 
     os.chdir(cwd)

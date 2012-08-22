@@ -229,11 +229,18 @@ class TestL3NatPlugin(db_base_plugin_v2.QuantumDbPluginV2,
 class L3NatDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
 
     def setUp(self):
+        self._plugin_name_v2_bk = test_config.get('plugin_name_v2')
         test_config['plugin_name_v2'] = (
             'quantum.tests.unit.test_l3_plugin.TestL3NatPlugin')
         ext_mgr = L3TestExtensionManager()
         test_config['extension_manager'] = ext_mgr
         super(L3NatDBTestCase, self).setUp()
+
+    def tearDown(self):
+        if self._plugin_name_v2_bk:
+            test_config['plugin_name_v2'] = self._plugin_name_v2_bk
+        else:
+            del test_config['plugin_name_v2']
 
     def _create_router(self, fmt, tenant_id, name=None, admin_state_up=None):
         data = {'router': {'tenant_id': tenant_id}}
