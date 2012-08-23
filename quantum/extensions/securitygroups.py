@@ -215,21 +215,21 @@ class SecurityGroupController(wsgi.Controller):
     ]
 
     _common_serialization_metadata = {
-            "plurals": {
-                "securitygroups": "securitygroup", "ports": "port",
-                "securityrules": "securityrule"
-            },
-            "attributes": {
-                "securitygroup": [
-                    "id", "name"
-                ],
-                "securityrule": [
-                    "id", "direction", "ip_prefix",
-                    "ethertype", "protocol", "port_range_min",
-                    "port_range_max"
-                ],
-                "port": ["id"]
-            }
+        "plurals": {
+            "securitygroups": "securitygroup", "ports": "port",
+            "securityrules": "securityrule"
+        },
+        "attributes": {
+            "securitygroup": [
+                "id", "name"
+            ],
+            "securityrule": [
+                "id", "direction", "ip_prefix",
+                "ethertype", "protocol", "port_range_min",
+                "port_range_max"
+            ],
+            "port": ["id"]
+        }
     }
 
     _serialization_metadata = {
@@ -555,8 +555,8 @@ class SecurityGroupController(wsgi.Controller):
         :returns: Nothing."""
         LOG.debug(str(locals()))
         ext_sgid, id = extract_security_group_id(id)
-        params = self._extract_request_body(request, 'port',
-            type(self)._associate_port_param_list)
+        params = self._extract_request_body(
+            request, 'port', type(self)._associate_port_param_list)
         port_id = params['id']
 
         try:

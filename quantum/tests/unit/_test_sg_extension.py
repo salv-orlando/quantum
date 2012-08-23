@@ -13,15 +13,18 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+
 import logging
 import mox
-import quantum.tests.unit.extensions
+import pprint
 import json
+import os
 import unittest
 import routes
 
 from quantum import wsgi
 from quantum.common import config
+import quantum.extensions
 from quantum.extensions import extensions
 from quantum.extensions.extensions import PluginAwareExtensionManager
 from quantum.extensions.extensions import ExtensionMiddleware
@@ -31,11 +34,15 @@ from webtest import TestApp
 from webob import exc
 from xml.etree.ElementTree import tostring
 
-import pprint
 pp = pprint.PrettyPrinter()
 
 LOG = logging.getLogger('test_extensions')
-test_conf_file = config.find_config_file({}, None, "quantum.conf.sg")
+ROOTDIR = os.path.dirname(os.path.dirname(__file__))
+ETCDIR = os.path.join(ROOTDIR, 'etc')
+
+def etcdir(*p):
+    return os.path.join(ETCDIR, *p)
+
 extensions_path = ':'.join(quantum.extensions.__path__)
 
 SG_CREATE_ID = 'sg_create_id'
@@ -175,10 +182,8 @@ SECURITY_GROUP_IDS_XML = '''<securitygroups><securitygroup id="uuid_sg_1" />\
 
 SECURITY_GROUP_IDS_JSON = {
     u'securitygroups': [
-        {u'securitygroup': {
-            u'id': u'uuid_sg_1'}},
-         {u'securitygroup': {
-            u'id': u'uuid_sg_2'}}]}
+        {u'securitygroup': {u'id': u'uuid_sg_1'}},
+         {u'securitygroup': {u'id': u'uuid_sg_2'}}]}
 
 
 def get_plugin(self):
@@ -305,8 +310,9 @@ class CustomSecurityGroupResourceExtensionTest(unittest.TestCase):
 
         def create(self, request, tenant_id):
             LOG.info('request.body: %s' % request.body)
-            return dict(securitygroups={'id': '112233', 'name': 'test_sg',
-                            'tenant_id': tenant_id})
+            return dict(securitygroups={'id': '112233',
+                                        'name': 'test_sg',
+                                        'tenant_id': tenant_id})
 
         def update(self, request, tenant_id, id=None):
             return dict(securitygroups={'id': id, 'tenant_id': tenant_id,
@@ -345,8 +351,9 @@ class CustomSecurityGroupResourceExtensionTest(unittest.TestCase):
 
         create_response = test_app.post(
             "/extensions/sg/tenants/XYZ/securitygroups", {'name': 'test_sg'})
-        self.assertEqual({'securitygroups': {'id': "112233", 'name': 'test_sg',
-                                 'tenant_id': 'XYZ'}},
+        self.assertEqual({'securitygroups': {'id': "112233",
+                                             'name': 'test_sg',
+                                             'tenant_id': 'XYZ'}},
                          create_response.json)
         self.assertEqual(200, create_response.status_int)
 
@@ -600,7 +607,7 @@ def setup_extensions_middleware(extension_manager=None):
                          PluginAwareExtensionManager(extensions_path,
                                                      FakeNvpPlugin()))
     LOG.info('extension_manager: %s' % pp.pformat(extension_manager.__dict__))
-    options = {'config_file': test_conf_file}
+    options = {'config_file': etcdir('quantum.conf.sg')}
     conf, app = config.load_paste_app('extensions_test_app', options, None)
     return ExtensionMiddleware(app, conf, ext_mgr=extension_manager)
 
@@ -608,21 +615,21 @@ def setup_extensions_middleware(extension_manager=None):
 class SerializationTest(unittest.TestCase):
 
     _common_serialization_metadata = {
-            "plurals": {
-                "securitygroups": "securitygroup", "ports": "port",
-                "securityrules": "securityrule"
-            },
-            "attributes": {
-                "securitygroup": [
-                    "id", "name"
-                ],
-                "securityrule": [
-                    "id", "direction", "ip_prefix", "securitygroup_id",
-                    "ethertype", "protocol", "port_range_min",
-                    "port_range_max"
-                ],
-                "port": ["id"]
-            }
+        "plurals": {
+            "securitygroups": "securitygroup", "ports": "port",
+            "securityrules": "securityrule"
+        },
+        "attributes": {
+            "securitygroup": [
+                "id", "name"
+            ],
+            "securityrule": [
+                "id", "direction", "ip_prefix", "securitygroup_id",
+                "ethertype", "protocol", "port_range_min",
+                "port_range_max"
+            ],
+            "port": ["id"]
+        }
     }
 
     _serialization_metadata = {
