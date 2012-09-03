@@ -24,13 +24,13 @@ from quantum.openstack.common import cfg
 import quantum.common.utils as utils
 from quantum.openstack.common import policy
 
+
 _POLICY_PATH = None
 _POLICY_CACHE = {}
-
+_CUSTOM_MATCH_FUNCTIONS = {}
 
 def reset():
     global _POLICY_PATH
-    global _POLICY_CACHE
     _POLICY_PATH = None
     _POLICY_CACHE = {}
     policy.reset()
@@ -49,14 +49,38 @@ def init():
                            reload_func=_set_brain)
 
 
+def register_match_func(match_name, func=None):
+    """
+    Register a function for generating match list entries
+
+    :param match_name: A symbolic name for the type of match to create
+    :param func: If given, provides the function to register.  If not
+                 given, returns a function taking one argument to
+                 specify the function to register, allowing use as a
+                 decorator.
+    """
+    
+    def decorator(func):
+        # Register the function
+        if match_name not in _CUSTOM_MATCH_FUNCTIONS:
+            _CUSTOM_MATCH_FUNCTIONS[match_name] = func
+        return func
+
+    # If the function is given, do the registration
+    if func:
+        return decorator(func)
+
+    return decorator
+
+
+def get_resource_and_action(action):
+    data = action.split(':', 1)[0].split('_', 1)
+    return ("%ss" % data[-1], data[0] != 'get')
+
+
 def _set_brain(data):
     default_rule = 'default'
     policy.set_brain(policy.Brain.load_json(data, default_rule))
-
-
-def _get_resource_and_action(action):
-    data = action.split(':', 1)[0].split('_', 1)
-    return ("%ss" % data[-1], data[0] != 'get')
 
 
 def _is_attribute_explicitly_set(attribute_name, resource, target):
@@ -76,7 +100,7 @@ def _build_target(action, original_target, plugin, context):
     "parent" resource of the targeted one.
     """
     target = original_target.copy()
-    resource, _w = _get_resource_and_action(action)
+    resource, _w = get_resource_and_action(action)
     hierarchy_info = attributes.RESOURCE_HIERARCHY_MAP.get(resource, None)
     if hierarchy_info and plugin:
         # use the 'singular' version of the resource name
@@ -90,21 +114,15 @@ def _build_target(action, original_target, plugin, context):
     return target
 
 
-def _create_access_rule_match(resource, is_write, shared):
-    if shared == resource[attributes.SHARED]:
-        return ('rule:%s:%s:%s' % (resource,
-                                   shared and 'shared' or 'private',
-                                   is_write and 'write' or 'read'), )
-
-
-def _build_perm_match(action, target):
+@register_match_func("perm")
+def build_perm_match(action, target):
     """Create the permission rule match.
 
     Given the current access right on a network (shared/private), and
     the type of the current operation (read/write), builds a match
     rule of the type <resource>:<sharing_mode>:<operation_type>
     """
-    resource, is_write = _get_resource_and_action(action)
+    resource, is_write = get_resource_and_action(action)
     res_map = attributes.RESOURCE_ATTRIBUTE_MAP
     if (resource in res_map and
             attributes.SHARED in res_map[resource] and
@@ -127,7 +145,7 @@ def _build_match_list(action, target):
     """
 
     match_list = ('rule:%s' % action,)
-    resource, is_write = _get_resource_and_action(action)
+    resource, is_write = get_resource_and_action(action)
     # assigning to variable with short name for improving readability
     res_map = attributes.RESOURCE_ATTRIBUTE_MAP
     if resource in res_map:
@@ -139,13 +157,15 @@ def _build_match_list(action, target):
                 if 'enforce_policy' in attribute and is_write:
                     match_list += ('rule:%s:%s' % (action,
                                                    attribute_name),)
-    # add permission-based rule (for shared resources)
-    perm_match = _build_perm_match(action, target)
-    if perm_match:
-        match_list += perm_match
+    # add custom match list entries:
+    for custom_match_function in _CUSTOM_MATCH_FUNCTIONS.itervalues():
+        custom_match = custom_match_function(action, target)
+        if custom_match:
+            match_list += custom_match
     # the policy engine must AND between all the rules
     return [match_list]
 
+import logging
 
 def check(context, action, target, plugin=None):
     """Verifies that the action is valid on the target in this context.
@@ -165,6 +185,8 @@ def check(context, action, target, plugin=None):
     real_target = _build_target(action, target, plugin, context)
     match_list = _build_match_list(action, real_target)
     credentials = context.to_dict()
+    logging.debug("### match_list:%s", match_list)
+    logging.debug("### real_target:%s", real_target)
     return policy.enforce(match_list, real_target, credentials)
 
 
@@ -188,6 +210,5 @@ def enforce(context, action, target, plugin=None):
     real_target = _build_target(action, target, plugin, context)
     match_list = _build_match_list(action, real_target)
     credentials = context.to_dict()
-
     policy.enforce(match_list, real_target, credentials,
                    exceptions.PolicyNotAuthorized, action=action)

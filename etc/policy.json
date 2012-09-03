@@ -15,6 +15,10 @@
     "networks:private:write": [["rule:admin_or_owner"]],
     "networks:shared:read": [["rule:regular_user"]],
     "networks:shared:write": [["rule:admin_only"]],
+    "networks:internal:read": [["rule:admin_or_owner"]],
+    "networks:internal:write": [["rule:admin_or_owner"]],
+    "networks:external:read": [["rule:regular_user"]],
+    "networks:external:write": [["rule:admin_only"]],
 
     "subnets:private:read": [["rule:admin_or_owner"]],
     "subnets:private:write": [["rule:admin_or_owner"]],
@@ -34,6 +38,7 @@
     "delete_network": [],
 
     "create_port": [],
+    "create_port:external": [["rule:admin_only"]],
     "create_port:mac_address": [["rule:admin_or_network_owner"]],
     "create_port:fixed_ips": [["rule:admin_or_network_owner"]],
     "get_port": [["rule:admin_or_owner"]],

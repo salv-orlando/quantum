@@ -142,6 +142,7 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
             return []
 
     def _fields(self, resource, fields):
+        LOG.debug("### Returning resource:%s", resource)
         if fields:
             return dict(((key, item) for key, item in resource.iteritems()
                          if key in fields))

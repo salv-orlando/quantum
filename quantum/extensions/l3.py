@@ -27,6 +27,8 @@ from quantum.common import exceptions as qexception
 from quantum.extensions import extensions
 from quantum import manager
 from quantum.openstack.common import cfg
+from quantum import policy
+from quantum.policy import get_resource_and_action
 from quantum import quota
 
 
@@ -114,13 +116,15 @@ RESOURCE_ATTRIBUTE_MAP = {
     },
 }
 
+EXTERNAL = 'router:external'
 EXTENDED_ATTRIBUTES_2_0 = {
-    'networks': {'router:external': {'allow_post': True,
-                                     'allow_put': True,
-                                     'default': attr.ATTR_NOT_SPECIFIED,
-                                     'is_visible': True,
-                                     'convert_to': attr.convert_to_boolean,
-                                     'validate': {'type:boolean': None}}}}
+    'networks': {EXTERNAL: {'allow_post': True,
+                            'allow_put': True,
+                            'default': attr.ATTR_NOT_SPECIFIED,
+                            'is_visible': True,
+                            'convert_to': attr.convert_to_boolean,
+                            'validate': {'type:boolean': None},
+                            'enforce_policy': True}}}
 
 l3_quota_opts = [
     cfg.IntOpt('quota_router',
@@ -132,6 +136,24 @@ l3_quota_opts = [
                     '-1 for unlimited'),
 ]
 cfg.CONF.register_opts(l3_quota_opts, 'QUOTAS')
+
+@policy.register_match_func("external")
+def build_external_match(action, target):
+    """Create the permission rule match.
+
+    Given the current access right on a network (shared/private), and
+    the type of the current operation (read/write), builds a match
+    rule of the type <resource>:<sharing_mode>:<operation_type>
+    """
+    resource, is_write = policy.get_resource_and_action(action)
+    res_map = attr.RESOURCE_ATTRIBUTE_MAP
+    if (resource in res_map and
+            EXTERNAL in res_map[resource] and
+            EXTERNAL in target):
+        return ('rule:%s:%s:%s' % (resource,
+                                   target[EXTERNAL]
+                                   and 'external' or 'internal',
+                                   is_write and 'write' or 'read'), )
 
 
 class L3(object):
