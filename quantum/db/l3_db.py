@@ -24,11 +24,13 @@ import logging
 import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.orm import exc
+from sqlalchemy.sql import expression as expr
 import webob.exc as w_exc
 
 from quantum.api.v2 import attributes
 from quantum.common import exceptions as q_exc
 from quantum.common import utils
+from quantum.db import db_base_plugin_v2
 from quantum.db import model_base
 from quantum.db import models_v2
 from quantum.extensions import l3
@@ -84,6 +86,35 @@ class FloatingIP(model_base.BASEV2, models_v2.HasId, models_v2.HasTenant):
 class L3_NAT_db_mixin(l3.RouterPluginBase):
     """Mixin class to add L3/NAT router methods to db_plugin_base_v2"""
 
+    def _network_model_hook(self, context, original_model, query):
+        LOG.debug("### The query before the hook is: %s", query)
+        query = query.outerjoin(ExternalNetwork,
+                                original_model.id == ExternalNetwork.network_id)
+        LOG.debug("### The query after the hook is: %s", query)
+        return query
+        
+    def _network_filter_hook(self, context, original_model, conditions):
+        LOG.debug("### Conditions before:%s", conditions)
+        # Apply the external network filter only in non-admin context
+        if not context.is_admin and hasattr(original_model, 'tenant_id'):
+            if len(conditions) > 0:
+                conditions = expr.or_(ExternalNetwork.network_id != None,
+                                      *conditions)
+            else:
+                conditions = (ExternalNetwork.network_id != None)
+        LOG.debug("### Conditions after:%s", conditions)
+        return conditions
+
+    # TODO(salvatore-orlando): Perform this operation without explicitly
+    # referring to db_base_plugin_v2, as plugins that do not extend from it
+    # might exist in the future 
+    LOG.debug("### registering model query hook for L3 db mixin")
+    db_base_plugin_v2.QuantumDbPluginV2.register_model_query_hook(
+        models_v2.Network,
+        "external_net",
+        _network_model_hook,
+        _network_filter_hook)
+        
     def _get_router(self, context, id):
         try:
             router = self._get_by_id(context, Router, id)
