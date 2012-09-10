@@ -57,7 +57,7 @@ LOG = logging.getLogger("QuantumPlugin")
 
 def parse_config():
     """Parse the supplied plugin configuration.
-`
+
     :param config: a ConfigParser() object encapsulating nvp.ini.
     :returns: A tuple: (clusters, plugin_config). 'clusters' is a list of
         NVPCluster objects, 'plugin_config' is a dictionary with plugin
@@ -212,6 +212,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
     NvpPluginV2 is a Quantum plugin that provides L2 Virtual Network
     functionality using NVP.
     """
+
+    supported_extension_aliases = ["provider", "os-quantum-router",
+                                   "port_security"]
 
     def __init__(self, loglevel=None):
         if loglevel:
@@ -653,7 +656,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
                 del nvp_lports[quantum_lport["id"]]
                 lports.append(quantum_lport)
             except KeyError:
-                raise Exception("Quantum and NVP Databases are out of Sync!")
+                pass
+                #raise Exception("Quantum and NVP Databases are out of Sync!")
         # do not make the case in which ports are found in NVP
         # but not in Quantum catastrophic.
         if len(nvp_lports):
@@ -764,22 +768,25 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
         :raises: exception.PortNotFound
         """
         params = {}
-
+        # Need to query to determine network_id and ip/mac)
         quantum_db = super(NvpPluginV2, self).get_port(context, id)
+        # Copy of addition fields we want to update (i.e admin_state_up)
+        quantum_db.update(port['port'])
 
         port_nvp, cluster = (
             nvplib.get_port_by_quantum_tag(self.clusters,
                                            quantum_db["network_id"], id))
-
-        LOG.debug("Update port request: %s" % (params))
-
         params["cluster"] = cluster
-        params["port"] = port["port"]
+
+        quantum_db["port_security"] = (port['port'].get('port_security',
+            nvplib.port_security_info(port_nvp)))
+
+        params["port"] = quantum_db
+        LOG.debug("Update port request: %s" % (params))
         result = nvplib.update_port(quantum_db["network_id"],
                                     port_nvp["uuid"], **params)
         LOG.debug("update_port() completed for tenant: %s" % context.tenant_id)
-
-        return super(NvpPluginV2, self).update_port(context, id, port)
+        return  super(NvpPluginV2, self).update_port(context, id, port)
 
     def delete_port(self, context, id):
         """

@@ -313,8 +313,8 @@ def get_port_by_quantum_tag(clusters, lswitch, quantum_tag):
     """Return (url, cluster_id) of port or raises ResourceNotFound
     """
     query = ("/ws.v1/lswitch/%s/lport?fields=admin_status_enabled,"
-             "fabric_status_up,uuid&tag=%s&tag_scope=q_port_id"
-             "&relations=LogicalPortStatus" % (lswitch, quantum_tag))
+             "fabric_status_up,uuid,allowed_address_pairs&tag=%s&tag_scope="
+             "q_port_id&relations=LogicalPortStatus" % (lswitch, quantum_tag))
 
     LOG.debug("Looking for port with q_tag \"%s\" on: %s"
               % (quantum_tag, lswitch))
@@ -367,6 +367,15 @@ def get_port(cluster, network, port, relations=None):
     return port
 
 
+def port_security_info(port):
+    if 'allowed_address_pairs' not in port:
+        return "off"
+    if port['allowed_address_pairs'][0]['ip_address'] == "0.0.0.0/0":
+        return "mac"
+    else:
+        return "mac_ip"
+
+
 def update_port(network, port_id, **params):
     cluster = params["cluster"]
     lport_obj = {}
@@ -377,6 +386,24 @@ def update_port(network, port_id, **params):
         lport_obj["admin_status_enabled"] = admin_state_up
     if name:
         lport_obj["display_name"] = name
+
+    # Port Security (MAC)
+    lport_obj["allowed_address_pairs"] = []
+    if params["port"].get("port_security") == "mac_ip":
+        for fixed_ip in params["port"]["fixed_ips"]:
+            lport_obj["allowed_address_pairs"].append(
+                {"mac_address": params["port"]["mac_address"],
+                 "ip_address": fixed_ip["ip_address"]})
+
+        if not len(lport_obj["allowed_address_pairs"]):
+            LOG.error("No IP allocated to port to prevent spoofing on.")
+            raise exception.Error("No IP allocated to port to "
+                                  "prevent spoofing on.")
+
+    # Port Security (mac/ip)
+    elif params["port"].get("port_security") == "mac":
+        lport_obj["allowed_address_pairs"].append(
+            {"mac_address": params["port"]["mac_address"]})
 
     uri = "/ws.v1/lswitch/" + network + "/lport/" + port_id
     try:
@@ -394,8 +421,6 @@ def update_port(network, port_id, **params):
 
 
 def create_port(tenant, **params):
-    print "create_port_nvplib"
-    print params
     clusters = params["clusters"]
     dest_cluster = clusters[0]  # primary cluster
 
@@ -409,8 +434,25 @@ def create_port(tenant, **params):
               dict(scope='q_port_id', tag=params["port"]["id"]),
               dict(scope='vm_id', tag=device_id)]
     )
-    path = "/ws.v1/lswitch/" + ls_uuid + "/lport"
 
+    # Port Security (MAC)
+    lport_obj["allowed_address_pairs"] = []
+    if params["port"].get("port_security") == "mac_ip":
+        for fixed_ip in params["port"]["fixed_ips"]:
+            lport_obj["allowed_address_pairs"].append(
+                {"mac_address": params["port"]["mac_address"],
+                 "ip_address": fixed_ip["ip_address"]})
+
+        if not len(lport_obj["allowed_address_pairs"]):
+            LOG.error("No IP allocated to port to prevent spoofing on.")
+            raise exception.Error("No IP allocated to port to prevent "
+                                  "spoofing on.")
+    # Port Security (mac/ip)
+    elif params["port"].get("port_security") == "mac":
+        lport_obj["allowed_address_pairs"].append(
+            {"mac_address": params["port"]["mac_address"]})
+
+    path = "/ws.v1/lswitch/" + ls_uuid + "/lport"
     try:
         resp_obj = do_single_request("POST", path, json.dumps(lport_obj),
                                      cluster=dest_cluster)
