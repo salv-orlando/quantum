@@ -14,7 +14,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-r"""
+"""
 Configuration options which may be set on the command line or in config files.
 
 The schema for each option is defined using the Opt sub-classes, e.g.:

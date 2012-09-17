@@ -540,7 +540,8 @@ class PluginAwareExtensionManager(ExtensionManager):
                                    self)._check_extension(extension)
         return (extension_is_valid and
                 self._plugin_supports(extension) and
-                self._plugin_implements_interface(extension))
+                self._plugin_implements_interface(extension) and
+                self._plugin_configured_for_extension(extension))
 
     def _plugin_supports(self, extension):
         alias = extension.get_alias()
@@ -579,6 +580,11 @@ class PluginAwareExtensionManager(ExtensionManager):
             cls._instance = cls(get_extensions_path(),
                                 QuantumManager.get_plugin())
         return cls._instance
+
+    def _plugin_configured_for_extension(self, extension):
+        if hasattr(extension, "check_plugin_config"):
+            return extension.check_plugin_config(self.plugin)
+        return True
 
 
 class RequestExtension(object):

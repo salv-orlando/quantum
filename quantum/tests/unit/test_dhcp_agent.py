@@ -361,6 +361,7 @@ class TestDhcpAgentEventHandler(unittest.TestCase):
                             ports=[])
 
         self.cache.get_network_by_id.return_value = network
+
         self.plugin.get_network_info.return_value = network
         with mock.patch.object(self.dhcp, 'disable_dhcp_helper') as disable:
             self.dhcp.refresh_dhcp_helper(network.id)

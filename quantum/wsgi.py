@@ -1102,3 +1102,103 @@ class Serializer(object):
             node = doc.createTextNode(str(data))
             result.appendChild(node)
         return result
+
+
+class SecurityGroupSerializer(Serializer):
+    """Serializes and deserializes dictionaries to certain MIME types."""
+
+    def _from_xml(self, datastring):
+        xmldata = self.metadata.get('application/xml', {})
+        plurals = set(xmldata.get('plurals', {}))
+        try:
+            node = minidom.parseString(datastring).childNodes[0]
+            return self._from_xml_node(node, plurals)
+        except expat.ExpatError, e:
+            msg = _("cannot understand XML " + str(e))
+            raise exceptions.MalformedRequestBody(reason=msg)
+
+    def _from_xml_node(self, node, listnames):
+        """Convert a minidom node to a simple Python type.
+
+        :param listnames: list of XML node names whose subnodes should
+                          be considered list items.
+
+        """
+        if len(node.childNodes) == 1 and node.childNodes[0].nodeType == 3:
+            return node.childNodes[0].nodeValue
+        elif node.nodeName in listnames:
+            return [self._from_xml_node(n, listnames) for n in node.childNodes]
+        else:
+            result = dict()
+            for attr in node.attributes.keys():
+                result[str(attr)] = str(node.attributes[attr].nodeValue)
+            for child in node.childNodes:
+                if child.nodeType != node.TEXT_NODE:
+                    result[child.nodeName] = self._from_xml_node(child,
+                                                                 listnames)
+            return {node.nodeName: result}
+
+    def _to_xml(self, data):
+        metadata = self.metadata.get('application/xml', {})
+        # We expect data to contain a single key which is the XML root.
+        root_key = data.keys()[0]
+        doc = minidom.Document()
+        node = self._to_xml_node(doc, metadata, root_key, data[root_key])
+
+        xmlns = node.getAttribute('xmlns')
+        if not xmlns and self.default_xmlns:
+            node.setAttribute('xmlns', self.default_xmlns)
+
+        return node.toprettyxml(indent='', newl='')
+
+    def _to_xml_node(self, doc, metadata, nodename, data):
+        """Recursive method to convert data members to XML nodes."""
+        result = doc.createElement(nodename)
+        if isinstance(data, dict):
+            if len(data.keys()) == 1:
+                data = data.items()[0][1]
+
+        xmlns = metadata.get('xmlns', None)
+        if xmlns:
+            result.setAttribute('xmlns', xmlns)
+        if isinstance(data, list):
+            collections = metadata.get('list_collections', {})
+            if nodename in collections:
+                metadata = collections[nodename]
+                for item in data:
+                    node = doc.createElement(metadata['item_name'])
+                    node.setAttribute(metadata['item_key'], str(item))
+                    result.appendChild(node)
+                return result
+            singular = metadata.get('plurals', {}).get(nodename, None)
+            if singular is None:
+                if nodename.endswith('s'):
+                    singular = nodename[:-1]
+                else:
+                    singular = 'item'
+            for item in data:
+                node = self._to_xml_node(doc, metadata, singular, item)
+                result.appendChild(node)
+        elif isinstance(data, dict):
+            collections = metadata.get('dict_collections', {})
+            if nodename in collections:
+                metadata = collections[nodename]
+                for k, v in data.items():
+                    node = doc.createElement(metadata['item_name'])
+                    node.setAttribute(metadata['item_key'], str(k))
+                    text = doc.createTextNode(str(v))
+                    node.appendChild(text)
+                    result.appendChild(node)
+                return result
+            attrs = metadata.get('attributes', {}).get(nodename, {})
+            for k, v in data.items():
+                if k in attrs:
+                    result.setAttribute(k, str(v))
+                else:
+                    node = self._to_xml_node(doc, metadata, k, v)
+                    result.appendChild(node)
+        else:
+            # Type is atom.
+            node = doc.createTextNode(str(data))
+            result.appendChild(node)
+        return result

@@ -381,6 +381,10 @@ class OVSQuantumAgent(object):
                                      actions="mod_vlan_vid:%s,normal" %
                                      lvm.vlan)
 
+        # inbound unicast
+        self.tun_br.add_flow(priority=3, tun_id=lsw_id, dl_dst=port.vif_mac,
+                             actions="mod_vlan_vid:%s,normal" % lvm.vlan)
+
         self.int_br.set_db_attribute("Port", port.port_name, "tag",
                                      str(lvm.vlan))
         if int(port.ofport) != -1:
@@ -778,6 +782,9 @@ class OVSQuantumAgent(object):
         else:
             self.db_loop(db_connection_url)
 
+            except:
+                LOG.exception("Main-loop Exception:")
+                self.rollback_until_success(db)
 
 def main():
     eventlet.monkey_patch()
@@ -819,4 +826,5 @@ def main():
     sys.exit(0)
 
 if __name__ == "__main__":
+    eventlet.monkey_patch()
     main()

@@ -639,6 +639,7 @@ def create_connection(conf, new=True):
 
 def multicall(conf, *args, **kwargs):
     """Multiple calls."""
+
     return _multi_send(_call, *args, **kwargs)
 
 

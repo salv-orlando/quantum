@@ -45,7 +45,11 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
     supported_extension_aliases = []
     _plugins = {}
     _inventory = {}
+<<<<<<< HEAD
     _methods_to_delegate = ['get_network', 'get_networks',
+=======
+    _methods_to_delegate = ['update_network', 'get_network', 'get_networks',
+>>>>>>> origin/master
                             'create_port', 'create_port_bulk', 'delete_port',
                             'update_port', 'get_port', 'get_ports',
                             'create_subnet', 'create_subnet_bulk',
@@ -163,10 +167,13 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
             else:
                 return func(*args)
 
+<<<<<<< HEAD
     def _get_segmentation_id(self, network_id):
         binding_seg_id = odb.get_network_binding(None, network_id)
         return binding_seg_id.segmentation_id
 
+=======
+>>>>>>> origin/master
     def create_network(self, context, network):
         """
         Perform this operation in the context of the configured device
@@ -178,12 +185,21 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
             ovs_output = self._invoke_plugin_per_device(const.VSWITCH_PLUGIN,
                                                         self._func_name(),
                                                         args)
+<<<<<<< HEAD
             vlan_id = self._get_segmentation_id(ovs_output[0]['id'])
             vlan_name = conf.VLAN_NAME_PREFIX + str(vlan_id)
             vlan_ids = cdb.get_ovs_vlans()
             vlanids = ''
             for v_id in vlan_ids:
                 vlanids = str(v_id) + ',' + vlanids
+=======
+            vlan_id = odb.get_vlan(ovs_output[0]['id'])
+            vlan_name = conf.VLAN_NAME_PREFIX + str(vlan_id)
+            vlan_ids = odb.get_vlans()
+            vlanids = ''
+            for v_id in vlan_ids:
+                vlanids = str(v_id[0]) + ',' + vlanids
+>>>>>>> origin/master
             vlanids = vlanids.strip(',')
             args = [ovs_output[0]['tenant_id'], ovs_output[0]['name'],
                     ovs_output[0]['id'], vlan_name, vlan_id,
@@ -206,7 +222,11 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
             args = [context, networks]
             ovs_output = self._plugins[
                 const.VSWITCH_PLUGIN].create_network_bulk(context, networks)
+<<<<<<< HEAD
             vlan_ids = cdb.get_ovs_vlans()
+=======
+            vlan_ids = odb.get_vlans()
+>>>>>>> origin/master
             vlanids = ''
             for v_id in vlan_ids:
                 vlanids = str(v_id[0]) + ',' + vlanids
@@ -214,7 +234,11 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
             LOG.debug("ovs_output: %s\n " % ovs_output)
             ovs_networks = ovs_output
             for ovs_network in ovs_networks:
+<<<<<<< HEAD
                 vlan_id = self._get_segmentation_id(ovs_network['id'])
+=======
+                vlan_id = odb.get_vlan(ovs_network['id'])
+>>>>>>> origin/master
                 vlan_name = conf.VLAN_NAME_PREFIX + str(vlan_id)
                 args = [ovs_network['tenant_id'], ovs_network['name'],
                         ovs_network['id'], vlan_name, vlan_id,
@@ -227,6 +251,7 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
             raise
 
     def update_network(self, context, id, network):
+<<<<<<< HEAD
         """
         Perform this operation in the context of the configured device
         plugins.
@@ -245,6 +270,10 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                                                       self._func_name(),
                                                       args)
         return ovs_output[0]
+=======
+        """For this model this method will be delegated to vswitch plugin"""
+        pass
+>>>>>>> origin/master
 
     def delete_network(self, context, id):
         """
@@ -255,7 +284,11 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
             base_plugin_ref = QuantumManager.get_plugin()
             n = base_plugin_ref.get_network(context, id)
             tenant_id = n['tenant_id']
+<<<<<<< HEAD
             vlan_id = self._get_segmentation_id(id)
+=======
+            vlan_id = odb.get_vlan(id)
+>>>>>>> origin/master
             output = []
             args = [tenant_id, id, {const.VLANID:vlan_id},
                     {const.CONTEXT:context},
@@ -271,11 +304,19 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
         except:
             raise
 
+<<<<<<< HEAD
     def get_network(self, context, id, fields=None):
         """For this model this method will be delegated to vswitch plugin"""
         pass
 
     def get_networks(self, context, filters=None, fields=None):
+=======
+    def get_network(self, context, id, fields=None, verbose=None):
+        """For this model this method will be delegated to vswitch plugin"""
+        pass
+
+    def get_networks(self, context, filters=None, fields=None, verbose=None):
+>>>>>>> origin/master
         """For this model this method will be delegated to vswitch plugin"""
         pass
 
@@ -283,11 +324,19 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
         """For this model this method will be delegated to vswitch plugin"""
         pass
 
+<<<<<<< HEAD
     def get_port(self, context, id, fields=None):
         """For this model this method will be delegated to vswitch plugin"""
         pass
 
     def get_ports(self, context, filters=None, fields=None):
+=======
+    def get_port(self, context, id, fields=None, verbose=None):
+        """For this model this method will be delegated to vswitch plugin"""
+        pass
+
+    def get_ports(self, context, filters=None, fields=None, verbose=None):
+>>>>>>> origin/master
         """For this model this method will be delegated to vswitch plugin"""
         pass
 
@@ -307,7 +356,11 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
         """For this model this method will be delegated to vswitch plugin"""
         pass
 
+<<<<<<< HEAD
     def get_subnet(self, context, id, fields=None):
+=======
+    def get_subnet(self, context, id, fields=None, verbose=None):
+>>>>>>> origin/master
         """For this model this method will be delegated to vswitch plugin"""
         pass
 
@@ -315,6 +368,10 @@ class VirtualPhysicalSwitchModelV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
         """For this model this method will be delegated to vswitch plugin"""
         pass
 
+<<<<<<< HEAD
     def get_subnets(self, context, filters=None, fields=None):
+=======
+    def get_subnets(self, context, filters=None, fields=None, verbose=None):
+>>>>>>> origin/master
         """For this model this method will be delegated to vswitch plugin"""
         pass

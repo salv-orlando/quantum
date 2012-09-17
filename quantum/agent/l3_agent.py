@@ -57,6 +57,7 @@ class RouterInfo(object):
             namespace=self.ns_name())
 
     def ns_name(self):
+
         if self.use_namespaces:
             return NS_PREFIX + self.router_id
 

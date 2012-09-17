@@ -2474,3 +2474,14 @@ class TestSubnetsV2(QuantumDbPluginV2TestCase):
         req = self.new_delete_request('subnets', subnet['subnet']['id'])
         res = req.get_response(self.api)
         self.assertEquals(res.status_int, 204)
+
+    def test_default_allocation_expiration(self):
+        reference = datetime.datetime(2012, 8, 13, 23, 11, 0)
+        timeutils.utcnow.override_time = reference
+
+        cfg.CONF.set_override('dhcp_lease_duration', 120)
+        expires = QuantumManager.get_plugin()._default_allocation_expiration()
+        timeutils.utcnow
+        cfg.CONF.reset()
+        timeutils.utcnow.override_time = None
+        self.assertEqual(expires, reference + datetime.timedelta(seconds=120))
