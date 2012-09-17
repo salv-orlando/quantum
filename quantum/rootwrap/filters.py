@@ -146,7 +146,6 @@ class KillFilter(CommandFilter):
             command = os.readlink("/proc/%d/exe" % int(args[1]))
             if command != self.args[0]:
                 # Affected executable doesn't match
-
                 return False
         except (ValueError, OSError):
             # Incorrect PID

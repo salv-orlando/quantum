@@ -22,6 +22,7 @@
 
 import logging
 import os
+import sys
 
 from quantum.api.v2 import attributes
 from quantum.common import constants as q_const

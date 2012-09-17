@@ -313,12 +313,9 @@ class NetworkCache(object):
         self.subnet_lookup = {}
         self.port_lookup = {}
 
-
     def get_network_ids(self):
         return self.cache.keys()
 
-=======
->>>>>>> origin/master
     def get_network_by_id(self, network_id):
         return self.cache.get(network_id)
 

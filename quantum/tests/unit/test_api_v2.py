@@ -293,33 +293,6 @@ class APIv2TestCase(APIv2TestBase):
                                                       filters=filters,
                                                       fields=fields)
 
-    def test_filters_with_verbose(self):
-        instance = self.plugin.return_value
-        instance.get_networks.return_value = []
-
-        self.api.get(_get_path('networks'), {'foo': 'bar',
-                                             'verbose': 'true'})
-        filters = {'foo': ['bar']}
-        instance.get_networks.assert_called_once_with(mock.ANY,
-                                                      filters=filters,
-                                                      fields=mock.ANY,
-                                                      verbose=True)
-
-    def test_filters_with_fields_and_verbose(self):
-        instance = self.plugin.return_value
-        instance.get_networks.return_value = []
-
-        self.api.get(_get_path('networks'), {'foo': 'bar',
-                                             'fields': 'foo',
-                                             'verbose': 'true'})
-        filters = {'foo': ['bar']}
-        fields = self._do_field_list('networks', ['foo'])
-        instance.get_networks.assert_called_once_with(mock.ANY,
-                                                      filters=filters,
-                                                      fields=fields,
-                                                      verbose=True)
->>>>>>> origin/master
-
 
 # Note: since all resources use the same controller and validation
 # logic, we actually get really good coverage from testing just networks.

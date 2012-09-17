@@ -27,7 +27,6 @@ import quantum.common.utils as utils
 from quantum.openstack.common import policy
 
 
-
 LOG = logging.getLogger(__name__)
 _POLICY_PATH = None
 _POLICY_CACHE = {}
