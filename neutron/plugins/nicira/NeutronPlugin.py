@@ -1462,9 +1462,14 @@ class NvpPluginV2(addr_pair_db.AllowedAddressPairsMixin,
                 self._process_distributed_router_create(context, router_db, r)
                 context.session.add(router_db)
             if has_gw_info:
+<<<<<<< HEAD:neutron/plugins/nicira/NeutronPlugin.py
                 self._update_router_gw_info(context, router_db['id'], gw_info)
         router = self._make_router_dict(router_db)
         return router
+=======
+                self._update_router_gw_info(context, router_db, gw_info)
+        return self._make_router_dict(router_db)
+>>>>>>> 4ed80a2... add routerport instead of overloading device_id:quantum/plugins/nicira/nicira_nvp_plugin/QuantumPlugin.py
 
     def update_router(self, context, router_id, router):
         # Either nexthop is updated or should be kept as it was before
