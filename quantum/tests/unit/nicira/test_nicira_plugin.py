@@ -28,6 +28,7 @@ from quantum.plugins.nicira.nicira_nvp_plugin import nvplib
 from quantum.tests.unit.nicira import fake_nvpapiclient
 import quantum.tests.unit.test_db_plugin as test_plugin
 import quantum.tests.unit.test_extension_security_group as ext_sg
+import quantum.tests.unit.test_l3_plugin as test_l3_plugin
 import quantum.tests.unit.test_extension_port_security as psec
 
 LOG = logging.getLogger(__name__)
@@ -222,4 +223,9 @@ class TestNiciraSecurityGroup(ext_sg.TestSecurityGroups,
 
 class TestNiciraPortSecurity(psec.TestPortSecurity,
                              NiciraPortSecurityTestCase):
+    pass
+
+
+class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
+                              NiciraPluginV2TestCase):
     pass

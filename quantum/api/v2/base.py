@@ -134,7 +134,6 @@ class Controller(object):
         # make sure fields_to_strip is iterable
         if not fields_to_strip:
             fields_to_strip = []
-
         return dict(item for item in data.iteritems()
                     if self._is_visible(item[0])
                     and not item[0] in fields_to_strip)

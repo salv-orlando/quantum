@@ -293,12 +293,17 @@ class L3NatDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
         test_config['extension_manager'] = ext_mgr
         super(L3NatDBTestCase, self).setUp()
 
-    def _create_router(self, fmt, tenant_id, name=None, admin_state_up=None):
+    def _create_router(self, fmt, tenant_id, name=None, arg_list=None,
+                       admin_state_up=None, **kwargs):
         data = {'router': {'tenant_id': tenant_id}}
         if name:
             data['router']['name'] = name
         if admin_state_up:
             data['router']['admin_state_up'] = admin_state_up
+        for arg in (('admin_state_up', 'tenant_id') + (arg_list or ())):
+            # Arg must be present and not empty
+            if arg in kwargs and kwargs[arg]:
+                data['router'][arg] = kwargs[arg]
         router_req = self.new_create_request('routers', data, fmt)
         return router_req.get_response(self.ext_api)
 
