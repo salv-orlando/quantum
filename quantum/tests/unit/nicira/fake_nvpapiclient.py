@@ -32,17 +32,20 @@ class FakeClient:
 
     FAKE_POST_RESPONSES = {
         "lswitch": "fake_post_lswitch.json",
-        "lport": "fake_post_lport.json"
+        "lport": "fake_post_lport.json",
+        "securityprofile": "fake_post_security_profile.json"
     }
 
     FAKE_PUT_RESPONSES = {
         "lswitch": "fake_post_lswitch.json",
-        "lport": "fake_post_lport.json"
+        "lport": "fake_post_lport.json",
+        "securityprofile": "fake_post_security_profile.json"
     }
 
     _fake_lswitch_dict = {}
     _fake_lport_dict = {}
     _fake_lportstatus_dict = {}
+    _fake_securityprofile_dict = {}
 
     def __init__(self, fake_files_path):
         self.fake_files_path = fake_files_path
@@ -97,17 +100,35 @@ class FakeClient:
         self._fake_lportstatus_dict[fake_lport['uuid']] = fake_lport_status
         return fake_lport
 
+    def _add_securityprofile(self, body):
+        fake_securityprofile = json.loads(body)
+        fake_securityprofile['uuid'] = str(uuid.uuid4())
+        # put the tenant_id and the nova_spid in the main dict
+        # for simplyfying templating
+        fake_securityprofile['tenant_id'] = self._get_tag(
+            fake_securityprofile, 'os_tid')
+
+        fake_securityprofile['nova_spid'] = self._get_tag(fake_securityprofile,
+                                                          'nova_spid')
+        self._fake_securityprofile_dict[fake_securityprofile['uuid']] = (
+            fake_securityprofile)
+        return fake_securityprofile
+
     def _get_resource_type(self, path):
         uri_split = path.split('/')
         resource_type = ('status' in uri_split and
                          'lport' in uri_split and 'lportstatus'
                          or 'lport' in uri_split and 'lport'
-                         or 'lswitch' in uri_split and 'lswitch')
+                         or 'lswitch' in uri_split and 'lswitch' or
+                         'security-profile' in uri_split and 'securityprofile')
+
         switch_uuid = ('lswitch' in uri_split and
                        len(uri_split) > 3 and uri_split[3])
         port_uuid = ('lport' in uri_split and
                      len(uri_split) > 5 and uri_split[5])
-        return (resource_type, switch_uuid, port_uuid)
+        securityprofile_uuid = ('security-profile' in uri_split and
+                                  len(uri_split) > 3 and uri_split[3])
+        return (resource_type, switch_uuid, port_uuid, securityprofile_uuid)
 
     def _list(self, resource_type, response_file,
               switch_uuid=None, query=None):
@@ -166,7 +187,8 @@ class FakeClient:
     def handle_get(self, url):
         #TODO(salvatore-orlando): handle field selection
         parsedurl = urlparse.urlparse(url)
-        (res_type, s_uuid, p_uuid) = self._get_resource_type(parsedurl.path)
+        (res_type, s_uuid, p_uuid, sec_uuid) = self._get_resource_type(
+            parsedurl.path)
         response_file = self.FAKE_GET_RESPONSES.get(res_type)
         if not response_file:
             raise Exception("resource not found")
@@ -189,7 +211,8 @@ class FakeClient:
 
     def handle_post(self, url, body):
         parsedurl = urlparse.urlparse(url)
-        (res_type, s_uuid, _p) = self._get_resource_type(parsedurl.path)
+        (res_type, s_uuid, _p, sec_uuid) = self._get_resource_type(
+            parsedurl.path)
         response_file = self.FAKE_POST_RESPONSES.get(res_type)
         if not response_file:
             raise Exception("resource not found")
@@ -204,8 +227,9 @@ class FakeClient:
 
     def handle_put(self, url, body):
         parsedurl = urlparse.urlparse(url)
-        (res_type, s_uuid, p_uuid) = self._get_resource_type(parsedurl.path)
-        target_uuid = p_uuid or s_uuid
+        (res_type, s_uuid, p_uuid, sec_uuid) = self._get_resource_type(
+            parsedurl.path)
+        target_uuid = p_uuid or s_uuid or sec_uuid
         response_file = self.FAKE_PUT_RESPONSES.get(res_type)
         if not response_file:
             raise Exception("resource not found")
@@ -219,8 +243,9 @@ class FakeClient:
 
     def handle_delete(self, url):
         parsedurl = urlparse.urlparse(url)
-        (res_type, s_uuid, p_uuid) = self._get_resource_type(parsedurl.path)
-        target_uuid = p_uuid or s_uuid
+        (res_type, s_uuid, p_uuid, sec_uuid) = self._get_resource_type(
+            parsedurl.path)
+        target_uuid = p_uuid or s_uuid  or sec_uuid
         response_file = self.FAKE_PUT_RESPONSES.get(res_type)
         if not response_file:
             raise Exception("resource not found")
