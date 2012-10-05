@@ -18,7 +18,8 @@ from quantum.api.v2 import attributes
 EXTENDED_ATTRIBUTES_2_0 = {
     'ports': {
         'port_security': {'allow_post': True, 'allow_put': True,
-                          'validate': {'type:values': ['off', 'mac','mac_ip']},
+                          'validate': {'type:values': ['off', 'mac',
+                                                       'mac_ip']},
                           'default': attributes.ATTR_NOT_SPECIFIED,
                           'is_visible': True},
     }
