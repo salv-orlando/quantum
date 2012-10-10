@@ -374,11 +374,11 @@ def port_security_info(port):
 
 def _configure_extensions(lport_obj, **params):
     lport_obj["security_profiles"] = []
-    if params["port"].get(ext_sg.EXTERNAL):
+    if params["port"].get(ext_sg.SECURITYGROUP):
         if (PORT_SECURITY_DEFAULT or
             params["port"].get("port_security") == "mac_ip"):
             lport_obj["security_profiles"] = (
-                params["port"].get(ext_sg.EXTERNAL, ""))
+                params["port"].get(ext_sg.SECURITYGROUP, ""))
         else:
             msg = ("Port must be configured using mac_ip port_security.")
             LOG.error(msg)
@@ -393,12 +393,13 @@ def _configure_extensions(lport_obj, **params):
             if ip_address:
                 lport_obj["allowed_address_pairs"].append(
                     {"mac_address": params["port"]["mac_address"],
-                    "ip_address": fixed_ip["ip_address"]})
+                     "ip_address": fixed_ip["ip_address"]})
 
         if not len(lport_obj["allowed_address_pairs"]):
 #           TODO: Need to port portsecurity extension upstream in order to
 #           inorder to avoid this..
 #            raise exception.Error("No IP allocated to port to prevent "
+            lport_obj["security_profiles"] = []
             LOG.error("No IP allocated to port to prevent spoofing on.")
 #            raise exception.Error("No IP allocated to port to "
 #                                  "prevent spoofing on.")
@@ -414,11 +415,20 @@ def update_port(network, port_id, **params):
     lport_obj = {}
 
     admin_state_up = params['port'].get('admin_state_up')
+    device_id = params['port'].get('device_id')
     name = params["port"].get("name")
     if admin_state_up:
         lport_obj["admin_status_enabled"] = admin_state_up
     if name:
         lport_obj["display_name"] = name
+
+    if device_id:
+        # device_id can be longer than 40 so we rehash it
+        device_id = hashlib.sha1(device_id).hexdigest()
+        lport_obj["tags"] = (
+            [dict(scope='os_tid', tag=params["port"].get("tenant_id")),
+             dict(scope='q_port_id', tag=params["port"]["id"]),
+             dict(scope='vm_id', tag=device_id)])
 
     _configure_extensions(lport_obj, **params)
     uri = "/ws.v1/lswitch/" + network + "/lport/" + port_id
@@ -450,6 +460,9 @@ def create_port(tenant, **params):
               dict(scope='q_port_id', tag=params["port"]["id"]),
               dict(scope='vm_id', tag=device_id)]
     )
+
+    _configure_extensions(lport_obj, **params)
+    path = "/ws.v1/lswitch/" + ls_uuid + "/lport"
 
     _configure_extensions(lport_obj, **params)
     path = "/ws.v1/lswitch/" + ls_uuid + "/lport"
@@ -605,7 +618,7 @@ def create_security_profile(cluster, tenant_id, security_profile):
     path = "/ws.v1/security-profile"
     tags = set_tenant_id_tag(tenant_id)
     tags = set_ext_security_profile_id_tag(
-        security_profile.get('nova_id'), tags)
+        security_profile.get('external_id'), tags)
     try:
         body = mk_body(display_name=security_profile.get('name'), tags=tags)
         rsp = do_request("POST", path, body, cluster=cluster)
@@ -617,12 +630,13 @@ def create_security_profile(cluster, tenant_id, security_profile):
     return rsp
 
 
-def create_securitygrouprules(cluster, tenant_id, spid, rules, nova_id):
+def create_security_group_rules(cluster, tenant_id, spid, rules, nova_id):
     path = "/ws.v1/security-profile/%s" % spid
     tags = set_tenant_id_tag(tenant_id)
     tags = set_ext_security_profile_id_tag(nova_id, tags)
     try:
-        body = mk_body(tags=tags,
+        body = mk_body(
+            tags=tags,
             logical_port_ingress_rules=rules['logical_port_ingress_rules'],
             logical_port_egress_rules=rules['logical_port_egress_rules'])
         rsp = do_request("PUT", path, body, cluster=cluster)
@@ -633,7 +647,7 @@ def create_securitygrouprules(cluster, tenant_id, spid, rules, nova_id):
     return rsp
 
 
-def update_securitygrouprules(cluster, spid, rules):
+def update_security_group_rules(cluster, spid, rules):
     path = "/ws.v1/security-profile/%s" % spid
     try:
         body = mk_body(

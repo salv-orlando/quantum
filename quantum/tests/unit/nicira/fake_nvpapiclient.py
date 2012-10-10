@@ -127,7 +127,7 @@ class FakeClient:
         port_uuid = ('lport' in uri_split and
                      len(uri_split) > 5 and uri_split[5])
         securityprofile_uuid = ('security-profile' in uri_split and
-                                  len(uri_split) > 3 and uri_split[3])
+                                len(uri_split) > 3 and uri_split[3])
         return (resource_type, switch_uuid, port_uuid, securityprofile_uuid)
 
     def _list(self, resource_type, response_file,
@@ -245,7 +245,7 @@ class FakeClient:
         parsedurl = urlparse.urlparse(url)
         (res_type, s_uuid, p_uuid, sec_uuid) = self._get_resource_type(
             parsedurl.path)
-        target_uuid = p_uuid or s_uuid  or sec_uuid
+        target_uuid = p_uuid or s_uuid or sec_uuid
         response_file = self.FAKE_PUT_RESPONSES.get(res_type)
         if not response_file:
             raise Exception("resource not found")

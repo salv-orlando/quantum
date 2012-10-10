@@ -20,14 +20,9 @@ from quantum.api.v2 import attributes as attr
 from quantum.api.v2 import base
 from quantum.common import exceptions as qexception
 from quantum.extensions import extensions
-from quantum.openstack.common import cfg
 from quantum import manager
+from quantum.openstack.common import cfg
 from quantum import quota
-
-# supported protocols
-TCP = 6
-UDP = 17
-ICMP = 1
 
 
 # Security group Exceptions
@@ -38,6 +33,10 @@ class SecurityGroupAlreadyExists(qexception.InUse):
 
 class SecurityGroupInvalidProtocolType(qexception.InvalidInput):
     message = _("Invalid protocol type %(value)s")
+
+
+class SecurityGroupInvalidEtherType(qexception.InvalidInput):
+    message = _("Invalid/Unsupported ethertype %(value)s")
 
 
 class SecurityGroupInvalidPortRange(qexception.InvalidInput):
@@ -53,13 +52,27 @@ class SecurityGroupInUse(qexception.InUse):
     message = _("Security Group %(id)s in use.")
 
 
+class SecurityGroupCannotRemoveDefault(qexception.InUse):
+    message = _("Removing default security group not allowed.")
+
+
+class SecurityGroupDefaultAlreadyExists(qexception.InUse):
+    message = _("Default security group already exists.")
+
+
 class SecurityGroupRuleInvalidProtocol(qexception.InUse):
     message = _("Security group rule protocol %(protocol)s not supported "
                 "only protocol values %(values)s supported.")
 
 
-class SecurityGroupProfileAndIpPrefix(qexception.InvalidInput):
-    message = _("Only one of ip_prefix, profile_uuid may be provided.")
+class SecurityGroupRulesNotSingleTenant(qexception.InvalidInput):
+    message = _("Multiple tenant_ids in bulk security group rule create"
+                " not allowed")
+
+
+class SecurityGroupSourceGroupAndIpPrefix(qexception.InvalidInput):
+    message = _("Only source_ip_prefix or source_group_id may "
+                "be provided.")
 
 
 class SecurityGroupProtocolRequiredWithPorts(qexception.InvalidInput):
@@ -71,6 +84,10 @@ class SecurityGroupNotSingleGroupRules(qexception.InvalidInput):
                 "one security profile at a time")
 
 
+class SecurityGroupSourceGroupNotFound(qexception.NotFound):
+    message = _("source group id %(id)s does not exist")
+
+
 class SecurityGroupNotFound(qexception.NotFound):
     message = _("Security group %(id)s does not exist")
 
@@ -80,65 +97,66 @@ class SecurityGroupRuleNotFound(qexception.NotFound):
 
 
 class DuplicateSecurityGroupRuleInPost(qexception.InUse):
-    message = _("Duplicate Security Group Rule in post %(rule)s")
+    message = _("Duplicate Security Group Rule in POST.")
 
 
 class SecurityGroupRuleExists(qexception.InUse):
     message = _("Security group rule exists %(rule)s")
 
 
-def convert_protocol_to_int(protocol):
-    if protocol is None:
-        return None
-    try:
-        return int(protocol)
-    except TypeError:
-        raise SecurityGroupRuleInvalidProtocol(protocol=protocol,
-            values="%d %d %d" % (TCP, UDP, ICMP))
-
-
 def convert_validate_port_value(port):
     try:
-        return int(port)
+        val = int(port)
+        # Valid port range
+        if  val < 0 or val > 65535:
+            raise SecurityGroupInvalidPortValue(port=port)
+        return val
     except TypeError:
         if port is None or not len(port):
             return None
         raise SecurityGroupInvalidPortValue(port=port)
 
+
+def _validate_name_not_default(data, valid_values=None):
+    if data == "default":
+        raise SecurityGroupDefaultAlreadyExists()
+
+attr.validators['type:name_not_default'] = _validate_name_not_default
+
 # Attribute Map
 RESOURCE_ATTRIBUTE_MAP = {
-    'securitygroups': {
+    'security_groups': {
         'id': {'allow_post': False, 'allow_put': False,
                'validate': {'type:regex': attr.UUID_PATTERN},
                'is_visible': True},
         'name': {'allow_post': True, 'allow_put': False,
-                'is_visible': True, 'default': ''},
+                 'is_visible': True, 'default': '',
+                 'validate': {'type:name_not_default': None}},
         'description': {'allow_post': True, 'allow_put': False,
-                'is_visible': True, 'default': ''},
+                        'is_visible': True, 'default': ''},
         'external_id': {'allow_post': True, 'allow_put': False,
-                   'is_visible': True, 'default': None},
+                        'is_visible': True, 'default': None},
         'tenant_id': {'allow_post': True, 'allow_put': False,
                       'required_by_policy': True,
                       'is_visible': True},
-        },
-    'securitygrouprules': {
+    },
+    'security_group_rules': {
         'id': {'allow_post': False, 'allow_put': False,
                'validate': {'type:regex': attr.UUID_PATTERN},
                'is_visible': True},
+        # external_id can be used to be backwards compatible with nova
         'external_id': {'allow_post': True, 'allow_put': False,
-                    'is_visible': True, 'default': None},
-        'parent_group_id': {'allow_post': True, 'allow_put': False,
-                            'is_visible': True, 'required_by_policy': True},
+                        'is_visible': True, 'default': None},
+        'security_group_id': {'allow_post': True, 'allow_put': False,
+                              'is_visible': True, 'required_by_policy': True},
 
-        'group_id': {'allow_post': True, 'allow_put': False,
-                     'default': None, 'is_visible': True},
+        'source_group_id': {'allow_post': True, 'allow_put': False,
+                            'default': None, 'is_visible': True},
         'direction': {'allow_post': True, 'allow_put': True,
                       'is_visible': True,
                       'validate': {'type:values': ['ingress', 'egress']}},
         'protocol': {'allow_post': True, 'allow_put': False,
-                     'is_visible': True,
-                     'convert_to': convert_protocol_to_int, 'default': None,
-                     'validate': {'type:values': [TCP, UDP, ICMP, None]}},
+                     'is_visible': True, 'default': None},
         'port_range_min': {'allow_post': True, 'allow_put': False,
                            'convert_to': convert_validate_port_value,
                            'default': None, 'is_visible': True},
@@ -146,47 +164,45 @@ RESOURCE_ATTRIBUTE_MAP = {
                            'convert_to': convert_validate_port_value,
                            'default': None, 'is_visible': True},
         'ethertype': {'allow_post': True, 'allow_put': False,
-                      'validate': {'type:values': ['IPv4', 'IPv6']},
                       'is_visible': True, 'default': 'IPv4'},
-        'ip_prefix': {'allow_post': True, 'allow_put': False,
-                      'default': None, 'is_visible': True},
+        'source_ip_prefix': {'allow_post': True, 'allow_put': False,
+                             'default': None, 'is_visible': True},
         'tenant_id': {'allow_post': True, 'allow_put': False,
                       'required_by_policy': True,
                       'is_visible': True},
-         }
+    }
 }
 
 
-EXTERNAL = 'securitygroup:sg'
+SECURITYGROUP = 'security_groups'
 EXTENDED_ATTRIBUTES_2_0 = {
-    'ports': {EXTERNAL: {'allow_post': True,
-                         'allow_put': True,
-                         'is_visible': True,
-                         'default': []}}}
-securitygroup_quota_opts = [
-    cfg.IntOpt('quota_securitygroup',
+    'ports': {SECURITYGROUP: {'allow_post': True,
+                              'allow_put': True,
+                              'is_visible': True,
+                              'default': None}}}
+security_group_quota_opts = [
+    cfg.IntOpt('quota_security_group',
                default=10,
                help='number of security groups allowed per tenant,'
                     '-1 for unlimited'),
-    cfg.IntOpt('quota_securitygrouprule',
+    cfg.IntOpt('quota_security_group_rule',
                default=100,
                help='number of security rules allowed per tenant, '
                     '-1 for unlimited'),
 ]
-cfg.CONF.register_opts(securitygroup_quota_opts, 'QUOTAS')
+cfg.CONF.register_opts(security_group_quota_opts, 'QUOTAS')
 
 
 class Securitygroup(object):
-    """ Security group extension
-    """
+    """ Security group extension"""
 
     @classmethod
     def get_name(cls):
-        return "securitygroup"
+        return "security-group"
 
     @classmethod
     def get_alias(cls):
-        return "securitygroup"
+        return "security-group"
 
     @classmethod
     def get_description(cls):
@@ -206,10 +222,9 @@ class Securitygroup(object):
         """ Returns Ext Resources """
         exts = []
         plugin = manager.QuantumManager.get_plugin()
-        for resource_name in ['securitygroup', 'securitygrouprule']:
-            collection_name = resource_name + "s"
-            params = RESOURCE_ATTRIBUTE_MAP.get(collection_name, dict())
-
+        for resource_name in ['security_group', 'security_group_rule']:
+            collection_name = resource_name.replace('_', '-') + "s"
+            params = RESOURCE_ATTRIBUTE_MAP.get(resource_name + "s", dict())
             quota.QUOTAS.register_resource_by_name(resource_name)
             controller = base.create_resource(collection_name,
                                               resource_name,
@@ -230,36 +245,37 @@ class Securitygroup(object):
 
 class SecurityGroupPluginBase(object):
     @abstractmethod
-    def create_securitygroup(self, context, securitygroup):
+    def create_security_group(self, context, security_group):
         pass
 
     @abstractmethod
-    def delete_securitygroup(self, context, securitygroup):
+    def delete_security_group(self, context, security_group):
         pass
 
     @abstractmethod
-    def update_securitygroup(self, context, securitygroup):
+    def update_security_group(self, context, security_group):
         pass
 
     @abstractmethod
-    def get_securitygroups(self, context, filters=None, fields=None):
-        pass
-
-    def get_securitygroup(self, context, id, fields=None):
+    def get_security_groups(self, context, filters=None, fields=None):
         pass
 
     @abstractmethod
-    def create_securitygrouprule(self, context, securitygrouprule):
+    def get_security_group(self, context, id, fields=None):
         pass
 
     @abstractmethod
-    def delete_securitygrouprule(self, context, sgrid):
+    def create_security_group_rule(self, context, security_group_rule):
         pass
 
     @abstractmethod
-    def get_securitygrouprules(self, context, filters=None, fields=None):
+    def delete_security_group_rule(self, context, sgrid):
         pass
 
     @abstractmethod
-    def get_securitygrouprule(self, context, id, fields=None):
+    def get_security_group_rules(self, context, filters=None, fields=None):
+        pass
+
+    @abstractmethod
+    def get_security_group_rule(self, context, id, fields=None):
         pass

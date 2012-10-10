@@ -20,7 +20,7 @@ import mock
 import quantum.common.test_lib as test_lib
 from quantum.tests.unit.nicira import fake_nvpapiclient
 import quantum.tests.unit.test_db_plugin as test_plugin
-import quantum.tests.unit.test_extension_securitygroup as ext_sg
+import quantum.tests.unit.test_extension_security_group as ext_sg
 
 NICIRA_PKG_PATH = 'quantum.plugins.nicira.nicira_nvp_plugin'
 

@@ -1,4 +1,3 @@
-"""
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
 # Copyright 2012 Nicira Networks, Inc.  All rights reserved.
@@ -17,12 +16,12 @@
 #
 # @author: Aaron Rosen, Nicira, Inc
 #
-"""
 
 import re
 
-from sqlalchemy.orm import exc
 import sqlalchemy as sa
+from sqlalchemy.orm import exc
+from sqlalchemy.orm import scoped_session
 
 from quantum.api.v2 import attributes
 from quantum.common import utils
@@ -40,43 +39,59 @@ class SecurityGroup(model_base.BASEV2, models_v2.HasId, models_v2.HasTenant):
 
 class SecurityGroupPortBinding(model_base.BASEV2):
     """Represents binding between quantum ports and security profiles"""
-    port_id = sa.Column(sa.String(36), primary_key=True)
-    sgid = sa.Column(sa.String(36), primary_key=True)
+    port_id = sa.Column(sa.String(36), sa.ForeignKey("ports.id"),
+                        primary_key=True)
+    sg_id = sa.Column(sa.String(36), sa.ForeignKey("securitygroups.id"),
+                      primary_key=True)
 
 
 class SecurityGroupRule(model_base.BASEV2, models_v2.HasId,
                         models_v2.HasTenant):
     """Represents a v2 quantum security group rule."""
     external_id = sa.Column(sa.Integer)
-    parent_group_id = sa.Column(sa.String(36),
-        sa.ForeignKey("securitygroups.id", ondelete="CASCADE"), nullable=False)
+    security_group_id = sa.Column(sa.String(36),
+                                  sa.ForeignKey("securitygroups.id",
+                                                ondelete="CASCADE"),
+                                  nullable=False)
 
-    group_id = sa.Column(sa.String(36),
-            sa.ForeignKey("securitygroups.id", ondelete="CASCADE"),
-            nullable=True)
+    source_group_id = sa.Column(sa.String(36),
+                                sa.ForeignKey("securitygroups.id",
+                                              ondelete="CASCADE"),
+                                nullable=True)
 
     direction = sa.Column(sa.Enum('ingress', 'egress'))
-    ethertype = sa.Column(sa.String(5))  # IPv4, IPv6
-    protocol = sa.Column(sa.Integer)
+    ethertype = sa.Column(sa.String(40))
+    protocol = sa.Column(sa.String(40))
     port_range_min = sa.Column(sa.Integer)
     port_range_max = sa.Column(sa.Integer)
-    ip_prefix = sa.Column(sa.String(255))
+    source_ip_prefix = sa.Column(sa.String(255))
 
 
-class SecurityGroup_db_mixin(ext_sg.SecurityGroupPluginBase):
+class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
     """Mixin class to add security group to db_plugin_base_v2."""
 
     __native_bulk_support = True
+    sg_supported_protocols = ['tcp', 'udp', 'icmp']
+    sg_supported_ethertypes = ['IPv4', 'IPv6']
 
-    def create_securitygroup_bulk(self, context, securitygrouprule):
-        return self._create_bulk('securitygroup', context, securitygrouprule)
+    def create_security_group_bulk(self, context, security_group_rule):
+        return self._create_bulk('security_group', context,
+                                 security_group_rule)
 
-    def create_securitygroup(self, context, securitygroup):
-        s = securitygroup['securitygroup']
-        if s.get('external_id') is not None:
+    def create_security_group(self, context, security_group, default_sg=False):
+        """Create security group.
+        If default_sg is true that means we are a default security group for
+        a given tenant if it does not exist.
+        """
+        s = security_group['security_group']
+        tenant_id = self._get_tenant_id_for_create(context, s)
+        if not default_sg:
+            self._ensure_default_security_group(context, tenant_id,
+                                                security_group)
+        if s.get('external_id'):
             try:
                 # Check if security group already exists
-                sg = self.get_securitygroup(context, s.get('external_id'))
+                sg = self.get_security_group(context, s.get('external_id'))
                 if sg:
                     raise ext_sg.SecurityGroupAlreadyExists(
                         name=sg.get('name', ''),
@@ -84,27 +99,41 @@ class SecurityGroup_db_mixin(ext_sg.SecurityGroupPluginBase):
             except ext_sg.SecurityGroupNotFound:
                 pass
 
-        tenant_id = self._get_tenant_id_for_create(context, s)
         with context.session.begin(subtransactions=True):
-            security_group_db = SecurityGroup(
-                               id=s.get('id') or utils.str_uuid(),
-                               description=s['description'],
-                               tenant_id=tenant_id,
-                               name=s['name'],
-                               external_id=s.get('external_id'))
+            security_group_db = SecurityGroup(id=s.get('id') or (
+                                              utils.str_uuid()),
+                                              description=s['description'],
+                                              tenant_id=tenant_id,
+                                              name=s['name'],
+                                              external_id=s.get('external_id'))
             context.session.add(security_group_db)
         return self._make_security_group_dict(security_group_db)
 
-    def get_securitygroups(self, context, filters=None, fields=None):
+    def get_security_groups(self, context, filters=None, fields=None):
         return self._get_collection(context, SecurityGroup,
                                     self._make_security_group_dict,
                                     filters=filters, fields=fields)
 
-    def get_securitygroup(self, context, id, fields=None):
-        return self._make_security_group_dict(self._get_securitygroup(
-            context, id), fields)
+    def get_security_group(self, context, id, fields=None, tenant_id=None):
+        """Tenant id is given to handle the case when we
+        are creating a security group or security group rule on behalf of
+        another use.
+        """
 
-    def _get_securitygroup(self, context, id):
+        if tenant_id:
+            tmp_context_tenant_id = context.tenant_id
+            context.tenant_id = tenant_id
+
+        try:
+            ret = self._make_security_group_dict(self._get_security_group(
+                                                 context, id), fields)
+
+        finally:
+            if tenant_id:
+                context.tenant_id = tmp_context_tenant_id
+        return ret
+
+    def _get_security_group(self, context, id):
         try:
             query = self._model_query(context, SecurityGroup)
             if not re.match(attributes.UUID_PATTERN, str(id)):
@@ -116,17 +145,16 @@ class SecurityGroup_db_mixin(ext_sg.SecurityGroupPluginBase):
             raise ext_sg.SecurityGroupNotFound(id=id)
         return sg
 
-    def delete_securitygroup(self, context, id):
-        filters = {'sgid': [id]}
-        ports = self.get_port_securitygroup_binding(context, filters)
+    def delete_security_group(self, context, id):
+        filters = {'sg_id': [id]}
+        ports = self._get_port_security_group_bindings(context, filters)
         if ports:
             raise ext_sg.SecurityGroupInUse(id=id)
         # confirm security group exists
-        sg = self._get_securitygroup(context, id)
+        sg = self._get_security_group(context, id)
 
-        # delete security group rules then group
-        filters = {'parent_group_id': [id]}
-        fields = {'id': None}
+        if sg['name'] == 'default':
+            raise ext_sg.SecurityGroupCannotRemoveDefault()
         with context.session.begin(subtransactions=True):
             context.session.delete(sg)
 
@@ -139,24 +167,24 @@ class SecurityGroup_db_mixin(ext_sg.SecurityGroupPluginBase):
             res['external_id'] = security_group['external_id']
         return self._fields(res, fields)
 
-    def _make_securitygroup_binding_dict(self, security_group, fields=None):
+    def _make_security_group_binding_dict(self, security_group, fields=None):
         res = {'port_id': security_group['port_id'],
-               'sgid': security_group['sgid']}
+               'sg_id': security_group['sg_id']}
         return self._fields(res, fields)
 
-    def create_port_securitygroup_binding(self, context, port_id, sgid):
+    def _create_port_security_group_binding(self, context, port_id, sg_id):
         with context.session.begin(subtransactions=True):
             db = SecurityGroupPortBinding(port_id=port_id,
-                                          sgid=sgid)
+                                          sg_id=sg_id)
             context.session.add(db)
 
-    def get_port_securitygroup_binding(self, context,
-                                       filters=None, fields=None):
+    def _get_port_security_group_bindings(self, context,
+                                          filters=None, fields=None):
         return self._get_collection(context, SecurityGroupPortBinding,
-                                    self._make_securitygroup_binding_dict,
+                                    self._make_security_group_binding_dict,
                                     filters=filters, fields=fields)
 
-    def delete_port_securitygroup_binding(self, context, port_id):
+    def _delete_port_security_group_bindings(self, context, port_id):
         query = self._model_query(context, SecurityGroupPortBinding)
         bindings = query.filter(
             SecurityGroupPortBinding.port_id == port_id)
@@ -164,120 +192,155 @@ class SecurityGroup_db_mixin(ext_sg.SecurityGroupPluginBase):
             for binding in bindings:
                 context.session.delete(binding)
 
-    def create_securitygrouprule_bulk(self, context, securitygrouprule):
-        return self._create_bulk('securitygrouprule', context,
-                                 securitygrouprule)
+    def create_security_group_rule_bulk(self, context, security_group_rule):
+        return self._create_bulk('security_group_rule', context,
+                                 security_group_rule)
 
-    def create_securitygrouprule_bulk_native(self, context, securitygrouprule):
-        r = securitygrouprule['securitygrouprules']
+    def create_security_group_rule_bulk_native(self, context,
+                                               security_group_rule):
+        r = security_group_rule['security_group_rules']
+        scoped_session(context.session)
+        security_group_id = self._validate_security_group_rules(
+            context, security_group_rule)
+        with context.session.begin(subtransactions=True):
+            if not self.get_security_group(context, security_group_id):
+                raise ext_sg.SecurityGroupNotFound(id=security_group_id)
 
-        parent_group_id = self._confirm_same_parent_group_id(securitygrouprule)
-        if not self.get_securitygroup(context, parent_group_id):
-            raise ext_sg.SecurityGroupNotFound(id=parent_group_id)
-
-        self._check_for_duplicate_rules(context, r)
-        ret = []
-        for rule_dict in r:
-            rule = rule_dict['securitygrouprule']
-            tenant_id = self._get_tenant_id_for_create(context, rule)
-            with context.session.begin(subtransactions=True):
-                db = SecurityGroupRule(id=utils.str_uuid(),
-                               tenant_id=tenant_id,
-                               parent_group_id=rule['parent_group_id'],
-                               direction=rule['direction'],
-                               external_id=rule.get('external_id'),
-                               group_id=rule.get('group_id'),
-                               ethertype=rule['ethertype'],
-                               protocol=rule['protocol'],
-                               port_range_min=rule['port_range_min'],
-                               port_range_max=rule['port_range_max'],
-                               ip_prefix=rule.get('ip_prefix'))
+            self._check_for_duplicate_rules(context, r)
+            ret = []
+            for rule_dict in r:
+                rule = rule_dict['security_group_rule']
+                tenant_id = self._get_tenant_id_for_create(context, rule)
+                db = SecurityGroupRule(
+                    id=utils.str_uuid(), tenant_id=tenant_id,
+                    security_group_id=rule['security_group_id'],
+                    direction=rule['direction'],
+                    external_id=rule.get('external_id'),
+                    source_group_id=rule.get('source_group_id'),
+                    ethertype=rule['ethertype'],
+                    protocol=rule['protocol'],
+                    port_range_min=rule['port_range_min'],
+                    port_range_max=rule['port_range_max'],
+                    source_ip_prefix=rule.get('source_ip_prefix'))
                 context.session.add(db)
             ret.append(self._make_security_group_rule_dict(db))
         return ret
 
-    def create_securitygrouprule(self, context, securitygrouprule):
-        bulk_rule = {'securitygrouprules': [securitygrouprule]}
-        return self.create_securitygrouprule_bulk_native(context, bulk_rule)[0]
+    def create_security_group_rule(self, context, security_group_rule):
+        bulk_rule = {'security_group_rules': [security_group_rule]}
+        return self.create_security_group_rule_bulk_native(context,
+                                                           bulk_rule)[0]
 
-    def _confirm_same_parent_group_id(self, securitygrouprule):
-        """Check that rules being installed all belong to same security group.
+    def _validate_security_group_rules(self, context, security_group_rule):
+        """Check that rules being installed all belong to the same security
+        group, source_group_id/security_group_id belong to the same tenant,
+        and rules are valid.
         """
-        new_rules = {}
-        for rules in securitygrouprule['securitygrouprules']:
-            rule = rules.get('securitygrouprule')
-            if rule['parent_group_id'] not in new_rules:
-                new_rules[rule['parent_group_id']] = []
-            new_rules[rule['parent_group_id']].append(rule)
 
+        new_rules = {}
+        tenant_ids = set()
+        for rules in security_group_rule['security_group_rules']:
+            rule = rules.get('security_group_rule')
+            new_rules.setdefault(rule['security_group_id'], [])
+
+            # Check that protocol/ethertype are valid
+            protocol = rule.get('protocol')
+            if protocol and protocol not in self.sg_supported_protocols:
+                raise ext_sg.SecurityGroupInvalidProtocolType(value=protocol)
+            ethertype = rule.get('ethertype')
+            if ethertype and ethertype not in self.sg_supported_ethertypes:
+                raise ext_sg.SecurityGroupInvalidEtherType(value=ethertype)
+
+            # Check that port_range's are valid
+            if ((rule['port_range_min'] and not rule['port_range_max']) or
+                (not rule['port_range_min'] and rule['port_range_max'])):
+                raise ext_sg.SecurityGroupInvalidPortRange()
+
+            if (rule['port_range_min'] and rule['port_range_max']
+                and (rule['port_range_min']
+                     > rule['port_range_max'])):
+                raise ext_sg.SecurityGroupInvalidPortRange()
+
+            if rule['source_ip_prefix'] and rule['source_group_id']:
+                raise ext_sg.SecurityGroupSourceGroupAndIpPrefix()
+
+            if (rule['port_range_min'] and rule['port_range_max'] and
+                not rule['protocol']):
+                raise ext_sg.SecurityGroupProtocolRequiredWithPorts()
+
+            if rule['tenant_id'] not in tenant_ids:
+                tenant_ids.add(rule['tenant_id'])
+            source_group_id = rule.get('source_group_id')
+            # Check that source_group_id exists for tenant
+            if source_group_id:
+                self.get_security_group(context, source_group_id,
+                                        tenant_id=rule['tenant_id'])
         if len(new_rules.keys()) > 1:
             raise ext_sg.SecurityGroupNotSingleGroupRules()
-        else:
-            return new_rules.keys()[0]
 
-    def _make_security_group_rule_dict(self, securitygrouprule, fields=None):
-        res = {'id': securitygrouprule['id'],
-               'tenant_id': securitygrouprule['tenant_id'],
-               'parent_group_id': securitygrouprule['parent_group_id'],
-               'ethertype': securitygrouprule['ethertype'],
-               'direction': securitygrouprule['direction'],
-               'protocol': securitygrouprule['protocol'],
-               'port_range_min': securitygrouprule['port_range_min'],
-               'port_range_max': securitygrouprule['port_range_max'],
-               'ip_prefix': securitygrouprule['ip_prefix'],
-               'group_id': securitygrouprule['group_id'],
-               'external_id': securitygrouprule['external_id']}
+        # Confirm single tenant and that the tenant has permission
+        # to add rules to this security group.
+        if len(tenant_ids) > 1:
+            raise ext_sg.SecurityGroupRulesNotSingleTenant()
+        for tenant_id in tenant_ids:
+            self.get_security_group(context, new_rules.keys()[0],
+                                    tenant_id=tenant_id)
+        return new_rules.keys()[0]
+
+    def _make_security_group_rule_dict(self, security_group_rule, fields=None):
+        res = {'id': security_group_rule['id'],
+               'tenant_id': security_group_rule['tenant_id'],
+               'security_group_id': security_group_rule['security_group_id'],
+               'ethertype': security_group_rule['ethertype'],
+               'direction': security_group_rule['direction'],
+               'protocol': security_group_rule['protocol'],
+               'port_range_min': security_group_rule['port_range_min'],
+               'port_range_max': security_group_rule['port_range_max'],
+               'source_ip_prefix': security_group_rule['source_ip_prefix'],
+               'source_group_id': security_group_rule['source_group_id'],
+               'external_id': security_group_rule['external_id']}
 
         return self._fields(res, fields)
 
-    def _make_security_group_rule_filter_dict(self, securitygrouprule):
-        sgr = securitygrouprule['securitygrouprule']
+    def _make_security_group_rule_filter_dict(self, security_group_rule):
+        sgr = security_group_rule['security_group_rule']
         res = {'tenant_id': [sgr['tenant_id']],
-               'parent_group_id': [sgr['parent_group_id']],
-               'ethertype': [sgr['ethertype']],
-               'direction': [sgr['direction']],
-               'protocol': [sgr['protocol']],
-               'port_range_min': [sgr['port_range_min']],
-               'port_range_max': [sgr['port_range_max']]}
+               'security_group_id': [sgr['security_group_id']],
+               'direction': [sgr['direction']]}
 
-        if sgr.get('ip_prefix'):
-            res['ip_prefix'] = [sgr['ip_prefix']]
-
-        if sgr.get('group_id'):
-            res['group_id'] = [sgr['group_id']]
-
-        if sgr.get('external_id'):
-            res['external_id'] = [sgr['external_id']]
-
+        include_if_present = ['protocol', 'port_range_max', 'port_range_min',
+                              'ethertype', 'source_ip_prefix',
+                              'source_group_id', 'external_id']
+        for key in include_if_present:
+            value = sgr.get(key)
+            if value:
+                res[key] = [value]
         return res
 
-    def _check_for_duplicate_rules(self, context, securitygrouprules):
-        """ Check for duplicate rules
-        """
-        for i in securitygrouprules:
+    def _check_for_duplicate_rules(self, context, security_group_rules):
+        for i in security_group_rules:
             found_self = False
-            for j in securitygrouprules:
-                if i['securitygrouprule'] == j['securitygrouprule']:
+            for j in security_group_rules:
+                if i['security_group_rule'] == j['security_group_rule']:
                     if found_self:
                         raise ext_sg.DuplicateSecurityGroupRuleInPost(rule=i)
                     found_self = True
 
             # Check in database if rule exists
             filters = self._make_security_group_rule_filter_dict(i)
-            self.get_securitygrouprules(context)
-            if self.get_securitygrouprules(context, filters):
+            if self.get_security_group_rules(context, filters):
                 raise ext_sg.SecurityGroupRuleExists(rule=i)
 
-    def get_securitygrouprules(self, context, filters=None, fields=None):
-        return  self._get_collection(context, SecurityGroupRule,
-                                        self._make_security_group_rule_dict,
-                                        filters=filters, fields=fields)
+    def get_security_group_rules(self, context, filters=None, fields=None):
+        return self._get_collection(context, SecurityGroupRule,
+                                    self._make_security_group_rule_dict,
+                                    filters=filters, fields=fields)
 
-    def get_securitygrouprule(self, context, id, fields=None):
-        securitygrouprule = self._get_securitygrouprule(context, id)
-        return self._make_security_group_rule_dict(securitygrouprule, fields)
+    def get_security_group_rule(self, context, id, fields=None):
+        security_group_rule = self._get_security_group_rule(context, id)
+        return self._make_security_group_rule_dict(security_group_rule, fields)
 
-    def _get_securitygrouprule(self, context, id):
+    def _get_security_group_rule(self, context, id):
         try:
             if not re.match(attributes.UUID_PATTERN, id):
                 query = self._model_query(context, SecurityGroupRule)
@@ -289,22 +352,53 @@ class SecurityGroup_db_mixin(ext_sg.SecurityGroupPluginBase):
             raise ext_sg.SecurityGroupRuleNotFound(id=id)
         return sgr
 
-    def delete_securitygrouprule(self, context, sgrid):
+    def delete_security_group_rule(self, context, sgrid):
         with context.session.begin(subtransactions=True):
-            rule = self._get_securitygrouprule(context, sgrid)
+            rule = self._get_security_group_rule(context, sgrid)
             context.session.delete(rule)
 
-    def _extend_port_dict_securitygroup(self, context, port):
+    def _extend_port_dict_security_group(self, context, port):
         filters = {'port_id': [port['id']]}
-        fields = {'sgid': None}
-        port[ext_sg.EXTERNAL] = []
-        sgids = self.get_port_securitygroup_binding(context, filters, fields)
-        for sgid in sgids:
-            port[ext_sg.EXTERNAL].append(sgid['sgid'])
+        fields = {'sg_id': None}
+        port[ext_sg.SECURITYGROUP] = []
+        sg_ids = self._get_port_security_group_bindings(context, filters,
+                                                        fields)
+        for sg_id in sg_ids:
+            port[ext_sg.SECURITYGROUP].append(sg_id['sg_id'])
         return port
 
-    def _process_port_create_securitygroup(self, context, port_id, sgids):
-        if not sgids:
+    def _process_port_create_security_group(self, context, port_id, sg_ids):
+        if not sg_ids:
             return
-        for sgid in sgids:
-            self.create_port_securitygroup_binding(context, port_id, sgid)
+        for sg_id in sg_ids:
+            self._create_port_security_group_binding(context, port_id, sg_id)
+
+    def _ensure_default_security_group(self, context, tenant_id,
+                                       security_group=None):
+        """Create a default security group if one doesn't exist.
+
+        :returns: the default security group id.
+        """
+        filters = {'name': ['default'], 'tenant_id': [tenant_id]}
+        default_group = self.get_security_groups(context, filters)
+        if not default_group:
+            security_group = {'security_group': {'name': 'default',
+                                                 'tenant_id': tenant_id,
+                                                 'description': 'default'}}
+            ret = self.create_security_group(context, security_group, True)
+            return ret['id']
+        else:
+            return default_group[0]['id']
+
+    def _validate_security_groups_on_port(self, context, port):
+        p = port['port']
+        if not p.get(ext_sg.SECURITYGROUP):
+            return
+
+        valid_groups = self.get_security_groups(context, fields={'id': None})
+        valid_groups_set = set([x['id'] for x in valid_groups])
+        req_sg_set = set(p[ext_sg.SECURITYGROUP])
+        invalid_sg_set = req_sg_set - valid_groups_set
+        if invalid_sg_set:
+            msg = ' '.join(str(x) for x in invalid_sg_set)
+            raise ext_sg.SecurityGroupNotFound(id=msg)

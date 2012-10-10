@@ -256,9 +256,9 @@ class QuantumDbPluginV2TestCase(unittest2.TestCase):
         data = {'port': {'network_id': net_id,
                          'tenant_id': self._tenant_id}}
 
-        for arg in (('admin_state_up', 'device_id',
+        for arg in ('admin_state_up', 'device_id',
                     'mac_address', 'name', 'fixed_ips',
-                    'tenant_id', 'device_owner') + (arg_list or ())):
+                    'tenant_id', 'device_owner', 'security_groups'):
             # Arg must be present and not empty
             if arg in kwargs and kwargs[arg]:
                 data['port'][arg] = kwargs[arg]
