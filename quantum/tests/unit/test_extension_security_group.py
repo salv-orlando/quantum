@@ -119,15 +119,20 @@ class SecurityGroupsTestCase(test_db_plugin.QuantumDbPluginV2TestCase,
         attributes.RESOURCE_ATTRIBUTE_MAP = self._attribute_map_bk
 
     def _create_security_group(self, fmt, name, description, external_id=None,
-                               tenant_id='test_tenant'):
+                               **kwargs):
 
         data = {'security_group': {'name': name,
-                                   'tenant_id': tenant_id,
+                                   'tenant_id': kwargs.get('tenant_id',
+                                                           'test_tenant'),
                                    'description': description}}
         if external_id:
             data['security_group']['external_id'] = external_id
         security_group_req = self.new_create_request('security-groups', data,
                                                      fmt)
+        if (kwargs.get('set_context') and 'tenant_id' in kwargs):
+            # create a specific auth context for this request
+            security_group_req.environ['quantum.context'] = (
+                context.Context('', kwargs['tenant_id']))
         return security_group_req.get_response(self.ext_api)
 
     def _build_security_group_rule(self, security_group_id, direction,
@@ -268,6 +273,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                 self.assertEquals(security_group['security_group'][k], v)
 
     def test_create_security_group_external_id(self):
+        cfg.CONF.SECURITYGROUP.proxy_mode = True
         name = 'webservers'
         description = 'my webservers'
         external_id = 10
@@ -283,16 +289,37 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
             groups = self.deserialize('json', res.get_response(self.ext_api))
             self.assertEquals(len(groups['security_groups']), 1)
 
+    def test_create_security_group_proxy_mode_not_admin(self):
+        cfg.CONF.SECURITYGROUP.proxy_mode = True
+        res = self._create_security_group('json', 'webservers',
+                                          'webservers', '1',
+                                          tenant_id='bad_tenant',
+                                          set_context=True)
+        self.deserialize('json', res)
+        self.assertEquals(res.status_int, 500)
+
+    def test_create_security_group_no_external_id_proxy_mode(self):
+        cfg.CONF.SECURITYGROUP.proxy_mode = True
+        res = self._create_security_group('json', 'webservers',
+                                          'webservers')
+        self.deserialize('json', res)
+        self.assertEquals(res.status_int, 400)
+
+    def test_create_security_group_no_external_id_not_proxy_mode(self):
+        res = self._create_security_group('json', 'webservers',
+                                          'webservers', '1')
+        self.deserialize('json', res)
+        self.assertEquals(res.status_int, 409)
+
     def test_create_default_security_group_fail(self):
         name = 'default'
         description = 'my webservers'
-        external_id = 10
-        res = self._create_security_group('json', name, description,
-                                          external_id)
+        res = self._create_security_group('json', name, description)
         self.deserialize('json', res)
         self.assertEquals(res.status_int, 409)
 
     def test_create_security_group_duplicate_external_id(self):
+        cfg.CONF.SECURITYGROUP.proxy_mode = True
         name = 'webservers'
         description = 'my webservers'
         external_id = 1
@@ -332,6 +359,21 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
             sg = self.deserialize('json', res.get_response(self.ext_api))
             self._delete('security-groups', sg['security_groups'][0]['id'],
                          409)
+
+    def test_default_security_group_rules(self):
+        with self.network():
+            res = self.new_list_request('security-groups')
+            groups = self.deserialize('json', res.get_response(self.ext_api))
+            self.assertEquals(len(groups['security_groups']), 1)
+            res = self.new_list_request('security-group-rules')
+            rules = self.deserialize('json', res.get_response(self.ext_api))
+            self.assertEquals(len(rules['security_group_rules']), 4)
+            # just generic rules to allow default egress and
+            # intergroup communicartion
+            for rule in rules['security_group_rules']:
+                self.assertEquals(rule['port_range_max'], None)
+                self.assertEquals(rule['port_range_min'], None)
+                self.assertEquals(rule['protocol'], None)
 
     def test_create_security_group_rule_source_ip_prefix(self):
         name = 'webservers'
@@ -427,6 +469,58 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
         self.deserialize('json', res)
         self.assertEquals(res.status_int, 404)
 
+    def test_create_security_group_rule_exteral_id_proxy_mode(self):
+        cfg.CONF.SECURITYGROUP.proxy_mode = True
+        with self.security_group(external_id=1) as sg:
+            rule = {'security_group_rule':
+                    {'security_group_id': sg['security_group']['id'],
+                     'direction': 'ingress',
+                     'protocol': 'tcp',
+                     'port_range_min': '22',
+                     'port_range_max': '22',
+                     'external_id': '1',
+                     'tenant_id': 'test_tenant',
+                     'source_group_id': sg['security_group']['id']}}
+
+            res = self._create_security_group_rule('json', rule)
+            self.deserialize('json', res)
+            self.assertEquals(res.status_int, 201)
+
+    def test_create_security_group_rule_exteral_id_not_proxy_mode(self):
+        with self.security_group() as sg:
+            rule = {'security_group_rule':
+                    {'security_group_id': sg['security_group']['id'],
+                     'direction': 'ingress',
+                     'protocol': 'tcp',
+                     'port_range_min': '22',
+                     'port_range_max': '22',
+                     'external_id': 1,
+                     'tenant_id': 'test_tenant',
+                     'source_group_id': sg['security_group']['id']}}
+
+            res = self._create_security_group_rule('json', rule)
+            self.deserialize('json', res)
+            self.assertEquals(res.status_int, 409)
+
+    def test_create_security_group_rule_not_admin(self):
+        cfg.CONF.SECURITYGROUP.proxy_mode = True
+        with self.security_group(external_id='1') as sg:
+            rule = {'security_group_rule':
+                    {'security_group_id': sg['security_group']['id'],
+                     'direction': 'ingress',
+                     'protocol': 'tcp',
+                     'port_range_min': '22',
+                     'port_range_max': '22',
+                     'tenant_id': 'bad_tenant',
+                     'external_id': 1,
+                     'source_group_id': sg['security_group']['id']}}
+
+            res = self._create_security_group_rule('json', rule,
+                                                   tenant_id='bad_tenant',
+                                                   set_context=True)
+            self.deserialize('json', res)
+            self.assertEquals(res.status_int, 500)
+
     def test_create_security_group_rule_bad_tenant_source_group_id(self):
         with self.security_group() as sg:
             res = self._create_security_group('json', 'webservers',
@@ -498,6 +592,32 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                 res = self._create_security_group_rule('json', rule)
                 self.deserialize('json', res)
                 self.assertEquals(res.status_int, 409)
+
+    def test_create_security_group_rule_min_port_greater_max(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            security_group_id = sg['security_group']['id']
+            with self.security_group_rule(security_group_id):
+                rule = self._build_security_group_rule(
+                    sg['security_group']['id'], 'ingress', 'tcp', '50', '22')
+                self._create_security_group_rule('json', rule)
+                res = self._create_security_group_rule('json', rule)
+                self.deserialize('json', res)
+                self.assertEquals(res.status_int, 400)
+
+    def test_create_security_group_rule_ports_but_no_protocol(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            security_group_id = sg['security_group']['id']
+            with self.security_group_rule(security_group_id):
+                rule = self._build_security_group_rule(
+                    sg['security_group']['id'], 'ingress', None, '22', '22')
+                self._create_security_group_rule('json', rule)
+                res = self._create_security_group_rule('json', rule)
+                self.deserialize('json', res)
+                self.assertEquals(res.status_int, 400)
 
     def test_update_port_with_security_group(self):
         with self.network() as n:

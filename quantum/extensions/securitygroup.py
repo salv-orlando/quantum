@@ -104,24 +104,55 @@ class SecurityGroupRuleExists(qexception.InUse):
     message = _("Security group rule exists %(rule)s")
 
 
+class SecurityGroupProxyMode(qexception.InUse):
+    message = _("Did not recieve external id and in proxy mode")
+
+
+class SecurityGroupNotProxyMode(qexception.InUse):
+    message = _("Recieve external id and not in proxy mode")
+
+
+class SecurityGroupProxyModeNotAdmin(qexception.InvalidExtenstionEnv):
+    message = _("In Proxy Mode and not from admin")
+
+
+class SecurityGroupInvalidExternalID(qexception.InvalidInput):
+    message = _("external_id wrong type %(data)s")
+
+
 def convert_validate_port_value(port):
+    if port is None:
+        return port
     try:
         val = int(port)
-        # Valid port range
-        if  val < 0 or val > 65535:
-            raise SecurityGroupInvalidPortValue(port=port)
+    except (ValueError, TypeError):
+        raise SecurityGroupInvalidPortValue(port=port)
+
+    if val >= 0 and val <= 65535:
         return val
-    except TypeError:
-        if port is None or not len(port):
-            return None
+    else:
         raise SecurityGroupInvalidPortValue(port=port)
 
 
 def _validate_name_not_default(data, valid_values=None):
-    if data == "default":
+    if not cfg.CONF.SECURITYGROUP.proxy_mode and data == "default":
         raise SecurityGroupDefaultAlreadyExists()
 
+
+def _validate_external_id_and_mode(external_id, valid_values=None):
+    if not cfg.CONF.SECURITYGROUP.proxy_mode and not external_id:
+        return
+    elif not cfg.CONF.SECURITYGROUP.proxy_mode and external_id:
+        raise SecurityGroupNotProxyMode()
+    try:
+        int(external_id)
+    except (ValueError, TypeError):
+        raise SecurityGroupInvalidExternalID(data=external_id)
+    if cfg.CONF.SECURITYGROUP.proxy_mode and not external_id:
+        raise SecurityGroupProxyMode()
+
 attr.validators['type:name_not_default'] = _validate_name_not_default
+attr.validators['type:external_id_and_mode'] = _validate_external_id_and_mode
 
 # Attribute Map
 RESOURCE_ATTRIBUTE_MAP = {
@@ -135,7 +166,7 @@ RESOURCE_ATTRIBUTE_MAP = {
         'description': {'allow_post': True, 'allow_put': False,
                         'is_visible': True, 'default': ''},
         'external_id': {'allow_post': True, 'allow_put': False,
-                        'is_visible': True, 'default': None},
+                        'validate': {'type:external_id_and_mode': None}},
         'tenant_id': {'allow_post': True, 'allow_put': False,
                       'required_by_policy': True,
                       'is_visible': True},
@@ -146,10 +177,10 @@ RESOURCE_ATTRIBUTE_MAP = {
                'is_visible': True},
         # external_id can be used to be backwards compatible with nova
         'external_id': {'allow_post': True, 'allow_put': False,
-                        'is_visible': True, 'default': None},
+                        'is_visible': True, 'default': None,
+                        'validate': {'type:external_id_and_mode': None}},
         'security_group_id': {'allow_post': True, 'allow_put': False,
                               'is_visible': True, 'required_by_policy': True},
-
         'source_group_id': {'allow_post': True, 'allow_put': False,
                             'default': None, 'is_visible': True},
         'direction': {'allow_post': True, 'allow_put': True,
@@ -191,6 +222,11 @@ security_group_quota_opts = [
                     '-1 for unlimited'),
 ]
 cfg.CONF.register_opts(security_group_quota_opts, 'QUOTAS')
+
+security_group_opts = [
+    cfg.StrOpt('proxy_mode', default=False)
+]
+cfg.CONF.register_opts(security_group_opts, 'SECURITYGROUP')
 
 
 class Securitygroup(object):

@@ -20,10 +20,12 @@
 import re
 
 import sqlalchemy as sa
+from sqlalchemy import orm
 from sqlalchemy.orm import exc
 from sqlalchemy.orm import scoped_session
 
 from quantum.api.v2 import attributes
+from quantum.openstack.common import cfg
 from quantum.common import utils
 from quantum.db import model_base
 from quantum.db import models_v2
@@ -41,8 +43,9 @@ class SecurityGroupPortBinding(model_base.BASEV2):
     """Represents binding between quantum ports and security profiles"""
     port_id = sa.Column(sa.String(36), sa.ForeignKey("ports.id"),
                         primary_key=True)
-    sg_id = sa.Column(sa.String(36), sa.ForeignKey("securitygroups.id"),
-                      primary_key=True)
+    security_group_id = sa.Column(sa.String(36),
+                                  sa.ForeignKey("securitygroups.id"),
+                                  primary_key=True)
 
 
 class SecurityGroupRule(model_base.BASEV2, models_v2.HasId,
@@ -65,6 +68,14 @@ class SecurityGroupRule(model_base.BASEV2, models_v2.HasId,
     port_range_min = sa.Column(sa.Integer)
     port_range_max = sa.Column(sa.Integer)
     source_ip_prefix = sa.Column(sa.String(255))
+    security_group = orm.relationship(
+        SecurityGroup,
+        backref=orm.backref('rules', cascade='all,delete'),
+        primaryjoin="SecurityGroup.id==SecurityGroupRule.security_group_id")
+    source_group = orm.relationship(
+        SecurityGroup,
+        backref=orm.backref('source_rules', cascade='all,delete'),
+        primaryjoin="SecurityGroup.id==SecurityGroupRule.source_group_id")
 
 
 class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
@@ -84,8 +95,17 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         a given tenant if it does not exist.
         """
         s = security_group['security_group']
+        if (cfg.CONF.SECURITYGROUP.proxy_mode and not context.is_admin):
+            raise ext_sg.SecurityGroupProxyModeNotAdmin()
+        if (cfg.CONF.SECURITYGROUP.proxy_mode and not s.get('external_id')):
+            raise ext_sg.SecurityGroupProxyMode()
+        if not cfg.CONF.SECURITYGROUP.proxy_mode and s.get('external_id'):
+            raise ext_sg.SecurityGroupNotProxyMode()
+
         tenant_id = self._get_tenant_id_for_create(context, s)
-        if not default_sg:
+
+        # if in proxy mode a default security group will be created by source
+        if not default_sg and not cfg.CONF.SECURITYGROUP.proxy_mode:
             self._ensure_default_security_group(context, tenant_id,
                                                 security_group)
         if s.get('external_id'):
@@ -107,6 +127,24 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
                                               name=s['name'],
                                               external_id=s.get('external_id'))
             context.session.add(security_group_db)
+            if s.get('name') == 'default':
+                for ethertype in self.sg_supported_ethertypes:
+                    # Allow all egress traffic
+                    db = SecurityGroupRule(
+                        id=utils.str_uuid(), tenant_id=tenant_id,
+                        security_group=security_group_db,
+                        direction='egress',
+                        ethertype=ethertype)
+                    context.session.add(db)
+                    # Allow intercommunication
+                    db = SecurityGroupRule(
+                        id=utils.str_uuid(), tenant_id=tenant_id,
+                        security_group=security_group_db,
+                        direction='ingress',
+                        source_group=security_group_db,
+                        ethertype=ethertype)
+                    context.session.add(db)
+
         return self._make_security_group_dict(security_group_db)
 
     def get_security_groups(self, context, filters=None, fields=None):
@@ -127,7 +165,6 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         try:
             ret = self._make_security_group_dict(self._get_security_group(
                                                  context, id), fields)
-
         finally:
             if tenant_id:
                 context.tenant_id = tmp_context_tenant_id
@@ -146,7 +183,10 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         return sg
 
     def delete_security_group(self, context, id):
-        filters = {'sg_id': [id]}
+        if (cfg.CONF.SECURITYGROUP.proxy_mode and not context.is_admin):
+            raise ext_sg.SecurityGroupProxyModeNotAdmin()
+
+        filters = {'security_group_id': [id]}
         ports = self._get_port_security_group_bindings(context, filters)
         if ports:
             raise ext_sg.SecurityGroupInUse(id=id)
@@ -169,13 +209,14 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
 
     def _make_security_group_binding_dict(self, security_group, fields=None):
         res = {'port_id': security_group['port_id'],
-               'sg_id': security_group['sg_id']}
+               'security_group_id': security_group['security_group_id']}
         return self._fields(res, fields)
 
-    def _create_port_security_group_binding(self, context, port_id, sg_id):
+    def _create_port_security_group_binding(self, context, port_id,
+                                            security_group_id):
         with context.session.begin(subtransactions=True):
             db = SecurityGroupPortBinding(port_id=port_id,
-                                          sg_id=sg_id)
+                                          security_group_id=security_group_id)
             context.session.add(db)
 
     def _get_port_security_group_bindings(self, context,
@@ -237,11 +278,21 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         and rules are valid.
         """
 
-        new_rules = {}
+        if (cfg.CONF.SECURITYGROUP.proxy_mode and not context.is_admin):
+            raise ext_sg.SecurityGroupProxyModeNotAdmin()
+
+        new_rules = set()
         tenant_ids = set()
         for rules in security_group_rule['security_group_rules']:
             rule = rules.get('security_group_rule')
-            new_rules.setdefault(rule['security_group_id'], [])
+            new_rules.add(rule['security_group_id'])
+
+            if (cfg.CONF.SECURITYGROUP.proxy_mode and
+                not rule.get('external_id')):
+                raise ext_sg.SecurityGroupProxyMode()
+            if (not cfg.CONF.SECURITYGROUP.proxy_mode and
+                rule.get('external_id')):
+                raise ext_sg.SecurityGroupNotProxyMode()
 
             # Check that protocol/ethertype are valid
             protocol = rule.get('protocol')
@@ -252,21 +303,18 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
                 raise ext_sg.SecurityGroupInvalidEtherType(value=ethertype)
 
             # Check that port_range's are valid
-            if ((rule['port_range_min'] and not rule['port_range_max']) or
-                (not rule['port_range_min'] and rule['port_range_max'])):
-                raise ext_sg.SecurityGroupInvalidPortRange()
-
-            if (rule['port_range_min'] and rule['port_range_max']
-                and (rule['port_range_min']
-                     > rule['port_range_max'])):
+            if (rule['port_range_min'] is None and
+                rule['port_range_max'] is None):
+                pass
+            elif (rule['port_range_min'] is not None and
+                  rule['port_range_min'] <= rule['port_range_max']):
+                if not rule['protocol']:
+                    raise ext_sg.SecurityGroupProtocolRequiredWithPorts()
+            else:
                 raise ext_sg.SecurityGroupInvalidPortRange()
 
             if rule['source_ip_prefix'] and rule['source_group_id']:
                 raise ext_sg.SecurityGroupSourceGroupAndIpPrefix()
-
-            if (rule['port_range_min'] and rule['port_range_max'] and
-                not rule['protocol']):
-                raise ext_sg.SecurityGroupProtocolRequiredWithPorts()
 
             if rule['tenant_id'] not in tenant_ids:
                 tenant_ids.add(rule['tenant_id'])
@@ -275,17 +323,18 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             if source_group_id:
                 self.get_security_group(context, source_group_id,
                                         tenant_id=rule['tenant_id'])
-        if len(new_rules.keys()) > 1:
+        if len(new_rules) > 1:
             raise ext_sg.SecurityGroupNotSingleGroupRules()
+        security_group_id = new_rules.pop()
 
         # Confirm single tenant and that the tenant has permission
         # to add rules to this security group.
         if len(tenant_ids) > 1:
             raise ext_sg.SecurityGroupRulesNotSingleTenant()
         for tenant_id in tenant_ids:
-            self.get_security_group(context, new_rules.keys()[0],
+            self.get_security_group(context, security_group_id,
                                     tenant_id=tenant_id)
-        return new_rules.keys()[0]
+        return security_group_id
 
     def _make_security_group_rule_dict(self, security_group_rule, fields=None):
         res = {'id': security_group_rule['id'],
@@ -353,25 +402,30 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         return sgr
 
     def delete_security_group_rule(self, context, sgrid):
+        if (cfg.CONF.SECURITYGROUP.proxy_mode and not context.is_admin):
+            raise ext_sg.SecurityGroupProxyModeNotAdmin()
         with context.session.begin(subtransactions=True):
             rule = self._get_security_group_rule(context, sgrid)
             context.session.delete(rule)
 
     def _extend_port_dict_security_group(self, context, port):
         filters = {'port_id': [port['id']]}
-        fields = {'sg_id': None}
+        fields = {'security_group_id': None}
         port[ext_sg.SECURITYGROUP] = []
-        sg_ids = self._get_port_security_group_bindings(context, filters,
-                                                        fields)
-        for sg_id in sg_ids:
-            port[ext_sg.SECURITYGROUP].append(sg_id['sg_id'])
+        security_group_id = self._get_port_security_group_bindings(
+            context, filters, fields)
+        for security_group_id in security_group_id:
+            port[ext_sg.SECURITYGROUP].append(
+                security_group_id['security_group_id'])
         return port
 
-    def _process_port_create_security_group(self, context, port_id, sg_ids):
-        if not sg_ids:
+    def _process_port_create_security_group(self, context, port_id,
+                                            security_group_id):
+        if not security_group_id:
             return
-        for sg_id in sg_ids:
-            self._create_port_security_group_binding(context, port_id, sg_id)
+        for security_group_id in security_group_id:
+            self._create_port_security_group_binding(context, port_id,
+                                                     security_group_id)
 
     def _ensure_default_security_group(self, context, tenant_id,
                                        security_group=None):
@@ -379,12 +433,19 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
 
         :returns: the default security group id.
         """
+        # if in proxy mode a default security group will be created by source
+        if not security_group and cfg.CONF.SECURITYGROUP.proxy_mode:
+            return
+
         filters = {'name': ['default'], 'tenant_id': [tenant_id]}
         default_group = self.get_security_groups(context, filters)
         if not default_group:
             security_group = {'security_group': {'name': 'default',
                                                  'tenant_id': tenant_id,
                                                  'description': 'default'}}
+            if security_group:
+                security_group['security_group']['external_id'] = (
+                    security_group['security_group'].get('external_id'))
             ret = self.create_security_group(context, security_group, True)
             return ret['id']
         else:
