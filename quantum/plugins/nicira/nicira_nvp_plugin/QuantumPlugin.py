@@ -7,7 +7,7 @@
 #
 #         http://www.apache.org/licenses/LICENSE-2.0
 #
-#    Unless required by applicable law or agreed to in writing, software
+#    Unless equired by applicable law or agreed to in writing, software
 #    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
@@ -20,25 +20,15 @@
 # @author: Aaron Rosen, Nicira Networks, Inc.
 
 
-import ConfigParser
-import json
 import hashlib
 import logging
-import netaddr
 import os
-import sys
 import traceback
-import urllib
-import uuid
 
 
+# TODO Fix relative imports
 from common import config
-from quantum.plugins.nicira.nicira_nvp_plugin.api_client import client_eventlet
-import NvpApiClient
-import nvplib
 from nvp_plugin_version import PLUGIN_VERSION
-
-from quantum.api.v2 import attributes
 from quantum.common import constants
 from quantum.common import exceptions as exception
 from quantum.common import topics
@@ -46,10 +36,14 @@ from quantum.db import api as db
 from quantum.db import db_base_plugin_v2
 from quantum.db import dhcp_rpc_base
 from quantum.db import models_v2
+from quantum.db import securitygroups_db
+from quantum.extensions import securitygroup as ext_sg
+from quantum.openstack.common.rpc import dispatcher
 from quantum.openstack.common import cfg
 from quantum.openstack.common import context
 from quantum.openstack.common import rpc
-from quantum.openstack.common.rpc import dispatcher
+import NvpApiClient
+import nvplib
 
 
 CONFIG_FILE = "nvp.ini"
@@ -229,14 +223,18 @@ class NVPCluster(object):
         return self.controllers[0]['uuid']
 
 
-class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
+class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
+                  securitygroups_db.SecurityGroup_db_mixin):
+
     """
     NvpPluginV2 is a Quantum plugin that provides L2 Virtual Network
     functionality using NVP.
     """
 
+    __native_bulk_support = True
+
     supported_extension_aliases = ["provider", "os-quantum-router",
-                                   "port_security"]
+                                   "port_security", "securitygroup"]
 
     def __init__(self, loglevel=None):
         if loglevel:
@@ -317,6 +315,259 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
     def clear_state(self):
         nvplib.clear_state(self.clusters[0])
 
+    def create_securitygroup(self, context, securitygroup):
+        """Create security group."""
+
+        s = securitygroup.get("securitygroup")
+        if s.get('external_id'):
+            filters = {'external_id': [(s.get('external_id'))]}
+            securitygroups = super(NvpPluginV2, self).get_securitygroups(
+                context, filters=filters)
+            if securitygroups:
+                raise ext_sg.SecurityGroupAlreadyExists(
+                    name=s.get('name', ''), external_id=s.get('external_id'))
+        tenant_id = self._get_tenant_id_for_create(context, s)
+        nvp_secgroup = nvplib.create_security_profile(self.clusters[0],
+                                                      tenant_id, s)
+        securitygroup["securitygroup"]['id'] = nvp_secgroup['uuid']
+        return super(NvpPluginV2, self).create_securitygroup(context,
+                                                             securitygroup)
+
+    def _convert_to_nvp_rule(self, rule):
+        """Convert/validate to nvp fields"""
+
+        nvp_rule = {}
+        if ((rule['port_range_min'] and not rule['port_range_max']) or
+            (not rule['port_range_min'] and rule['port_range_max'])):
+            raise ext_sg.SecurityGroupInvalidPortRange()
+
+        if (rule['port_range_min'] and rule['port_range_max']
+            and (rule['port_range_min']
+                 > rule['port_range_max'])):
+            raise ext_sg.SecurityGroupInvalidPortRange()
+
+        if rule['ip_prefix'] and rule['group_id']:
+            raise ext_sg.SecurityGroupProfileAndIpPrefix()
+
+        if (rule['port_range_min'] and rule['port_range_max'] and
+            not rule['protocol']):
+            raise ext_sg.SecurityGroupProtocolRequiredWithPorts()
+
+        if rule['port_range_min'] and rule['port_range_max']:
+            nvp_rule['port_range_min'] = rule['port_range_min']
+            nvp_rule['port_range_max'] = rule['port_range_max']
+
+        if rule['protocol']:
+            nvp_rule['protocol'] = rule['protocol']
+
+        if rule['ip_prefix']:
+            nvp_rule['ip_prefix'] = rule['ip_prefix']
+        if rule['group_id']:
+            nvp_rule['profile_uuid'] = rule['group_id']
+
+        nvp_rule['ethertype'] = rule['ethertype']
+        return nvp_rule
+
+    def _get_profile_uuid(self, context, group_id):
+        """Return profile id from novas group id. """
+        securitygroup = super(NvpPluginV2, self).get_securitygroup(context,
+                                                                   group_id)
+        if not securitygroup:
+            raise ext_sg.SecurityGroupNotFound(id=group_id)
+        return securitygroup['id']
+
+    def _remove_none_values(self, rules):
+        """Remove none values or NVP will complain about them.
+        """
+        ingress_rules = rules['logical_port_ingress_rules']
+
+        for rule in ingress_rules:
+            if 'group_id' in rule and rule['group_id'] == None:
+                del rule['group_id']
+            if 'ip_prefix' in rule and rule['ip_prefix'] == None:
+                del rule['ip_prefix']
+            if 'port_range_min' in rule and rule['port_range_min'] == None:
+                del rule['port_range_min']
+            if 'port_range_max' in rule and rule['port_range_max'] == None:
+                del rule['port_range_max']
+            if 'protocol' in rule and rule['protocol'] == None:
+                del rule['protocol']
+        egress_rules = rules['logical_port_egress_rules']
+
+        for rule in egress_rules:
+            if 'group_id' in rule and rule['group_id'] == None:
+                del rule['group_id']
+            if 'ip_prefix' in rule and rule['ip_prefix'] == None:
+                del rule['ip_prefix']
+            if 'port_range_min' in rule and rule['port_range_min'] == None:
+                del rule['port_range_min']
+            if 'port_range_max' in rule and rule['port_range_max'] == None:
+                del rule['port_range_max']
+            if 'protocol' in rule and rule['protocol'] == None:
+                del rule['protocol']
+
+        return rules
+
+    def create_securitygrouprule(self, context, securitygrouprule):
+        """create a single security group rule"""
+        bulk_rule = {'securitygrouprules': [securitygrouprule]}
+        return  self.create_securitygrouprule_bulk(context, bulk_rule)[0]
+
+    def create_securitygrouprule_bulk(self, context, securitygrouprule):
+        """ create security group rules
+        :param securitygrouprule: list of rules to create
+        """
+        s = securitygrouprule.get('securitygrouprules')
+        tenant_id = self._get_tenant_id_for_create(context, s)
+
+        # Only allow user to put rules to one security group per call.
+        # This is limited since if different groups are specified it
+        # would require multiple POST/PUT calls to NVP which could fail
+        # in the middle and leaving us in a bad state.
+        parent_group_id = self._confirm_same_parent_group_id(
+            securitygrouprule)
+
+        # Check to make sure security group exists and retreive
+        # nvp id that corresponds to nova.
+        securitygroup = super(NvpPluginV2, self).get_securitygroup(context,
+            parent_group_id)
+
+        if not securitygroup:
+            raise ext_sg.SecurityGroupNotFound(id=parent_group_id)
+
+        # Check for duplicate rules
+        self._check_for_duplicate_rules(context, s)
+
+        # keep id that maps nvp_id to external_id
+        nvp_id = securitygroup['id']
+
+        # gather all the existing security group rules since we need all
+        # of them to PUT to NVP.
+        current_rules = self._remove_none_values(
+            self._get_security_group_rules_by_nvp_id(context, nvp_id))
+
+        # combine old rules with new rules
+        for r in s:
+            rule = r['securitygrouprule']
+            rule['parent_group_id'] = nvp_id
+            rule['ethertype'] = "IPv4"
+            if rule['group_id']:
+                rule['profile_uuid'] = self._get_profile_uuid(context,
+                    rule['group_id'])
+            if rule['direction'] == 'egress':
+                current_rules['logical_port_egress_rules'].append(
+                    self._convert_to_nvp_rule(rule))
+            elif rule['direction'] == 'ingress':
+                current_rules['logical_port_ingress_rules'].append(
+                    self._convert_to_nvp_rule(rule))
+
+        nvplib.create_securitygrouprules(self.clusters[0], tenant_id, nvp_id,
+                                         current_rules, parent_group_id)
+        return super(NvpPluginV2, self).create_securitygrouprule_bulk_native(
+            context, securitygrouprule)
+
+    def _validate_and_convert_security_groups(self, context, port):
+        p = port['port']
+
+        if not p.get(ext_sg.EXTERNAL):
+            return
+        # TODO Optimize, query all at once so we don't need to query
+        # db multiple times.
+        for i in range(0, len(p[ext_sg.EXTERNAL])):
+            securitygroup = super(NvpPluginV2, self).get_securitygroup(context,
+                p[ext_sg.EXTERNAL][i])
+            if not securitygroup:
+                raise ext_sg.SecurityGroupNotFound(id=p[ext_sg.EXTERNAL][i])
+            # set id to nvp_id
+            p[ext_sg.EXTERNAL][i] = securitygroup['id']
+
+    def _get_security_group_rules_by_nvp_id(self, context, nvp_id,
+                                           want_id=False):
+        """Query quantum db for security group rules. If external_id is
+        provided the external_id will also be returned.
+        """
+        fields = {'ip_prefix': None,
+                  'profile_uuid': None,
+                  'protocol': None,
+                  'port_range_min': None,
+                  'port_range_max': None,
+                  'protocol': None,
+                  'ethertype': None}
+
+        if want_id:
+            fields['id'] = None
+
+        filters = {'parent_group_id': [nvp_id], 'direction': ['ingress']}
+        ingress_rules = super(NvpPluginV2, self).get_securitygrouprules(
+            context, filters, fields)
+        filters = {'parent_group_id': [nvp_id], 'direction': ['egress']}
+        egress_rules = super(NvpPluginV2, self).get_securitygrouprules(
+            context, filters, fields)
+        return {'logical_port_ingress_rules': ingress_rules,
+                'logical_port_egress_rules': egress_rules}
+
+    def _remove_id_from_rules(self, rules, id):
+        found = -1
+        ingress_rules = rules['logical_port_ingress_rules']
+        for i in range(0, len(ingress_rules)):
+            if  ingress_rules[i]['id'] == id:
+                found = i
+            del ingress_rules[i]['id']
+
+        if found >= 0:
+            del ingress_rules[found]
+            found = -1
+
+        egress_rules = rules['logical_port_egress_rules']
+        for i in range(0, len(egress_rules)):
+            if  egress_rules[i]['id'] == id:
+                found = i
+            del ingress_rules[i]['id']
+
+        if found >= 0:
+            del egress_rules[found]
+
+    def delete_securitygrouprule(self, context, sgrid):
+        """ Delete a security group rule
+        :param sgrid: security group id to remove.
+        """
+        # determine security profile id
+        securitygroup = super(NvpPluginV2, self).get_securitygrouprule(context,
+                                                                       sgrid)
+        if not securitygroup:
+            raise ext_sg.SecurityGroupRuleNotFound(id=sgrid)
+
+        nvp_id = securitygroup['parent_group_id']
+        sgid = securitygroup['id']
+
+        current_rules = self._get_security_group_rules_by_nvp_id(
+            context, nvp_id, True)
+
+        self._remove_id_from_rules(current_rules, sgid)
+        self._remove_none_values(current_rules)
+        nvplib.update_securitygrouprules(self.clusters[0], nvp_id,
+                                         current_rules)
+        return super(NvpPluginV2, self).delete_securitygrouprule(context,
+                                                                 sgrid)
+
+    def delete_securitygroup(self, context, sgid):
+        """Delete a security group
+        :param sgid: security group rule to remove.
+        """
+        securitygroup = super(NvpPluginV2, self).get_securitygroup(context,
+                                                                   sgid)
+        if not securitygroup:
+            raise ext_sg.SecurityGroupNotFound(id=sgid)
+
+        nvp_id = securitygroup['id']
+        filters = {'sgid': [nvp_id]}
+        if super(NvpPluginV2, self).get_port_securitygroup_binding(context,
+            filters):
+            raise ext_sg.SecurityGroupInUse(id=nvp_id)
+        nvplib.delete_security_profile(self.clusters[0], nvp_id)
+
+        return super(NvpPluginV2, self).delete_securitygroup(context, sgid)
+
     def get_all_networks(self, tenant_id, **kwargs):
         networks = []
         for c in self.clusters:
@@ -350,7 +601,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
                         "network %s",
                         network['network'].get('name', '<unknown>'))
 
-        tenant_id = self._get_tenant_id_for_create(context, network)
         # TODO(salvatore-orlando): if the network is shared this should be
         # probably stored into the lswitch with a tag
         # TODO(salvatore-orlando): Important - provider networks support
@@ -491,7 +741,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
         :raises: exception.NetworkNotFound
         :raises: exception.QuantumException
         """
-        result = {}
         nvp_lswitches = []
         quantum_lswitches = (
             super(NvpPluginV2, self).get_networks(context, filters))
@@ -600,7 +849,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
         if network['network'].get("name"):
             for (cluster, switches) in pairs:
                 for switch in switches:
-                    result = nvplib.update_network(cluster, switch, **params)
+                    nvplib.update_network(cluster, switch, **params)
 
         LOG.debug("update_network() completed for tenant: %s" %
                   context.tenant_id)
@@ -692,8 +941,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
                 del nvp_lports[quantum_lport["id"]]
                 lports.append(quantum_lport)
             except KeyError:
-                pass
-                #raise Exception("Quantum and NVP Databases are out of Sync!")
+                raise Exception("Quantum and NVP Databases are out of Sync!")
         # do not make the case in which ports are found in NVP
         # but not in Quantum catastrophic.
         if len(nvp_lports):
@@ -735,8 +983,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
         :raises: exception.StateInvalid
         """
 
+        p = port['port']
         # Set admin_state_up False since not created in NVP set
         port["port"]["admin_state_up"] = False
+        self._validate_and_convert_security_groups(context, port)
 
         # First we allocate port in quantum database
         try:
@@ -770,14 +1020,20 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
         d = {"port-id": port["port"]["id"],
              "port-op-status": port["port"]["status"]}
 
+        # Saves the security group that port is on.
+        self._process_port_create_securitygroup(context, p['id'],
+                                                p[ext_sg.EXTERNAL])
+
         LOG.debug("create_port() completed for tenant %s: %s" %
                   (tenant_id, d))
 
         # update port with admin_state_up True
         port_update = {"port": {"admin_state_up": True}}
-        return super(NvpPluginV2, self).update_port(context,
+        port = super(NvpPluginV2, self).update_port(context,
                                                     port["port"]["id"],
                                                     port_update)
+        self._extend_port_dict_securitygroup(context, port)
+        return port
 
     def update_port(self, context, id, port):
         """
@@ -804,25 +1060,38 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
         :raises: exception.PortNotFound
         """
         params = {}
-        # Need to query to determine network_id and ip/mac)
-        quantum_db = super(NvpPluginV2, self).get_port(context, id)
-        # Copy of addition fields we want to update (i.e admin_state_up)
-        quantum_db.update(port['port'])
+        # update in base class to leverage ip/subnetting update
+        ret_port = super(NvpPluginV2, self).update_port(context, id, port)
+
+        # Copy of addition fields we want to update but
+        # are not in the _make_port-dict
+        ret_port.update(port['port'])
 
         port_nvp, cluster = (
             nvplib.get_port_by_quantum_tag(self.clusters,
-                                           quantum_db["network_id"], id))
+                                           ret_port["network_id"], id))
+
+        # security groups
+        self._validate_and_convert_security_groups(context, port)
+
         params["cluster"] = cluster
 
-        quantum_db["port_security"] = (port['port'].get('port_security',
+        ret_port["port_security"] = (ret_port.get('port_security',
             nvplib.port_security_info(port_nvp)))
 
-        params["port"] = quantum_db
+        params["port"] = ret_port
         LOG.debug("Update port request: %s" % (params))
-        result = nvplib.update_port(quantum_db["network_id"],
-                                    port_nvp["uuid"], **params)
+        nvplib.update_port(ret_port["network_id"],
+                           port_nvp["uuid"], **params)
         LOG.debug("update_port() completed for tenant: %s" % context.tenant_id)
-        return  super(NvpPluginV2, self).update_port(context, id, port)
+
+        # delete the port binding and read it with the new rules.
+        self.delete_port_securitygroup_binding(context, id)
+        self._process_port_create_securitygroup(context, id,
+            ret_port.get(ext_sg.EXTERNAL))
+
+        self._extend_port_dict_securitygroup(context, ret_port)
+        return ret_port
 
     def delete_port(self, context, id):
         """
@@ -845,6 +1114,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2):
         # back will have zero ports after the delete we should garbage collect
         # the lswitch.
         nvplib.delete_port(cluster, port)
+
+        self.delete_port_securitygroup_binding(context, id)
 
         LOG.debug("delete_port() completed for tenant: %s" % context.tenant_id)
         return  super(NvpPluginV2, self).delete_port(context, id)

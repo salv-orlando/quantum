@@ -253,14 +253,15 @@ class QuantumDbPluginV2TestCase(unittest2.TestCase):
         kwargs.update({'override': overrides})
         return self._create_bulk(fmt, number, 'subnet', base_data, **kwargs)
 
-    def _create_port(self, fmt, net_id, expected_res_status=None, **kwargs):
+    def _create_port(self, fmt, net_id, expected_res_status=None,
+                     arg_list=None, **kwargs):
         content_type = 'application/' + fmt
         data = {'port': {'network_id': net_id,
                          'tenant_id': self._tenant_id}}
 
-        for arg in ('admin_state_up', 'device_id',
+        for arg in (('admin_state_up', 'device_id',
                     'mac_address', 'name', 'fixed_ips',
-                    'tenant_id', 'device_owner'):
+                    'tenant_id', 'device_owner') + (arg_list or ())):
             # Arg must be present and not empty
             if arg in kwargs and kwargs[arg]:
                 data['port'][arg] = kwargs[arg]

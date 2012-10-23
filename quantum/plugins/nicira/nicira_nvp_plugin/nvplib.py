@@ -24,21 +24,17 @@
 # growing as we add more features :)
 
 from copy import copy
-import functools
 import json
 import hashlib
 import logging
-import random
-import re
-import uuid
 
-from eventlet import semaphore
 import NvpApiClient
 
 #FIXME(danwent): I'd like this file to get to the point where it has
 # no quantum-specific logic in it
 from quantum.common import constants
 from quantum.common import exceptions as exception
+from quantum.extensions import securitygroup as ext_sg
 
 LOCAL_LOGGING = False
 if LOCAL_LOGGING:
@@ -61,6 +57,7 @@ taken_context_ids = []
 _net_type_cache = {}  # cache of {net_id: network_type}
 # XXX Only cache default for now
 _lqueue_cache = {}
+PORT_SECURITY_DEFAULT = True
 
 
 def get_cluster_version(cluster):
@@ -202,7 +199,7 @@ def update_network(cluster, switch, **params):
                                      cluster=cluster)
     except NvpApiClient.ResourceNotFound as e:
         LOG.error("Network not found, Error: %s" % str(e))
-        raise exception.NetworkNotFound(net_id=network)
+        raise exception.NetworkNotFound(net_id=switch)
     except NvpApiClient.NvpApiException as e:
         raise exception.QuantumException()
 
@@ -221,7 +218,6 @@ def get_all_networks(cluster, tenant_id, networks):
         raise exception.QuantumException()
     if not resp_obj:
         return []
-    lswitches = json.loads(resp_obj)["results"]
     networks_result = copy(networks)
     return networks_result
 
@@ -368,12 +364,49 @@ def get_port(cluster, network, port, relations=None):
 
 
 def port_security_info(port):
-    if 'allowed_address_pairs' not in port:
+    if not port.get('allowed_address_pairs'):
         return "off"
     if port['allowed_address_pairs'][0]['ip_address'] == "0.0.0.0/0":
         return "mac"
     else:
         return "mac_ip"
+
+
+def _configure_extensions(lport_obj, **params):
+    lport_obj["security_profiles"] = []
+    if params["port"].get(ext_sg.EXTERNAL):
+        if (PORT_SECURITY_DEFAULT or
+            params["port"].get("port_security") == "mac_ip"):
+            lport_obj["security_profiles"] = (
+                params["port"].get(ext_sg.EXTERNAL, ""))
+        else:
+            msg = ("Port must be configured using mac_ip port_security.")
+            LOG.error(msg)
+            raise exception.Error(msg)
+
+    # Port Security (MAC)
+    lport_obj["allowed_address_pairs"] = []
+    if (PORT_SECURITY_DEFAULT or
+        params["port"].get("port_security") == "mac_ip"):
+        for fixed_ip in params["port"]["fixed_ips"]:
+            ip_address = fixed_ip.get("ip_address")
+            if ip_address:
+                lport_obj["allowed_address_pairs"].append(
+                    {"mac_address": params["port"]["mac_address"],
+                    "ip_address": fixed_ip["ip_address"]})
+
+        if not len(lport_obj["allowed_address_pairs"]):
+#           TODO: Need to port portsecurity extension upstream in order to
+#           inorder to avoid this..
+#            raise exception.Error("No IP allocated to port to prevent "
+            LOG.error("No IP allocated to port to prevent spoofing on.")
+#            raise exception.Error("No IP allocated to port to "
+#                                  "prevent spoofing on.")
+
+    # Port Security (mac/ip)
+    elif params["port"].get("port_security") == "mac":
+        lport_obj["allowed_address_pairs"].append(
+            {"mac_address": params["port"]["mac_address"]})
 
 
 def update_port(network, port_id, **params):
@@ -387,24 +420,7 @@ def update_port(network, port_id, **params):
     if name:
         lport_obj["display_name"] = name
 
-    # Port Security (MAC)
-    lport_obj["allowed_address_pairs"] = []
-    if params["port"].get("port_security") == "mac_ip":
-        for fixed_ip in params["port"]["fixed_ips"]:
-            lport_obj["allowed_address_pairs"].append(
-                {"mac_address": params["port"]["mac_address"],
-                 "ip_address": fixed_ip["ip_address"]})
-
-        if not len(lport_obj["allowed_address_pairs"]):
-            LOG.error("No IP allocated to port to prevent spoofing on.")
-            raise exception.Error("No IP allocated to port to "
-                                  "prevent spoofing on.")
-
-    # Port Security (mac/ip)
-    elif params["port"].get("port_security") == "mac":
-        lport_obj["allowed_address_pairs"].append(
-            {"mac_address": params["port"]["mac_address"]})
-
+    _configure_extensions(lport_obj, **params)
     uri = "/ws.v1/lswitch/" + network + "/lport/" + port_id
     try:
         resp_obj = do_single_request("PUT", uri, json.dumps(lport_obj),
@@ -435,23 +451,7 @@ def create_port(tenant, **params):
               dict(scope='vm_id', tag=device_id)]
     )
 
-    # Port Security (MAC)
-    lport_obj["allowed_address_pairs"] = []
-    if params["port"].get("port_security") == "mac_ip":
-        for fixed_ip in params["port"]["fixed_ips"]:
-            lport_obj["allowed_address_pairs"].append(
-                {"mac_address": params["port"]["mac_address"],
-                 "ip_address": fixed_ip["ip_address"]})
-
-        if not len(lport_obj["allowed_address_pairs"]):
-            LOG.error("No IP allocated to port to prevent spoofing on.")
-            raise exception.Error("No IP allocated to port to prevent "
-                                  "spoofing on.")
-    # Port Security (mac/ip)
-    elif params["port"].get("port_security") == "mac":
-        lport_obj["allowed_address_pairs"].append(
-            {"mac_address": params["port"]["mac_address"]})
-
+    _configure_extensions(lport_obj, **params)
     path = "/ws.v1/lswitch/" + ls_uuid + "/lport"
     try:
         resp_obj = do_single_request("POST", path, json.dumps(lport_obj),
@@ -516,3 +516,142 @@ def plug_interface(clusters, lswitch_id, port, type, attachment=None):
 
     result = json.dumps(resp_obj)
     return result
+
+#------------------------------------------------------------------------------
+# Security Profile convenience functions.
+#------------------------------------------------------------------------------
+EXT_SECURITY_PROFILE_ID_SCOPE = 'nova_spid'
+TENANT_ID_SCOPE = 'os_tid'
+
+
+def format_exception(etype, e, locals_, request=None):
+    """Consistent formatting for exceptions.
+    :param etype: a string describing the exception type.
+    :param e: the exception.
+    :param request: the request object.
+    :param locals_: calling context local variable dict.
+    :returns: a formatted string.
+    """
+    msg = ["Error. %s exception: %s." % (etype, e)]
+    if request:
+        msg.append("request=[%s]" % request)
+        if request.body:
+            msg.append("request.body=[%s]" % str(request.body))
+    l = dict(locals_)
+    if "request" in l:
+        l.pop("request")
+    msg.append("locals=[%s]" % str(l))
+    return ' '.join(msg)
+
+
+def do_request(*args, **kwargs):
+    """Convenience function wraps do_single_request.
+
+    :param args: a list of positional arguments.
+    :param kwargs: a list of keyworkds arguments.
+    :returns: the result of do_single_request loaded into a python object
+        or None."""
+    res = do_single_request(*args, **kwargs)
+    if res:
+        return json.loads(res)
+    return res
+
+
+def mk_body(**kwargs):
+    """Convenience function creates and dumps dictionary to string.
+
+    :param kwargs: the key/value pirs to be dumped into a json string.
+    :returns: a json string."""
+    return unicode(json.dumps(dict(**kwargs)))
+
+
+def set_tenant_id_tag(tenant_id, taglist=None):
+    """Convenience function to add tenant_id tag to taglist.
+
+    :param tenant_id: the tenant_id to set.
+    :param taglist: the taglist to append to (or None).
+    :returns: a new taglist that includes the old taglist with the new
+        tenant_id tag set."""
+    new_taglist = []
+    if taglist:
+        new_taglist = [x for x in taglist if x['scope'] != TENANT_ID_SCOPE]
+    new_taglist.append(dict(scope=TENANT_ID_SCOPE, tag=tenant_id))
+    return new_taglist
+
+
+def set_ext_security_profile_id_tag(nova_id, taglist=None):
+    """Convenience function to add spid tag to taglist.
+
+    :param nova_id: the security_profile id from nova
+    :param taglist: the taglist to append to (or None).
+    :returns: a new taglist that includes the old taglist with the new
+        spid tag set."""
+    new_taglist = []
+    if taglist:
+        new_taglist = [x for x in taglist if x['scope'] !=
+                       EXT_SECURITY_PROFILE_ID_SCOPE]
+    if nova_id:
+        new_taglist.append(dict(scope=EXT_SECURITY_PROFILE_ID_SCOPE,
+                                tag=str(nova_id)))
+    return new_taglist
+
+
+# -----------------------------------------------------------------------------
+# Security Group API Calls
+# -----------------------------------------------------------------------------
+
+
+def create_security_profile(cluster, tenant_id, security_profile):
+    path = "/ws.v1/security-profile"
+    tags = set_tenant_id_tag(tenant_id)
+    tags = set_ext_security_profile_id_tag(
+        security_profile.get('nova_id'), tags)
+    try:
+        body = mk_body(display_name=security_profile.get('name'), tags=tags)
+        rsp = do_request("POST", path, body, cluster=cluster)
+    except NvpApiClient.NvpApiException as e:
+        LOG.error(format_exception("Unknown", e, locals()))
+        raise exception.QuantumException()
+
+    LOG.debug("Created Security Profile: %s" % rsp)
+    return rsp
+
+
+def create_securitygrouprules(cluster, tenant_id, spid, rules, nova_id):
+    path = "/ws.v1/security-profile/%s" % spid
+    tags = set_tenant_id_tag(tenant_id)
+    tags = set_ext_security_profile_id_tag(nova_id, tags)
+    try:
+        body = mk_body(tags=tags,
+            logical_port_ingress_rules=rules['logical_port_ingress_rules'],
+            logical_port_egress_rules=rules['logical_port_egress_rules'])
+        rsp = do_request("PUT", path, body, cluster=cluster)
+    except NvpApiClient.NvpApiException as e:
+        LOG.error(format_exception("Unknown", e, locals()))
+        raise exception.QuantumException()
+    LOG.debug("Created Security Profile: %s" % rsp)
+    return rsp
+
+
+def update_securitygrouprules(cluster, spid, rules):
+    path = "/ws.v1/security-profile/%s" % spid
+    try:
+        body = mk_body(
+            logical_port_ingress_rules=rules['logical_port_ingress_rules'],
+            logical_port_egress_rules=rules['logical_port_egress_rules'])
+        rsp = do_request("PUT", path, body, cluster=cluster)
+    except NvpApiClient.NvpApiException as e:
+        LOG.error(format_exception("Unknown", e, locals()))
+        raise exception.QuantumException()
+    LOG.debug("Updated Security Profile: %s" % rsp)
+    return rsp
+
+
+def delete_security_profile(cluster, spid):
+    path = "/ws.v1/security-profile/%s" % spid
+
+    try:
+        do_request("DELETE", path, cluster=cluster)
+    except NvpApiClient.NvpApiException as e:
+        LOG.error(format_exception("Unknown", e, locals()))
+        raise exception.QuantumException()
