@@ -592,10 +592,10 @@ def set_tenant_id_tag(tenant_id, taglist=None):
     return new_taglist
 
 
-def set_ext_security_profile_id_tag(nova_id, taglist=None):
+def set_ext_security_profile_id_tag(external_id, taglist=None):
     """Convenience function to add spid tag to taglist.
 
-    :param nova_id: the security_profile id from nova
+    :param external_id: the security_profile id from nova
     :param taglist: the taglist to append to (or None).
     :returns: a new taglist that includes the old taglist with the new
         spid tag set."""
@@ -603,9 +603,9 @@ def set_ext_security_profile_id_tag(nova_id, taglist=None):
     if taglist:
         new_taglist = [x for x in taglist if x['scope'] !=
                        EXT_SECURITY_PROFILE_ID_SCOPE]
-    if nova_id:
+    if external_id:
         new_taglist.append(dict(scope=EXT_SECURITY_PROFILE_ID_SCOPE,
-                                tag=str(nova_id)))
+                                tag=str(external_id)))
     return new_taglist
 
 
@@ -619,21 +619,50 @@ def create_security_profile(cluster, tenant_id, security_profile):
     tags = set_tenant_id_tag(tenant_id)
     tags = set_ext_security_profile_id_tag(
         security_profile.get('external_id'), tags)
+    # Allow all dhcp responses in
+    dhcp = {'logical_port_egress_rules': [{'ethertype': 'IPv4',
+                                           'protocol': 17,
+                                           'port_range_min': 68,
+                                           'port_range_max': 68,
+                                           'ip_prefix': '0.0.0.0/0'}],
+            'logical_port_ingress_rules': []}
     try:
-        body = mk_body(display_name=security_profile.get('name'), tags=tags)
+        body = mk_body(
+            tags=tags, display_name=security_profile.get('name'),
+            logical_port_ingress_rules=dhcp['logical_port_ingress_rules'],
+            logical_port_egress_rules=dhcp['logical_port_egress_rules'])
         rsp = do_request("POST", path, body, cluster=cluster)
     except NvpApiClient.NvpApiException as e:
         LOG.error(format_exception("Unknown", e, locals()))
         raise exception.QuantumException()
 
+    if security_profile.get('name') == 'default':
+        # allow all outgoing and intergroup communication
+        default_rules = (
+            {'logical_port_egress_rules':
+                [{'ethertype': 'IPv4', 'profile_uuid': rsp['uuid']},
+                 {'ethertype': 'IPv6', 'profile_uuid': rsp['uuid']}],
+             'logical_port_ingress_rules':
+                [{'ethertype': 'IPv4'}, {'ethertype': 'IPv6'}]})
+        create_security_group_rules(cluster, tenant_id, rsp['uuid'],
+                                    default_rules,
+                                    security_profile.get('external_id'))
+
     LOG.debug("Created Security Profile: %s" % rsp)
     return rsp
 
 
-def create_security_group_rules(cluster, tenant_id, spid, rules, nova_id):
+def create_security_group_rules(cluster, tenant_id, spid, rules, external_id):
     path = "/ws.v1/security-profile/%s" % spid
     tags = set_tenant_id_tag(tenant_id)
-    tags = set_ext_security_profile_id_tag(nova_id, tags)
+    tags = set_ext_security_profile_id_tag(external_id, tags)
+
+    # Allow all dhcp responses in
+    rules['logical_port_egress_rules'].append({'ethertype': 'IPv4',
+                                               'protocol': 17,
+                                               'port_range_min': 68,
+                                               'port_range_max': 68,
+                                               'ip_prefix': '0.0.0.0/0'})
     try:
         body = mk_body(
             tags=tags,

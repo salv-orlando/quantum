@@ -166,6 +166,7 @@ RESOURCE_ATTRIBUTE_MAP = {
         'description': {'allow_post': True, 'allow_put': False,
                         'is_visible': True, 'default': ''},
         'external_id': {'allow_post': True, 'allow_put': False,
+                        'is_visible': True, 'default': None,
                         'validate': {'type:external_id_and_mode': None}},
         'tenant_id': {'allow_post': True, 'allow_put': False,
                       'required_by_policy': True,
