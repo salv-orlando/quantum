@@ -28,6 +28,7 @@ import webob.exc
 # FIXME(salvatore-orlando): get rid of relative imports
 from common import config
 from nvp_plugin_version import PLUGIN_VERSION
+from sqlalchemy.orm import exc as sa_exc
 
 from quantum.api.v2 import attributes
 from quantum.api.v2 import base
@@ -45,6 +46,7 @@ from quantum.db import portsecurity_db
 from quantum.extensions import l3
 from quantum.extensions import portsecurity as psec
 from quantum.extensions import securitygroup as ext_sg
+from quantum.extensions import l3
 from quantum.extensions import providernet as pnet
 from quantum.openstack.common import cfg
 from quantum.openstack.common import context
@@ -162,9 +164,13 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self._port_drivers = {
             'create': {l3_db.DEVICE_OWNER_ROUTER_GW:
                        self._nvp_create_ext_gw_port,
+                       l3_db.DEVICE_OWNER_FLOATINGIP:
+                       self._nvp_create_fip_port,
                        'default': self._nvp_create_port},
             'delete': {l3_db.DEVICE_OWNER_ROUTER_GW:
                        self._nvp_delete_ext_gw_port,
+                       l3_db.DEVICE_OWNER_FLOATINGIP:
+                       self._nvp_delete_fip_port,
                        'default': self._nvp_delete_port}
         }
 
@@ -285,13 +291,35 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             LOG.exception("Unable to plug attachment in NVP logical "
                           "port %s, associated with Quantum port %s",
                           lrouter_port['uuid'], port_data.get('id'))
-            raise nvp_exc.NvpPluginException("Unable to plug attachment in "
-                                             "router port % s for quantum "
-                                             "port id %s on router %s",
-                                             lrouter_port['uuid'],
-                                             port_data.get('id'),
-                                             router_id)
+            raise nvp_exc.NvpPluginException(
+                err_desc=("Unable to plug attachment in router port %s "
+                          "for quantum port id %s on router %s" %
+                          (lrouter_port['uuid'],
+                           port_data.get('id'),
+                           router_id)))
         return lrouter_port
+
+    def _get_port_by_device_id(self, context, device_id, device_owner):
+        """ Retrieve ports associated with a specific device id.
+
+        Used for retrieving all quantum ports attached to a given router.
+        """
+        port_qry = context.session.query(models_v2.Port)
+        return port_qry.filter_by(
+            device_id=device_id,
+            device_owner=device_owner,).all()
+
+    def _find_router_subnets_cidrs(self, context, router_id):
+        """ Retrieve subnets attached to the specified router """
+        ports = self._get_port_by_device_id(context, router_id,
+                                            l3_db.DEVICE_OWNER_ROUTER_INTF)
+        # No need to check for overlapping CIDRs
+        cidrs = []
+        for port in ports:
+            for ip in port.get('fixed_ips', []):
+                cidrs.append(self._get_subnet(context,
+                                              ip.subnet_id).cidr)
+        return cidrs
 
     def _nvp_create_port(self, context, port_data):
         """ Driver for creating a logical switch port on NVP platform """
@@ -323,6 +351,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 cluster, network, network_binding, max_ports,
                 allow_extra_lswitches)
             lswitch_uuid = selected_lswitch['uuid']
+            do_port_security = (port_data['device_owner'] !=
+                                l3_db.DEVICE_OWNER_ROUTER_INTF)
             lport = nvplib.create_lport(cluster,
                                         lswitch_uuid,
                                         port_data['tenant_id'],
@@ -331,7 +361,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                         port_data['device_id'],
                                         port_data['admin_state_up'],
                                         port_data['mac_address'],
-                                        port_data['fixed_ips'])
+                                        port_data['fixed_ips'],
+                                        port_data.get(psec.PORTSECURITY),
+                                        port_data.get(ext_sg.SECURITYGROUP),
+                                        do_port_security
+                                        )
             nicira_db.add_quantum_nvp_port_mapping(
                 context.session, port_data['id'], lport['uuid'])
             d_owner = port_data['device_owner']
@@ -404,19 +438,28 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         # the fabric status of the NVP router will be down.
         # admin_status should always be up for the gateway port
         # regardless of what the user specifies in quantum
-        nvplib.update_router_lport(self._find_target_cluster(port_data),
-                                   port_data['device_id'],
+        cluster = self._find_target_cluster(port_data)
+        router_id = port_data['device_id']
+        nvplib.update_router_lport(cluster,
+                                   router_id,
                                    lr_port['uuid'],
                                    port_data['tenant_id'],
                                    port_data['id'],
                                    port_data['name'],
                                    True,
                                    ip_addresses)
+        # Set the SNAT rule for each subnet (only first IP)
+        for cidr in self._find_router_subnets_cidrs(context, router_id):
+            nvplib.create_lrouter_snat_rule(
+                cluster, router_id,
+                ip_addresses[0].split('/')[0],
+                ip_addresses[0].split('/')[0],
+                source_ip_addresses=cidr)
 
         LOG.debug("_nvp_create_ext_gw_port completed on external network %s, "
                   "attached to router:%s. NVP port id is %s",
                   port_data['network_id'],
-                  port_data['device_id'],
+                  router_id,
                   lr_port['uuid'])
 
     def _nvp_delete_ext_gw_port(self, context, port_data):
@@ -424,18 +467,27 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         try:
             # Delete is actually never a real delete, otherwise the NVP
             # logical router will stop working
-            nvplib.update_router_lport(self._find_target_cluster(port_data),
-                                       port_data['device_id'],
+            cluster = self._find_target_cluster(port_data)
+            router_id = port_data['device_id']
+            nvplib.update_router_lport(cluster,
+                                       router_id,
                                        lr_port['uuid'],
                                        port_data['tenant_id'],
                                        port_data['id'],
                                        port_data['name'],
                                        True,
                                        ['0.0.0.0/31'])
+            # Delete the SNAT rule for each subnet
+            for cidr in self._find_router_subnets_cidrs(context, router_id):
+                nvplib.delete_nat_rules_by_match(
+                    cluster, router_id, "SourceNatRule",
+                    max_num_expected=1, min_num_expected=1,
+                    source_ip_addresses=cidr)
+
         except NvpApiClient.ResourceNotFound:
             raise nvp_exc.NvpPluginException(
                 err_desc=("Logical router resource %s not found "
-                          "on NVP platform", port_data['device_id']))
+                          "on NVP platform", router_id))
         except NvpApiClient.NvpApiException:
             raise nvp_exc.NvpPluginException(
                 err_desc=("Unable to update logical router"
@@ -443,7 +495,17 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         LOG.debug("_nvp_delete_ext_gw_port completed on external network %s, "
                   "attached to router:%s",
                   port_data['network_id'],
-                  port_data['device_id'])
+                  router_id)
+
+    def _nvp_create_fip_port(self, context, port_data):
+        # As we do not create ports for floating IPs in NVP,
+        # this is a no-op driver
+        pass
+
+    def _nvp_delete_fip_port(self, context, port_data):
+        # As we do not create ports for floating IPs in NVP,
+        # this is a no-op driver
+        pass
 
     def _extend_fault_map(self):
         """ Extends the Quantum Fault Map
@@ -1207,6 +1269,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.NetworkNotFound
         """
         quantum_lports = super(NvpPluginV2, self).get_ports(context, filters)
+        if (filters.get('network_id') and len(filters.get('network_id')) and
+            self._network_is_external(context, filters.get('network_id')[0])):
+            # Do not perform check on NVP platform
+            return quantum_lports
+
         vm_filter = ""
         tenant_filter = ""
         # This is used when calling delete_network. Quantum checks to see if
@@ -1355,6 +1422,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 raise psec.NoPortSecurityWithSecurityGroups()
 
             port_data = port['port'].copy()
+            port_data['admin_state_up'] = requested_admin_state
             port_create_func = self._port_drivers['create'].get(
                 port_data['device_owner'],
                 self._port_drivers['create']['default'])
@@ -1507,7 +1575,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             nvp_id = nicira_db.get_nvp_port_id(context.session, id)
             params["cluster"] = self.default_cluster
             params["port"] = ret_port
-            LOG.debug("Update port request: %s" % (params))
+            do_port_security = (ret_port['device_owner'] !=
+                                l3_db.DEVICE_OWNER_ROUTER_INTF)
+            params['do_port_security'] = do_port_security
             nvplib.update_port(ret_port["network_id"],
                                nvp_id, **params)
             LOG.debug("update_port() completed for tenant: %s" %
@@ -1582,7 +1652,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             return quantum_db_port
 
         nvp_id = nicira_db.get_nvp_port_id(context.session, id)
-        #TODO: pass only the appropriate cluster here
+        #TODO: pass the appropriate cluster here
         port = nvplib.get_logical_port_status(
             self.default_cluster, quantum_db_port['network_id'], nvp_id)
         quantum_db_port["admin_state_up"] = port["admin_status_enabled"]
@@ -1603,8 +1673,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         r = router['router']
         has_gw_info = False
         tenant_id = self._get_tenant_id_for_create(context, r)
-        # default value to set - nvp wants it
-        nexthop = '0.0.0.0'
+        # default value to set - nvp wants it (even if we don't have it)
+        nexthop = '1.1.1.1'
         try:
             # if external gateway info are set, then configure nexthop to
             # default external gateway
@@ -1816,6 +1886,20 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             "PatchAttachment", ls_port['uuid'],
             subnet_ids=[subnet_id])
 
+        # If there is an external gateway we need to configure the SNAT rule.
+        # Fetch router from DB
+        router = self._get_router(context, router_id)
+        gw_port = router.gw_port
+        if gw_port:
+            # There is a change gw_port might have multiple IPs
+            # In that case we will consider only the first one
+            if gw_port.get('fixed_ips'):
+                snat_ip = gw_port['fixed_ips'][0]['ip_address']
+                subnet = self._get_subnet(context, subnet_id)
+                nvplib.create_lrouter_snat_rule(
+                    cluster, router_id, snat_ip, snat_ip,
+                    source_ip_addresses=subnet['cidr'])
+
         LOG.debug("add_router_interface completed for subnet:%s and router:%s",
                   subnet_id, router_id)
         return router_iface_info
@@ -1825,8 +1909,14 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         cluster = self.default_cluster
         # The code below is duplicated from base class, but comes handy
         # as we need to retrieve the router port id before removing the port
+        subnet = None
+        subnet_id = None
         if 'port_id' in interface_info:
             port_id = interface_info['port_id']
+            # find subnet_id - it is need for removing the SNAT rule
+            port = self._get_port(context, port_id)
+            if port.get('fixed_ips'):
+                subnet_id = port['fixed_ips'][0]['subnet_id']
         elif 'subnet_id' in interface_info:
             subnet_id = interface_info['subnet_id']
             subnet = self._get_subnet(context, subnet_id)
@@ -1867,6 +1957,15 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                         port_id, lport['uuid'])
             return
         try:
+            if not subnet:
+                subnet = self._get_subnet(context, subnet_id)
+            router = self._get_router(context, router_id)
+            # Remove SNAT rule if external gateway is configured
+            if router.gw_port:
+                nvplib.delete_nat_rules_by_match(
+                    cluster, router_id, "SourceNatRule",
+                    max_num_expected=1, min_num_expected=1,
+                    source_ip_addresses=subnet['cidr'])
             nvplib.delete_router_lport(cluster, router_id, lrouter_port_id)
         except NvpApiClient.ResourceNotFound:
             raise nvp_exc.NvpPluginException(
@@ -1877,22 +1976,131 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 err_desc=("Unable to update logical router"
                           "on NVP Platform"))
 
-    def create_floatingip(self, context, floatingip):
-        return super(NvpPluginV2, self).create_floatingip(context, floatingip)
+    def _retrieve_and_delete_nat_rules(self, floating_ip_address,
+                                       internal_ip, router_id,
+                                       min_num_rules_expected=0):
+        #TODO(salvatore-orlando): Multiple cluster support
+        cluster = self.default_cluster
+        try:
+            nvplib.delete_nat_rules_by_match(
+                cluster, router_id, "DestinationNatRule",
+                max_num_expected=1,
+                min_num_expected=min_num_rules_expected,
+                destination_ip_addresses=floating_ip_address)
+
+            # Remove SNAT rule associated with the single fixed_ip
+            # to floating ip
+            nvplib.delete_nat_rules_by_match(
+                cluster, router_id, "SourceNatRule",
+                max_num_expected=1,
+                min_num_expected=min_num_rules_expected,
+                source_ip_addresses=internal_ip)
+        except NvpApiClient.NvpApiException:
+            LOG.exception("An error occurred while removing NAT rules "
+                          "on the NVP platform for floating ip:%s",
+                          floating_ip_address)
+            raise
+        except nvp_exc.NvpNatRuleMismatch:
+            # Do not surface to the user
+            LOG.warning("An incorrect number of matching NAT rules "
+                        "was found on the NVP platform")
+
+    def _update_fip_assoc(self, context, fip, floatingip_db, external_port):
+        """ Update floating IP association data.
+
+        Overrides method from base class.
+        The method is augmented for creating NAT rules in the process.
+
+        """
+        if (('fixed_ip_address' in fip and fip['fixed_ip_address']) and
+            not ('port_id' in fip and fip['port_id'])):
+            msg = "fixed_ip_address cannot be specified without a port_id"
+            raise q_exc.BadRequest(resource='floatingip', msg=msg)
+        port_id = internal_ip = router_id = None
+        if 'port_id' in fip and fip['port_id']:
+            port_qry = context.session.query(l3_db.FloatingIP)
+            try:
+                port_qry.filter_by(fixed_port_id=fip['port_id']).one()
+                raise l3.FloatingIPPortAlreadyAssociated(
+                    port_id=fip['port_id'])
+            except sa_exc.NoResultFound:
+                pass
+            port_id, internal_ip, router_id = self.get_assoc_data(
+                context,
+                fip,
+                floatingip_db['floating_network_id'])
+
+        cluster = self._find_target_cluster(fip)
+        floating_ip = floatingip_db['floating_ip_address']
+        # Retrieve and delete existing NAT rules, if any
+        if not router_id and floatingip_db.get('fixed_port_id'):
+            # This happens if we're disassociating. Need to explicitly
+            # find the router serving this floating IP
+            tmp_fip = fip.copy()
+            tmp_fip['port_id'] = floatingip_db['fixed_port_id']
+            _pid, internal_ip, router_id = self.get_assoc_data(
+                context, tmp_fip, floatingip_db['floating_network_id'])
+        self._retrieve_and_delete_nat_rules(floating_ip,
+                                            internal_ip,
+                                            router_id)
+        # Re-create NAT rules only if a port id is specified
+        if 'port_id' in fip and fip['port_id']:
+            try:
+                # Create new NAT rules
+                nvplib.create_lrouter_dnat_rule(
+                    cluster, router_id, internal_ip, internal_ip,
+                    destination_ip_addresses=floating_ip)
+                # setup snat rule such that src ip of a IP packet when using
+                # floating is the floating ip itself.
+                nvplib.create_lrouter_snat_rule(
+                    cluster, router_id, floating_ip, floating_ip,
+                    source_ip_addresses=internal_ip)
+            except NvpApiClient.NvpApiException:
+                LOG.exception("An error occurred while creating NAT rules "
+                              "on the NVP platform for floating ip:%s mapped "
+                              "to internal ip:%s", floating_ip, internal_ip)
+                raise
+
+        floatingip_db.update({'fixed_ip_address': internal_ip,
+                              'fixed_port_id': port_id,
+                              'router_id': router_id})
 
     def delete_floatingip(self, context, id):
+        fip_db = self._get_floatingip(context, id)
+        # Check whether the floating ip is associated or not
+        if fip_db.fixed_port_id:
+            internal_port = self._get_port(context, fip_db.fixed_port_id)
+            for fixed_ip in internal_port['fixed_ips']:
+                if fixed_ip['ip_address'] == fip_db.fixed_ip_address:
+                    internal_subnet_id = fixed_ip['subnet_id']
+            router_id = self._get_router_for_internal_subnet(
+                context, internal_port, internal_subnet_id)
+            self._retrieve_and_delete_nat_rules(fip_db.floating_ip_address,
+                                                fip_db.fixed_ip_address,
+                                                router_id,
+                                                min_num_rules_expected=1)
         return super(NvpPluginV2, self).delete_floatingip(context, id)
 
-    def get_floatingip(self, context, id, fields=None):
-        return super(NvpPluginV2, self).get_floatingip(context, id, fields)
-
-    def get_floatingips(self, context, filters=None, fields=None):
-        return super(NvpPluginV2, self).get_floatingips(context, filters,
-                                                        fields)
-
     def disassociate_floatingips(self, context, port_id):
-        return super(NvpPluginV2, self).disassociate_floatingips(context,
-                                                                 port_id)
+        try:
+            fip_qry = context.session.query(l3_db.FloatingIP)
+            fip_db = fip_qry.filter_by(fixed_port_id=port_id).one()
+            internal_port = self._get_port(context, port_id)
+            for fixed_ip in internal_port['fixed_ips']:
+                if fixed_ip['ip_address'] == fip_db.fixed_ip_address:
+                    internal_subnet_id = fixed_ip['subnet_id']
+            router_id = self._get_router_for_internal_subnet(
+                context, internal_port, internal_subnet_id)
+            self._retrieve_and_delete_nat_rules(fip_db.floating_ip_address,
+                                                fip_db.fixed_ip_address,
+                                                router_id,
+                                                min_num_rules_expected=1)
+            # And finally update the database
+            fip_db.update({'fixed_port_id': None,
+                           'fixed_ip_address': None,
+                           'router_id': None})
+        except sa_exc.NoResultFound:
+            return
 
     def get_plugin_version(self):
         return PLUGIN_VERSION

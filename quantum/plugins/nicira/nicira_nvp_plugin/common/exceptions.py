@@ -52,3 +52,9 @@ class NvpResourceNotFound(NvpPluginException):
     message = _("The NVP %(nvp_resource_type)s corresponding to the Quantum "
                 "%(quantum_resource_type)s:%(quantum_id)s does not exist on "
                 "the NVP platform")
+
+
+class NvpNatRuleMismatch(NvpPluginException):
+    message = _("While retrieving NAT rules, %(actual_rules)s where found "
+                "whereas rules in the (%(min_rules)s,%(max_rules)s) interval "
+                "were expected")

@@ -23,6 +23,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import exc
 
 from quantum.api.v2 import attributes
+from quantum.db import l3_db
 from quantum.db import model_base
 from quantum.extensions import portsecurity as psec
 from quantum.openstack.common import cfg
@@ -48,10 +49,12 @@ class PortSecurityDbMixin(object):
         port_security = port.get(psec.PORTSECURITY)
         if port_security == attributes.ATTR_NOT_SPECIFIED:
             port_security = 'off'
-        # Do not apply port security to DHCP ports
-        if port.get('device_owner') == 'network:dhcp':
+        # Do not apply port security to DHCP and router ports
+        if port.get('device_owner') in ('network:dhcp',
+                                        l3_db.DEVICE_OWNER_ROUTER_INTF,
+                                        l3_db.DEVICE_OWNER_ROUTER_GW,
+                                        l3_db.DEVICE_OWNER_FLOATINGIP):
             return port_security
-
         if ((server_policy == 'shared' or server_policy == 'both') and
             net_info['shared']):
             if not has_ip:

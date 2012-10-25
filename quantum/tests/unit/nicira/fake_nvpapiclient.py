@@ -28,17 +28,19 @@ class FakeClient:
     LPORT_RESOURCE = 'lport'
     LROUTER_RESOURCE = 'lrouter'
     SECPROF_RESOURCE = 'securityprofile'
+    NAT_RESOURCE = 'nat'
     LSWITCH_STATUS = 'lswitchstatus'
     LROUTER_STATUS = 'lrouterstatus'
     LSWITCH_LPORT_RESOURCE = 'lswitch_lport'
     LROUTER_LPORT_RESOURCE = 'lrouter_lport'
+    LROUTER_NAT_RESOURCE = 'lrouter_nat'
     LSWITCH_LPORT_STATUS = 'lswitch_lportstatus'
     LSWITCH_LPORT_ATT = 'lswitch_lportattachment'
     LROUTER_LPORT_STATUS = 'lrouter_lportstatus'
     LROUTER_LPORT_ATT = 'lrouter_lportattachment'
 
     RESOURCES = [LSWITCH_RESOURCE, LROUTER_RESOURCE,
-                 LPORT_RESOURCE, SECPROF_RESOURCE]
+                 LPORT_RESOURCE, SECPROF_RESOURCE, NAT_RESOURCE]
 
     FAKE_GET_RESPONSES = {
         LSWITCH_RESOURCE: "fake_get_lswitch.json",
@@ -49,7 +51,8 @@ class FakeClient:
         LROUTER_LPORT_RESOURCE: "fake_get_lrouter_lport.json",
         LROUTER_LPORT_STATUS: "fake_get_lrouter_lport_status.json",
         LROUTER_LPORT_ATT: "fake_get_lrouter_lport_att.json",
-        LROUTER_STATUS: "fake_get_lrouter_status.json"
+        LROUTER_STATUS: "fake_get_lrouter_status.json",
+        LROUTER_NAT_RESOURCE: "fake_get_lrouter_nat.json"
     }
 
     FAKE_POST_RESPONSES = {
@@ -57,6 +60,7 @@ class FakeClient:
         LROUTER_RESOURCE: "fake_post_lrouter.json",
         LSWITCH_LPORT_RESOURCE: "fake_post_lswitch_lport.json",
         LROUTER_LPORT_RESOURCE: "fake_post_lrouter_lport.json",
+        LROUTER_NAT_RESOURCE: "fake_post_lrouter_nat.json",
         SECPROF_RESOURCE: "fake_post_security_profile.json"
     }
 
@@ -65,6 +69,7 @@ class FakeClient:
         LROUTER_RESOURCE: "fake_post_lrouter.json",
         LSWITCH_LPORT_RESOURCE: "fake_post_lswitch_lport.json",
         LROUTER_LPORT_RESOURCE: "fake_post_lrouter_lport.json",
+        LROUTER_NAT_RESOURCE: "fake_post_lrouter_nat.json",
         LSWITCH_LPORT_ATT: "fake_put_lswitch_lport_att.json",
         LROUTER_LPORT_ATT: "fake_put_lrouter_lport_att.json",
         SECPROF_RESOURCE: "fake_post_security_profile.json"
@@ -81,6 +86,7 @@ class FakeClient:
     _fake_lrouter_dict = {}
     _fake_lswitch_lport_dict = {}
     _fake_lrouter_lport_dict = {}
+    _fake_lrouter_nat_dict = {}
     _fake_lswitch_lportstatus_dict = {}
     _fake_lrouter_lportstatus_dict = {}
     _fake_securityprofile_dict = {}
@@ -166,9 +172,7 @@ class FakeClient:
         # replace ip_address with its json dump
         if 'ip_addresses' in fake_lport:
             ip_addresses_json = json.dumps(fake_lport['ip_addresses'])
-            fake_lport['ip_addresses'] = ip_addresses_json
-            fake_lport['ip_addresses_json'] = json.dumps(
-                fake_lport['ip_addresses'])
+            fake_lport['ip_addresses_json'] = ip_addresses_json
         self._fake_lrouter_lport_dict[fake_lport['uuid']] = fake_lport
         fake_lrouter = self._fake_lrouter_dict[lr_uuid]
         fake_lrouter['lport_count'] += 1
@@ -178,6 +182,17 @@ class FakeClient:
         fake_lport_status['lr_name'] = fake_lrouter['display_name']
         self._fake_lrouter_lportstatus_dict[new_uuid] = fake_lport_status
         return fake_lport
+
+    def _add_lrouter_nat(self, body, lr_uuid):
+        fake_nat = json.loads(body)
+        new_uuid = str(uuid.uuid4())
+        fake_nat['uuid'] = new_uuid
+        fake_nat['lr_uuid'] = lr_uuid
+        self._fake_lrouter_nat_dict[fake_nat['uuid']] = fake_nat
+        if 'match' in fake_nat:
+            match_json = json.dumps(fake_nat['match'])
+            fake_nat['match_json'] = match_json
+        return fake_nat
 
     def _add_securityprofile(self, body):
         fake_securityprofile = json.loads(body)
@@ -345,7 +360,7 @@ class FakeClient:
         response_file = self.FAKE_GET_RESPONSES.get(res_type)
         if not response_file:
             raise Exception("resource not found")
-        if 'lport' in res_type:
+        if 'lport' in res_type or 'nat' in res_type:
             if len(uuids) > 1:
                 return self._show(res_type, response_file, uuids[0],
                                   uuids[1], relations=relations)

@@ -35,6 +35,8 @@ import NvpApiClient
 from quantum.common import constants
 from quantum.common import exceptions as exception
 from quantum.extensions import securitygroup as ext_sg
+from quantum.plugins.nicira.nicira_nvp_plugin.common import (
+    exceptions as nvp_exc)
 
 # HTTP METHODS CONSTANTS
 HTTP_GET = "GET"
@@ -48,6 +50,18 @@ LSWITCH_RESOURCE = "lswitch"
 LSWITCHPORT_RESOURCE = "lport-%s" % LSWITCH_RESOURCE
 LROUTER_RESOURCE = "lrouter"
 LROUTERPORT_RESOURCE = "lport-%s" % LROUTER_RESOURCE
+LROUTERNAT_RESOURCE = "nat-lrouter"
+
+# Constants for NAT rules
+MATCH_KEYS = ["destination_ip_addresses", "destination_port_max",
+              "destination_port_min", "source_ip_addresses",
+              "source_port_max", "source_port_min", "protocol"]
+
+SNAT_KEYS = ["to_src_port_min", "to_src_port_max", "to_src_ip_min",
+             "to_src_ip_max"]
+
+DNAT_KEYS = ["to_dst_port", "to_dst_ip_min", "to_dst_ip_max"]
+
 
 LOCAL_LOGGING = False
 if LOCAL_LOGGING:
@@ -537,9 +551,12 @@ def get_port(cluster, network, port, relations=None):
     return port
 
 
-def _configure_extensions(lport_obj, port_data):
+def _configure_extensions(lport_obj, port_data, do_port_security=True):
     if 'security_profiles' in port_data:
         lport_obj["security_profiles"] = port_data.get('security_profiles')
+
+    if not do_port_security:
+        return
     # Port Security (MAC)
     lport_obj["allowed_address_pairs"] = []
     if port_data["port_security"] == "mac_ip":
@@ -593,7 +610,8 @@ def update_port(network, port_id, **params):
         else:
             port_data['security_profiles'] = []
 
-    _configure_extensions(lport_obj, port_data)
+    _configure_extensions(lport_obj, port_data,
+                          params.get('do_port_security', True))
     uri = "/ws.v1/lswitch/" + network + "/lport/" + port_id
     try:
         resp_obj = do_single_request("PUT", uri, json.dumps(lport_obj),
@@ -612,7 +630,7 @@ def update_port(network, port_id, **params):
 def create_lport(cluster, lswitch_uuid, tenant_id, quantum_port_id,
                  display_name, device_id, admin_status_enabled,
                  mac_address=None, fixed_ips=None, port_security=None,
-                 security_profiles=None):
+                 security_profiles=None, do_port_security=True):
     """ Creates a logical port on the assigned logical switch """
     # device_id can be longer than 40 so we rehash it
     hashed_device_id = hashlib.sha1(device_id).hexdigest()
@@ -630,7 +648,7 @@ def create_lport(cluster, lswitch_uuid, tenant_id, quantum_port_id,
                  'port_security': port_security}
     if security_profiles:
         port_data['security_profiles'] = security_profiles
-    _configure_extensions(lport_obj, port_data)
+    _configure_extensions(lport_obj, port_data, do_port_security)
     path = _build_uri_path(LSWITCHPORT_RESOURCE,
                            parent_resource_id=lswitch_uuid)
     try:
@@ -960,3 +978,129 @@ def delete_security_profile(cluster, spid):
     except NvpApiClient.NvpApiException as e:
         LOG.error(format_exception("Unknown", e, locals()))
         raise exception.QuantumException()
+
+
+def _create_nat_match_obj(**kwargs):
+    nat_match_obj = {"ethertype": "IPv4"}
+    for k, v in kwargs.items():
+        if k in MATCH_KEYS:
+            nat_match_obj[k] = v
+            del kwargs[k]
+    if kwargs:
+        raise Exception("invalid keys for NAT match: %(kwargs)s" % locals())
+    return nat_match_obj
+
+
+def _create_lrouter_nat_rule(cluster, router_id, nat_rule_obj):
+    LOG.debug("Creating NAT rule: %s" % nat_rule_obj)
+    uri = _build_uri_path(LROUTERNAT_RESOURCE, parent_resource_id=router_id)
+    try:
+        resp = do_single_request("POST", uri, json.dumps(nat_rule_obj),
+                                 cluster=cluster)
+    except NvpApiClient.ResourceNotFound:
+        LOG.exception("NVP Logical Router %s not found", router_id)
+        raise
+    except NvpApiClient.NvpApiException:
+        LOG.exception("An error occurred while creating the NAT rule "
+                      "on the NVP platform")
+        raise
+    rule = json.loads(resp)
+    return rule
+
+
+def create_lrouter_snat_rule(cluster, router_id,
+                             min_src_ip, max_src_ip, **kwargs):
+
+    nat_match_obj = _create_nat_match_obj(**kwargs)
+    nat_rule_obj = {
+        "to_source_ip_address_min": min_src_ip,
+        "to_source_ip_address_max": max_src_ip,
+        "type": "SourceNatRule",
+        "match": nat_match_obj
+    }
+    return _create_lrouter_nat_rule(cluster, router_id, nat_rule_obj)
+
+
+def create_lrouter_dnat_rule(cluster, router_id, to_min_dst_ip,
+                             to_max_dst_ip, to_dst_port=None, **kwargs):
+
+    nat_match_obj = _create_nat_match_obj(**kwargs)
+    nat_rule_obj = {
+        "to_destination_ip_address_min": to_min_dst_ip,
+        "to_destination_ip_address_max": to_max_dst_ip,
+        "type": "DestinationNatRule",
+        "match": nat_match_obj
+    }
+    if to_dst_port:
+        nat_rule_obj['to_destination_port'] = to_dst_port
+    return _create_lrouter_nat_rule(cluster, router_id, nat_rule_obj)
+
+
+def delete_nat_rules_by_match(cluster, router_id, rule_type,
+                              max_num_expected,
+                              min_num_expected=0,
+                              **kwargs):
+    # remove nat rules
+    nat_rules = query_nat_rules(cluster, router_id)
+    to_delete_ids = []
+    for r in nat_rules:
+        if (r['type'] != rule_type):
+            continue
+
+        is_match = True
+        for key, value in kwargs.iteritems():
+            if not (key in r['match'] and r['match'][key] == value):
+                is_match = False
+                break
+        if is_match:
+            to_delete_ids.append(r['uuid'])
+    if not (len(to_delete_ids) in
+            range(min_num_expected, max_num_expected + 1)):
+        raise nvp_exc.NvpNatRuleMismatch(actual_rules=len(to_delete_ids),
+                                         min_rules=min_num_expected,
+                                         max_rules=max_num_expected)
+
+    for rule_id in to_delete_ids:
+        delete_router_nat_rule(cluster, router_id, rule_id)
+
+
+def delete_router_nat_rule(cluster, router_id, rule_id):
+    uri = _build_uri_path(LROUTERNAT_RESOURCE, rule_id, router_id)
+    try:
+        do_single_request("DELETE", uri, cluster=cluster)
+    except NvpApiClient.NvpApiException:
+        LOG.exception("An error occurred while removing NAT rule %s "
+                      "for logical router %s", rule_id, router_id)
+        raise
+
+
+def get_router_nat_rule(cluster, tenant_id, router_id, rule_id):
+    uri = _build_uri_path(LROUTERNAT_RESOURCE, rule_id, router_id)
+    try:
+        resp = do_single_request("GET", uri, cluster=cluster)
+    except NvpApiClient.ResourceNotFound:
+        LOG.exception("NAT rule %s not found", rule_id)
+        raise
+    except NvpApiClient.NvpApiException as e:
+        LOG.exception("An error occured while retrieving NAT rule %s"
+                      "from NVP platform", rule_id)
+        raise
+    res = json.loads(resp)
+    return res
+
+
+def query_nat_rules(cluster, router_id, fields="*", filters=None):
+    uri = _build_uri_path(LROUTERNAT_RESOURCE, parent_resource_id=router_id,
+                          fields=fields, filters=filters)
+    try:
+        resp = do_single_request("GET", uri, cluster=cluster)
+    except NvpApiClient.ResourceNotFound:
+        LOG.exception("NVP Logical Router %s not found", router_id)
+        raise
+    except NvpApiClient.NvpApiException:
+        LOG.exception("An error occured while retrieving NAT rules for "
+                      "NVP logical router %s", router_id)
+        raise
+    res = json.loads(resp)
+    LOG.debug("NAT rules retrieved from router %s: %s", router_id, res)
+    return res["results"]
