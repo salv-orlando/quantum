@@ -19,7 +19,7 @@ NETWORK_TYPE = 'provider:network_type'
 PHYSICAL_NETWORK = 'provider:physical_network'
 SEGMENTATION_ID = 'provider:segmentation_id'
 
-NETWORK_TYPE_VALUES = ['flat', 'gre', 'local', 'vlan']
+NETWORK_TYPE_VALUES = ['flat', 'gre', 'local', 'vlan', 'stt']
 
 EXTENDED_ATTRIBUTES_2_0 = {
     'networks': {

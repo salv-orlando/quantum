@@ -24,6 +24,8 @@
 # growing as we add more features :)
 
 from copy import copy
+import functools
+import itertools
 import json
 import hashlib
 import logging
@@ -35,6 +37,17 @@ import NvpApiClient
 from quantum.common import constants
 from quantum.common import exceptions as exception
 from quantum.extensions import securitygroup as ext_sg
+
+# HTTP METHODS CONSTANTS
+HTTP_GET = "GET"
+HTTP_POST = "POST"
+# Default transport type for logical switches
+DEF_TRANSPORT_TYPE = "stt"
+# Prefix to be used for all NVP API calls
+URI_PREFIX = "/ws.v1"
+# Resources exposed by NVP API
+LSWITCH_RESOURCE = "lswitch"
+LPORT_RESOURCE = "lport"
 
 LOCAL_LOGGING = False
 if LOCAL_LOGGING:
@@ -49,7 +62,7 @@ if LOCAL_LOGGING:
     LOG.setLevel(logging.DEBUG)
 else:
     LOG = logging.getLogger("nvplib")
-    LOG.setLevel(logging.INFO)
+    LOG.setLevel(logging.DEBUG)
 
 # TODO(bgh): it would be more efficient to use a bitmap
 taken_context_ids = []
@@ -60,12 +73,42 @@ _lqueue_cache = {}
 PORT_SECURITY_DEFAULT = True
 
 
+def _build_uri_path(resource,
+                    resource_id=None,
+                    parent_resource_id=None,
+                    fields=None,
+                    relations=None, filters=None):
+    # TODO(salvatore-orlando): This is ugly. do something more clever
+    # and aovid the if statement
+    if resource == LPORT_RESOURCE:
+        res_path = ("%s/%s/%s" % (LSWITCH_RESOURCE,
+                                  parent_resource_id,
+                                  resource) +
+                    (resource_id and "/%s" % resource_id or ''))
+    else:
+        res_path = resource + (resource_id and
+                               "/%s" % resource_id or '')
+
+    params = []
+    params.append(fields and "fields=%s" % fields)
+    params.append(relations and "relations=%s" % relations)
+    if filters:
+        params.extend(['%s=%s' % (k, v) for (k, v) in filters.iteritems()])
+    uri_path = "%s/%s" % (URI_PREFIX, res_path)
+    query_string = reduce(lambda x, y: "%s&%s" % (x, y),
+                          itertools.ifilter(lambda x: x is not None, params),
+                          "")
+    if query_string:
+        uri_path += "?%s" % query_string
+    return uri_path
+
+
 def get_cluster_version(cluster):
     """Return major/minor version #"""
     # Get control-cluster nodes
     uri = "/ws.v1/control-cluster/node?_page_length=1&fields=uuid"
     try:
-        res = do_single_request("GET", uri, cluster=cluster)
+        res = do_single_request(HTTP_GET, uri, cluster=cluster)
         res = json.loads(res)
     except NvpApiClient.NvpApiException:
         raise exception.QuantumException()
@@ -76,7 +119,7 @@ def get_cluster_version(cluster):
     # running different version so we just need the first node version.
     uri = "/ws.v1/control-cluster/node/%s/status" % node_uuid
     try:
-        res = do_single_request("GET", uri, cluster=cluster)
+        res = do_single_request(HTTP_GET, uri, cluster=cluster)
         res = json.loads(res)
     except NvpApiClient.NvpApiException:
         raise exception.QuantumException()
@@ -94,7 +137,7 @@ def get_all_query_pages(path, c):
     while need_more_results:
         page_cursor_str = (
             "_page_cursor=%s" % page_cursor if page_cursor else "")
-        res = do_single_request("GET", "%s%s%s" %
+        res = do_single_request(HTTP_GET, "%s%s%s" %
                                 (path, query_marker, page_cursor_str),
                                 cluster=c)
         body = json.loads(res)
@@ -152,54 +195,86 @@ def find_lswitch_by_portid(clusters, port_id):
     return (None, None)
 
 
-def get_network(cluster, net_id):
-    path = "/ws.v1/lswitch/%s" % net_id
+def get_lswitches(cluster, quantum_net_id):
+    lswitch_uri_path = _build_uri_path(LSWITCH_RESOURCE, quantum_net_id,
+                                       relations="LogicalSwitchStatus")
+    results = []
     try:
-        resp_obj = do_single_request("GET", path, cluster=cluster)
-        network = json.loads(resp_obj)
-        LOG.warning("### nw:%s", network)
-    except NvpApiClient.ResourceNotFound:
-        raise exception.NetworkNotFound(net_id=net_id)
-    except NvpApiClient.NvpApiException:
-        raise exception.QuantumException()
-    LOG.debug("Got network \"%s\": %s" % (net_id, network))
-    return network
-
-
-def create_lswitch(cluster, lswitch_obj):
-    LOG.info("Creating lswitch: %s" % lswitch_obj)
-    # Warn if no tenant is specified
-    found = "os_tid" in [x["scope"] for x in lswitch_obj["tags"]]
-    if not found:
-        LOG.warn("No tenant-id tag specified in logical switch: %s" % (
-            lswitch_obj))
-    uri = "/ws.v1/lswitch"
-    try:
-        resp_obj = do_single_request("POST", uri,
-                                     json.dumps(lswitch_obj),
+        resp_obj = do_single_request(HTTP_GET,
+                                     lswitch_uri_path,
                                      cluster=cluster)
+        ls = json.loads(resp_obj)
+        results.append(ls)
+        for tag in ls['tags']:
+            if (tag['scope'] == "quantum_multi_lswitch" and
+                tag['tag'] == "True"):
+                # Fetch extra logical switches
+                extra_lswitch_uri_path = _build_uri_path(
+                    LSWITCH_RESOURCE,
+                    fields="uuid,display_name,tags,lport_count",
+                    relations="LogicalSwitchStatus",
+                    filters={'tag': quantum_net_id,
+                             'tag_scope': 'quantum_net_id'})
+                extra_switches = get_all_query_pages(extra_lswitch_uri_path,
+                                                     cluster)
+                results.extend(extra_switches)
+        return results
     except NvpApiClient.NvpApiException:
+        # TODO(salvatore-olrando): Do a better exception handling
+        # and re-raising
+        LOG.exception("An error occured while fetching logical switches "
+                      "for Quantum network %s", quantum_net_id)
         raise exception.QuantumException()
 
-    r = json.loads(resp_obj)
-    d = {}
-    d["net-id"] = r['uuid']
-    d["net-name"] = r['display_name']
-    LOG.debug("Created logical switch: %s" % d["net-id"])
-    return d
+
+def create_lswitch(cluster, tenant_id, display_name,
+                   transport_type=None,
+                   transport_zone_uuid=None,
+                   vlan_id=None,
+                   quantum_net_id=None,
+                   **kwargs):
+
+    transport_zone_config = {"zone_uuid": (transport_zone_uuid or
+                                           cluster.default_tz_uuid),
+                             "transport_type": (transport_type or
+                                                DEF_TRANSPORT_TYPE)}
+    lswitch_obj = {"display_name": display_name,
+                   "transport_zones": [transport_zone_config],
+                   "tags": [{"tag": tenant_id, "scope": "os_tid"}]}
+    if transport_type == 'bridge' and vlan_id:
+        transport_zone_config["binding_config"] = {"vlan_translation":
+                                                   [{"transport": vlan_id}]}
+    if quantum_net_id:
+        lswitch_obj["tags"].append({"tag": quantum_net_id,
+                                    "scope": "quantum_net_id"})
+    if "tags" in kwargs:
+        lswitch_obj["tags"].extend(kwargs["tags"])
+    uri = _build_uri_path(LSWITCH_RESOURCE)
+    try:
+        lswitch_res = do_single_request(HTTP_POST, uri,
+                                        json.dumps(lswitch_obj),
+                                        cluster=cluster)
+    except NvpApiClient.NvpApiException:
+        raise exception.QuantumException()
+    lswitch = json.loads(lswitch_res)
+    LOG.debug("Created logical switch: %s" % lswitch['uuid'])
+    return lswitch
 
 
-def update_network(cluster, switch, **params):
-    uri = "/ws.v1/lswitch/" + switch
-    lswitch_obj = {}
-    if params["network"]["name"]:
-        lswitch_obj["display_name"] = params["network"]["name"]
+def update_lswitch(cluster, lswitch, display_name, tenant_id=None, **kwargs):
+    uri = _build_uri_path(LSWITCH_RESOURCE, resource_id=lswitch)
+    # TODO(salvatore-orlando): Make sure this operation does not remove
+    # any other important tag set on the lswtich object
+    lswitch_obj = {"display_name": display_name,
+                   "tags": [{"tag": tenant_id, "scope": "os_tid"}]}
+    if "tags" in kwargs:
+        lswitch_obj["tags"].extend(kwargs["tags"])
     try:
         resp_obj = do_single_request("PUT", uri, json.dumps(lswitch_obj),
                                      cluster=cluster)
     except NvpApiClient.ResourceNotFound as e:
         LOG.error("Network not found, Error: %s" % str(e))
-        raise exception.NetworkNotFound(net_id=switch)
+        raise exception.NetworkNotFound(net_id=lswitch)
     except NvpApiClient.NvpApiException as e:
         raise exception.QuantumException()
 
@@ -258,26 +333,6 @@ def delete_networks(cluster, net_id, lswitch_ids):
             raise exception.QuantumException()
 
 
-def create_network(tenant_id, net_name, **kwargs):
-    clusters = kwargs["clusters"]
-    # Default to the primary cluster
-    cluster = clusters[0]
-
-    transport_zone = kwargs.get("transport_zone",
-                                cluster.default_tz_uuid)
-    transport_type = kwargs.get("transport_type", "stt")
-    lswitch_obj = {"display_name": net_name,
-                   "transport_zones": [
-                   {"zone_uuid": transport_zone,
-                    "transport_type": transport_type}
-                   ],
-                   "tags": [{"tag": tenant_id, "scope": "os_tid"}]}
-
-    net = create_lswitch(cluster, lswitch_obj)
-    net['net-op-status'] = constants.NET_STATUS_ACTIVE
-    return net
-
-
 def query_ports(cluster, network, relations=None, fields="*", filters=None):
     uri = "/ws.v1/lswitch/" + network + "/lport?"
     if relations:
@@ -323,7 +378,7 @@ def get_port_by_quantum_tag(clusters, lswitch, quantum_tag):
         if len(res["results"]) == 1:
             return (res["results"][0], c)
 
-    LOG.error("Port or Network not found, Error: %s" % str(e))
+    LOG.error("Port or Network not found")
     raise exception.PortNotFound(port_id=quantum_tag, net_id=lswitch)
 
 
@@ -372,13 +427,13 @@ def port_security_info(port):
         return "mac_ip"
 
 
-def _configure_extensions(lport_obj, **params):
+def _configure_extensions(lport_obj, port):
     lport_obj["security_profiles"] = []
-    if params["port"].get(ext_sg.SECURITYGROUP):
+    if port.get(ext_sg.SECURITYGROUP):
         if (PORT_SECURITY_DEFAULT or
-            params["port"].get("port_security") == "mac_ip"):
+            port.get("port_security") == "mac_ip"):
             lport_obj["security_profiles"] = (
-                params["port"].get(ext_sg.SECURITYGROUP, ""))
+                port.get(ext_sg.SECURITYGROUP, ""))
         else:
             msg = ("Port must be configured using mac_ip port_security.")
             LOG.error(msg)
@@ -387,12 +442,12 @@ def _configure_extensions(lport_obj, **params):
     # Port Security (MAC)
     lport_obj["allowed_address_pairs"] = []
     if (PORT_SECURITY_DEFAULT or
-        params["port"].get("port_security") == "mac_ip"):
-        for fixed_ip in params["port"]["fixed_ips"]:
+        port.get("port_security") == "mac_ip"):
+        for fixed_ip in port["fixed_ips"]:
             ip_address = fixed_ip.get("ip_address")
             if ip_address:
                 lport_obj["allowed_address_pairs"].append(
-                    {"mac_address": params["port"]["mac_address"],
+                    {"mac_address": port["mac_address"],
                      "ip_address": fixed_ip["ip_address"]})
 
         if not len(lport_obj["allowed_address_pairs"]):
@@ -405,9 +460,9 @@ def _configure_extensions(lport_obj, **params):
 #                                  "prevent spoofing on.")
 
     # Port Security (mac/ip)
-    elif params["port"].get("port_security") == "mac":
+    elif port.get("port_security") == "mac":
         lport_obj["allowed_address_pairs"].append(
-            {"mac_address": params["port"]["mac_address"]})
+            {"mac_address": port["mac_address"]})
 
 
 def update_port(network, port_id, **params):
@@ -430,7 +485,7 @@ def update_port(network, port_id, **params):
              dict(scope='q_port_id', tag=params["port"]["id"]),
              dict(scope='vm_id', tag=device_id)])
 
-    _configure_extensions(lport_obj, **params)
+    _configure_extensions(lport_obj, params['port'])
     uri = "/ws.v1/lswitch/" + network + "/lport/" + port_id
     try:
         resp_obj = do_single_request("PUT", uri, json.dumps(lport_obj),
@@ -446,42 +501,37 @@ def update_port(network, port_id, **params):
     return obj
 
 
-def create_port(tenant, **params):
-    clusters = params["clusters"]
-    dest_cluster = clusters[0]  # primary cluster
-
-    ls_uuid = params["port"]["network_id"]
+def create_lport(cluster, lswitch_uuid, tenant_id, quantum_port_id,
+                 display_name, device_id, admin_status_enabled,
+                 mac_address=None, fixed_ips=None):
+    """ Creates a logical port on the assigned logical switch """
     # device_id can be longer than 40 so we rehash it
-    device_id = hashlib.sha1(params["port"]["device_id"]).hexdigest()
+    hashed_device_id = hashlib.sha1(device_id).hexdigest()
     lport_obj = dict(
-        admin_status_enabled=params["port"]["admin_state_up"],
-        display_name=params["port"]["name"],
-        tags=[dict(scope='os_tid', tag=tenant),
-              dict(scope='q_port_id', tag=params["port"]["id"]),
-              dict(scope='vm_id', tag=device_id)]
+        admin_status_enabled=admin_status_enabled,
+        display_name=display_name,
+        tags=[dict(scope='os_tid', tag=tenant_id),
+              dict(scope='q_port_id', tag=quantum_port_id),
+              dict(scope='vm_id', tag=hashed_device_id)],
     )
-
-    _configure_extensions(lport_obj, **params)
-    path = "/ws.v1/lswitch/" + ls_uuid + "/lport"
-
-    _configure_extensions(lport_obj, **params)
-    path = "/ws.v1/lswitch/" + ls_uuid + "/lport"
+    port_data = {'id': quantum_port_id,
+                 'mac_address': mac_address,
+                 'fixed_ips': fixed_ips,
+                 'device_id': device_id}
+    _configure_extensions(lport_obj, port_data)
+    path = _build_uri_path(LPORT_RESOURCE, parent_resource_id=lswitch_uuid)
     try:
-        resp_obj = do_single_request("POST", path, json.dumps(lport_obj),
-                                     cluster=dest_cluster)
+        resp_obj = do_single_request("POST", path,
+                                     json.dumps(lport_obj),
+                                     cluster=cluster)
     except NvpApiClient.ResourceNotFound as e:
-        LOG.error("Network not found, Error: %s" % str(e))
-        raise exception.NetworkNotFound(net_id=params["port"]["network_id"])
-    except NvpApiClient.NvpApiException as e:
-        raise exception.QuantumException()
+        LOG.error("Logical switch not found, Error: %s" % str(e))
+        raise
 
     result = json.loads(resp_obj)
-    result['port-op-status'] = get_port_status(dest_cluster, ls_uuid,
-                                               result['uuid'])
-
-    params["port"].update({"admin_state_up": result["admin_status_enabled"],
-                           "status": result["port-op-status"]})
-    return (params["port"], result['uuid'])
+    LOG.debug("Created logical port %s on logical swtich %s"
+              % (result['uuid'], lswitch_uuid))
+    return result
 
 
 def get_port_status(cluster, lswitch_id, port_id):
@@ -502,10 +552,8 @@ def get_port_status(cluster, lswitch_id, port_id):
         return constants.PORT_STATUS_DOWN
 
 
-def plug_interface(clusters, lswitch_id, port, type, attachment=None):
-    dest_cluster = clusters[0]  # primary cluster
+def plug_interface(cluster, lswitch_id, port, type, attachment=None):
     uri = "/ws.v1/lswitch/" + lswitch_id + "/lport/" + port + "/attachment"
-
     lport_obj = {}
     if attachment:
         lport_obj["vif_uuid"] = attachment
@@ -513,7 +561,7 @@ def plug_interface(clusters, lswitch_id, port, type, attachment=None):
     lport_obj["type"] = type
     try:
         resp_obj = do_single_request("PUT", uri, json.dumps(lport_obj),
-                                     cluster=dest_cluster)
+                                     cluster=cluster)
     except NvpApiClient.ResourceNotFound as e:
         LOG.error("Port or Network not found, Error: %s" % str(e))
         raise exception.PortNotFound(port_id=port, net_id=lswitch_id)

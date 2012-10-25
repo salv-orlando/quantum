@@ -96,7 +96,10 @@ class QuantumDbPluginV2TestCase(unittest2.TestCase):
         cfg.CONF.set_override('base_mac', "12:34:56:78:90:ab")
         cfg.CONF.max_dns_nameservers = 2
         cfg.CONF.max_subnet_host_routes = 2
-        self.api = APIRouter()
+        try:
+            self.api = APIRouter()
+        except Exception:
+            LOG.exception("Unable to start API router")
 
         def _is_native_bulk_supported():
             plugin_obj = QuantumManager.get_plugin()

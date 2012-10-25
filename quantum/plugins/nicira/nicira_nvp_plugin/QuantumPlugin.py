@@ -22,15 +22,17 @@
 
 import hashlib
 import logging
-import os
-import traceback
 
+import webob.exc
 
-# TODO Fix relative imports
+# FIXME(salvatore-orlando): get rid of relative imports
 from common import config
 from nvp_plugin_version import PLUGIN_VERSION
+
+from quantum.api.v2 import attributes
+from quantum.api.v2 import base
 from quantum.common import constants
-from quantum.common import exceptions as exception
+from quantum.common import exceptions as q_exc
 from quantum.common import topics
 from quantum.db import api as db
 from quantum.db import db_base_plugin_v2
@@ -38,20 +40,32 @@ from quantum.db import dhcp_rpc_base
 from quantum.db import models_v2
 from quantum.db import securitygroups_db
 from quantum.extensions import securitygroup as ext_sg
-from quantum.openstack.common.rpc import dispatcher
+from quantum.extensions import providernet as pnet
 from quantum.openstack.common import cfg
 from quantum.openstack.common import context
 from quantum.openstack.common import rpc
+
+from quantum.openstack.common.rpc import dispatcher
+from quantum import policy
+from quantum.plugins.nicira.nicira_nvp_plugin.common import (exceptions
+                                                             as nvp_exc)
+from quantum.plugins.nicira.nicira_nvp_plugin import nvp_cluster
+from quantum.plugins.nicira.nicira_nvp_plugin import nicira_db
+
 import NvpApiClient
 import nvplib
 
 
-CONFIG_FILE = "nvp.ini"
-CONFIG_FILE_PATHS = []
-if os.environ.get('QUANTUM_HOME', None):
-    CONFIG_FILE_PATHS.append('%s/etc' % os.environ['QUANTUM_HOME'])
-CONFIG_FILE_PATHS.append("/etc/quantum/plugins/nicira")
 LOG = logging.getLogger("QuantumPlugin")
+
+
+# Provider network extension - allowed network types for the NVP Plugin
+class NetworkTypes:
+    """ Allowed provider network types for the NVP Plugin """
+    STT = 'stt'
+    GRE = 'gre'
+    FLAT = 'flat'
+    VLAN = 'vlan'
 
 
 def parse_config():
@@ -68,11 +82,7 @@ def parse_config():
     db_options.update({"sql_max_retries": sql_max_retries})
     reconnect_interval = cfg.CONF.DATABASE.reconnect_interval
     db_options.update({"reconnect_interval": reconnect_interval})
-    nvp_options = {'max_lp_per_bridged_ls': cfg.CONF.NVP.max_lp_per_bridged_ls}
-    nvp_options.update({'failover_time': cfg.CONF.NVP.failover_time})
-    nvp_options.update({'concurrent_connections':
-                        cfg.CONF.NVP.concurrent_connections})
-
+    nvp_options = cfg.CONF.NVP
     nvp_conf = config.ClusterConfigOptions(cfg.CONF)
     cluster_names = config.register_cluster_groups(nvp_conf)
     nvp_conf.log_opt_values(LOG, logging.DEBUG)
@@ -110,122 +120,8 @@ class NVPRpcCallbacks(dhcp_rpc_base.DhcpRpcCallbackMixin):
         return dispatcher.RpcDispatcher([self])
 
 
-class NVPCluster(object):
-    """Encapsulates controller connection and api_client for a cluster.
-
-    Accessed within the NvpPluginV2 class.
-
-    Each element in the self.controllers list is a dictionary that
-    contains the following keys:
-        ip, port, user, password, default_tz_uuid, uuid, zone
-
-    There may be some redundancy here, but that has been done to provide
-    future flexibility.
-    """
-    def __init__(self, name):
-        self._name = name
-        self.controllers = []
-        self.api_client = None
-
-    def __repr__(self):
-        ss = ['{ "NVPCluster": [']
-        ss.append('{ "name" : "%s" }' % self.name)
-        ss.append(',')
-        for c in self.controllers:
-            ss.append(str(c))
-            ss.append(',')
-        ss.append('] }')
-        return ''.join(ss)
-
-    def add_controller(self, ip, port, user, password, request_timeout,
-                       http_timeout, retries, redirects,
-                       default_tz_uuid, uuid=None, zone=None):
-        """Add a new set of controller parameters.
-
-        :param ip: IP address of controller.
-        :param port: port controller is listening on.
-        :param user: user name.
-        :param password: user password.
-        :param request_timeout: timeout for an entire API request.
-        :param http_timeout: timeout for a connect to a controller.
-        :param retries: maximum number of request retries.
-        :param redirects: maximum number of server redirect responses to
-            follow.
-        :param default_tz_uuid: default transport zone uuid.
-        :param uuid: UUID of this cluster (used in MDI configs).
-        :param zone: Zone of this cluster (used in MDI configs).
-        """
-
-        keys = [
-            'ip', 'user', 'password', 'default_tz_uuid', 'uuid', 'zone']
-        controller_dict = dict([(k, locals()[k]) for k in keys])
-
-        int_keys = [
-            'port', 'request_timeout', 'http_timeout', 'retries', 'redirects']
-        for k in int_keys:
-            controller_dict[k] = int(locals()[k])
-
-        self.controllers.append(controller_dict)
-
-    def get_controller(self, idx):
-        return self.controllers[idx]
-
-    @property
-    def name(self):
-        return self._name
-
-    @name.setter
-    def name(self, val=None):
-        self._name = val
-
-    @property
-    def host(self):
-        return self.controllers[0]['ip']
-
-    @property
-    def port(self):
-        return self.controllers[0]['port']
-
-    @property
-    def user(self):
-        return self.controllers[0]['user']
-
-    @property
-    def password(self):
-        return self.controllers[0]['password']
-
-    @property
-    def request_timeout(self):
-        return self.controllers[0]['request_timeout']
-
-    @property
-    def http_timeout(self):
-        return self.controllers[0]['http_timeout']
-
-    @property
-    def retries(self):
-        return self.controllers[0]['retries']
-
-    @property
-    def redirects(self):
-        return self.controllers[0]['redirects']
-
-    @property
-    def default_tz_uuid(self):
-        return self.controllers[0]['default_tz_uuid']
-
-    @property
-    def zone(self):
-        return self.controllers[0]['zone']
-
-    @property
-    def uuid(self):
-        return self.controllers[0]['uuid']
-
-
 class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                   securitygroups_db.SecurityGroupDbMixin):
-
     """
     NvpPluginV2 is a Quantum plugin that provides L2 Virtual Network
     functionality using NVP.
@@ -233,9 +129,14 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
     __native_bulk_support = True
 
-    supported_extension_aliases = ["security-group"]
+    supported_extension_aliases = ["security-group", "provider"]
     sg_supported_protocols = ['tcp', 'udp', 'icmp']
     sg_supported_ethertypes = ['IPv4', 'IPv6']
+
+    # Map nova zones to cluster for easy retrieval
+    novazone_cluster_map = {}
+    # Default controller cluster (to be used when nova zone id is unspecified)
+    default_cluster = None
 
     def __init__(self, loglevel=None):
         if loglevel:
@@ -244,11 +145,14 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             NvpApiClient.LOG.setLevel(loglevel)
 
         self.db_opts, self.nvp_opts, self.clusters_opts = parse_config()
-        self.clusters = []
+        self.clusters = {}
+        # Will store the first cluster in case is needed for default
+        # cluster assignment
+        first_cluster = None
         for c_opts in self.clusters_opts:
             # Password is guaranteed to be the same across all controllers
             # in the same NVP cluster.
-            cluster = NVPCluster(c_opts['name'])
+            cluster = nvp_cluster.NVPCluster(c_opts['name'])
             for controller_connection in c_opts['nvp_controller_connection']:
                 args = controller_connection.split(':')
                 try:
@@ -261,7 +165,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                   "controller %s in cluster %s",
                                   controller_connection,
                                   c_opts['name'])
-                    raise
+                    raise nvp_exc.NvpInvalidConnection(
+                        conn_params=controller_connection)
 
             api_providers = [(x['ip'], x['port'], True)
                              for x in cluster.controllers]
@@ -271,8 +176,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 http_timeout=cluster.http_timeout,
                 retries=cluster.retries,
                 redirects=cluster.redirects,
-                failover_time=self.nvp_opts['failover_time'],
-                concurrent_connections=self.nvp_opts['concurrent_connections'])
+                failover_time=self.nvp_opts.failover_time,
+                concurrent_connections=self.nvp_opts.concurrent_connections)
 
             # TODO(salvatore-orlando): do login at first request,
             # not when plugin, is instantiated
@@ -281,8 +186,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             # TODO(pjb): What if the cluster isn't reachable this
             # instant?  It isn't good to fall back to invalid cluster
             # strings.
-            # Default for future-versions
-            self.clusters.append(cluster)
+            if len(self.clusters) == 0:
+                first_cluster = cluster
+            self.clusters[c_opts['name']] = cluster
 
         # Connect and configure ovs_quantum db
         options = {
@@ -291,8 +197,157 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             'reconnect_interval': self.db_opts['reconnect_interval'],
             'base': models_v2.model_base.BASEV2,
         }
+        def_cluster_name = self.nvp_opts.default_cluster_name
+        if def_cluster_name and def_cluster_name in self.clusters:
+            self.default_cluster = self.clusters[def_cluster_name]
+        else:
+            self.default_cluster = first_cluster
         db.configure_db(options)
+        # Extend the fault map
+        self._extend_fault_map()
+        # Set up RPC interface for DHCP agent
         self.setup_rpc()
+
+    def _extend_fault_map(self):
+        """ Extends the Quantum Fault Map
+
+        Exceptions specific to the NVP Plugin are mapped to standard
+        HTTP Exceptions
+        """
+        base.FAULT_MAP.update({nvp_exc.NvpInvalidNovaZone:
+                               webob.exc.HTTPBadRequest,
+                               nvp_exc.NvpPortSecurityNoIpException:
+                               webob.exc.HTTPBadRequest,
+                               nvp_exc.NvpNoMorePortsException:
+                               webob.exc.HTTPBadRequest})
+
+    def _novazone_to_cluster(self, novazone_id):
+        if novazone_id in self.novazone_cluster_map:
+            return self.novazone_cluster_map[novazone_id]
+        LOG.debug("Looking for nova zone: %s" % novazone_id)
+        for x in self.clusters:
+            LOG.debug("Looking for nova zone %s in cluster: %s",
+                      novazone_id, x)
+            if x.zone == str(novazone_id):
+                self.novazone_cluster_map[x.zone] = x
+                return x
+        LOG.error("Unable to find cluster config entry for nova zone: %s" %
+                  novazone_id)
+        raise nvp_exc.NvpInvalidNovaZone(nova_zone=novazone_id)
+
+    def _find_target_cluster(self, resource):
+        if 'nova_id' in resource:
+            return self._novazone_to_cluster(resource['nova_id'])
+        else:
+            return self.default_cluster
+
+    def _check_provider_view_auth(self, context, network):
+        return policy.check(context,
+                            "extension:provider_network:view",
+                            network)
+
+    def _enforce_provider_set_auth(self, context, network):
+        return policy.enforce(context,
+                              "extension:provider_network:set",
+                              network)
+
+    def _handle_provider_create(self, context, attrs):
+        # NOTE(salvatore-orlando): This method has been borrowed from
+        # the OpenvSwtich plugin, altough changed to match NVP specifics.
+        # It might be worth investigating whether
+        # a sort of mixin implementing the provider extension
+        # might be a good idea
+        network_type = attrs.get(pnet.NETWORK_TYPE)
+        physical_network = attrs.get(pnet.PHYSICAL_NETWORK)
+        segmentation_id = attrs.get(pnet.SEGMENTATION_ID)
+        network_type_set = attributes.is_attr_set(network_type)
+        physical_network_set = attributes.is_attr_set(physical_network)
+        segmentation_id_set = attributes.is_attr_set(segmentation_id)
+        if not (network_type_set or physical_network_set or
+                segmentation_id_set):
+            return (None, None, None)
+
+        # Authorize before exposing plugin details to client
+        self._enforce_provider_set_auth(context, attrs)
+        err_msg = None
+        if not network_type_set:
+            err_msg = _("%s required" % pnet.NETWORK_TYPE)
+        elif network_type in (NetworkTypes.GRE, NetworkTypes.STT):
+            if segmentation_id_set:
+                err_msg = _("%s not allowed for %s networks"
+                            % (segmentation_id, network_type))
+        elif network_type == NetworkTypes.FLAT:
+            if segmentation_id_set:
+                err_msg = _("Segmentation ID cannot be specified with "
+                            "flat network type")
+        elif network_type == NetworkTypes.VLAN:
+            if not segmentation_id_set:
+                err_msg = _("Segmentation ID must be specified with "
+                            "vlan network type")
+            elif (segmentation_id_set and
+                  (segmentation_id < 1 or segmentation_id > 4094)):
+                err_msg = _("%s out of range (1 through 4094)"
+                            % segmentation_id)
+            else:
+                # Verify segment is not already allocated
+                binding = nicira_db.get_network_binding_by_vlanid(
+                    context.session, segmentation_id)
+                if binding:
+                    raise q_exc.VlanIdInUse(vlan_id=segmentation_id,
+                                            physical_network=physical_network)
+        else:
+            err_msg = _("%s %s not supported"
+                        % (pnet.NETWORK_TYPE, network_type))
+        if err_msg:
+            raise q_exc.InvalidInput(error_message=err_msg)
+        # TODO(salvatore-orlando): Validate tranport zone uuid
+        # which should be specified in physical_network
+        return (network_type, physical_network, segmentation_id)
+
+    def _extend_network_dict_provider(self, context, network, binding=None):
+        if self._check_provider_view_auth(context, network):
+            if not binding:
+                binding = nicira_db.get_network_binding(context.session,
+                                                        network['id'])
+            # With the NVP plugin it is fine to have a network
+            # without any binding
+            if binding:
+                network[pnet.NETWORK_TYPE] = binding.binding_type
+                network[pnet.PHYSICAL_NETWORK] = binding.tz_uuid
+                network[pnet.SEGMENTATION_ID] = binding.vlan_id
+
+    def _handle_lswitch_selection(self, cluster, network,
+                                  network_binding, max_ports,
+                                  allow_extra_lswitches):
+        selected_lswitch = None
+        lswitches = nvplib.get_lswitches(cluster, network.id)
+        eligible_ls = [ls for ls in lswitches
+                       if (ls['_relations']['LogicalSwitchStatus']
+                           ['lport_count'] < max_ports)]
+        main_ls = [ls for ls in lswitches if ls['uuid'] == network.id]
+        if eligible_ls:
+            selected_lswitch = eligible_ls[0]
+        else:
+            if allow_extra_lswitches:
+                nvplib.update_lswitch(cluster,
+                                      main_ls[0]['uuid'],
+                                      main_ls[0]['display_name'],
+                                      network['tenant_id'],
+                                      tags=[{'tag': 'True',
+                                             'scope':
+                                             'quantum_multi_lswitch'}])
+                selected_lswitch = nvplib.create_lswitch(
+                    cluster, network.tenant_id,
+                    "%s-ext-%s" % (network.name, len(lswitches)),
+                    network_binding.binding_type,
+                    network_binding.tz_uuid,
+                    network_binding.vlan_id,
+                    network.id)
+            else:
+                LOG.error("Maximum number of logical ports reached for "
+                          "logical switch %s")
+                raise nvp_exc.NvpNoMorePortsException(network=network.id)
+        return selected_lswitch
 
     def setup_rpc(self):
         # RPC support for dhcp
@@ -312,9 +367,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         if len(self.clusters):
             return self.clusters[0]
         return None
-
-    def clear_state(self):
-        nvplib.clear_state(self.clusters[0])
 
     def create_security_group(self, context, security_group, default_sg=False):
         """Create security group.
@@ -340,7 +392,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             if security_groups:
                 raise ext_sg.SecurityGroupAlreadyExists(
                     name=s.get('name', ''), external_id=s.get('external_id'))
-        nvp_secgroup = nvplib.create_security_profile(self.clusters[0],
+        nvp_secgroup = nvplib.create_security_profile(self.default_cluster,
                                                       tenant_id, s)
         security_group['security_group']['id'] = nvp_secgroup['uuid']
         return super(NvpPluginV2, self).create_security_group(
@@ -440,7 +492,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 current_rules['logical_port_ingress_rules'].append(
                     self._convert_to_nvp_rule(rule))
 
-        nvplib.create_security_group_rules(self.clusters[0], tenant_id, nvp_id,
+        nvplib.create_security_group_rules(self.default_cluster,
+                                           tenant_id, nvp_id,
                                            current_rules, security_group_id)
         return super(NvpPluginV2, self).create_security_group_rule_bulk_native(
             context, security_group_rule)
@@ -515,7 +568,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         self._remove_id_from_rules(current_rules, security_group_id)
         self._remove_none_values(current_rules)
-        nvplib.update_security_group_rules(self.clusters[0], nvp_id,
+        nvplib.update_security_group_rules(self.default_cluster, nvp_id,
                                            current_rules)
         return super(NvpPluginV2, self).delete_security_group_rule(context,
                                                                    sgrid)
@@ -540,7 +593,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         if super(NvpPluginV2, self)._get_port_security_group_bindings(context,
                                                                       filters):
             raise ext_sg.SecurityGroupInUse(id=nvp_id)
-        nvplib.delete_security_profile(self.clusters[0], nvp_id)
+        nvplib.delete_security_profile(self.default_cluster, nvp_id)
 
         return super(NvpPluginV2, self).delete_security_group(
             context, security_group_id)
@@ -573,23 +626,44 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         """
         tenant_id = self._get_tenant_id_for_create(context, network['network'])
         self._ensure_default_security_group(context, tenant_id)
+        net_data = network['network'].copy()
+        # Process the provider network extension
+        self._handle_provider_create(context, net_data)
+        # Replace ATTR_NOT_SPECIFIED with None before sending to NVP
+        for attr, value in network['network'].iteritems():
+            if value == attributes.ATTR_NOT_SPECIFIED:
+                net_data[attr] = None
         # FIXME(arosen) implement admin_state_up = False in NVP
-        if network['network']['admin_state_up'] is False:
+        if net_data['admin_state_up'] is False:
             LOG.warning("Network with admin_state_up=False are not yet "
                         "supported by this plugin. Ignoring setting for "
-                        "network %s",
-                        network['network'].get('name', '<unknown>'))
+                        "network %s", net_data.get('name', '<unknown>'))
 
-        # TODO(salvatore-orlando): if the network is shared this should be
-        # probably stored into the lswitch with a tag
-        # TODO(salvatore-orlando): Important - provider networks support
-        # (might require a bridged TZ)
-        net = nvplib.create_network(tenant_id,
-                                    network['network']['name'],
-                                    clusters=self.clusters)
+        # Extract tenant id from context if not specified in resource
+        tenant_id = self._get_tenant_id_for_create(context, net_data)
+        # When we create a network we create the first lswitch for this
+        # network, and we let NVP choose the identifier
+        target_cluster = self._find_target_cluster(net_data)
+        lswitch = nvplib.create_lswitch(target_cluster,
+                                        tenant_id,
+                                        net_data.get('name'),
+                                        net_data.get(pnet.NETWORK_TYPE),
+                                        net_data.get(pnet.PHYSICAL_NETWORK),
+                                        net_data.get(pnet.SEGMENTATION_ID))
+        network['network']['id'] = lswitch['uuid']
 
-        network['network']['id'] = net['net-id']
-        return super(NvpPluginV2, self).create_network(context, network)
+        with context.session.begin(subtransactions=True):
+            new_net = super(NvpPluginV2, self).create_network(context,
+                                                              network)
+            if net_data.get(pnet.NETWORK_TYPE):
+                net_binding = nicira_db.add_network_binding(
+                    context.session, new_net['id'],
+                    net_data.get(pnet.NETWORK_TYPE),
+                    net_data.get(pnet.PHYSICAL_NETWORK),
+                    net_data.get(pnet.SEGMENTATION_ID))
+                self._extend_network_dict_provider(context, new_net,
+                                                   net_binding)
+        return new_net
 
     def delete_network(self, context, id):
         """
@@ -600,8 +674,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.NetworkInUse
         :raises: exception.NetworkNotFound
         """
-
         super(NvpPluginV2, self).delete_network(context, id)
+
+        # FIXME(salvatore-orlando): Failures here might lead NVP
+        # and quantum state to diverge
         pairs = self._get_lswitch_cluster_pairs(id, context.tenant_id)
         for (cluster, switches) in pairs:
             nvplib.delete_networks(cluster, id, switches)
@@ -613,16 +689,16 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         """Figure out the set of lswitches on each cluster that maps to this
            network id"""
         pairs = []
-        for c in self.clusters:
+        for c in self.clusters.itervalues():
             lswitches = []
             try:
-                ls = nvplib.get_network(c, netw_id)
-                lswitches.append(ls['uuid'])
-            except exception.NetworkNotFound:
+                results = nvplib.get_lswitches(c, netw_id)
+                lswitches.extend([ls['uuid'] for ls in results])
+            except q_exc.NetworkNotFound:
                 continue
             pairs.append((c, lswitches))
         if len(pairs) == 0:
-            raise exception.NetworkNotFound(net_id=netw_id)
+            raise q_exc.NetworkNotFound(net_id=netw_id)
         LOG.debug("Returning pairs for network: %s" % (pairs))
         return pairs
 
@@ -649,53 +725,42 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.NetworkNotFound
         :raises: exception.QuantumException
         """
-        result = {}
-        lswitch_query = "&uuid=%s" % id
-        # always look for the tenant_id in the resource itself rather than
-        # the context, as with shared networks context.tenant_id and
-        # network['tenant_id'] might differ on GETs
         # goto to the plugin DB and fecth the network
         network = self._get_network(context, id)
-        # TODO(salvatore-orlando): verify whether the query on os_tid is
-        # redundant or not.
-        if context.is_admin is False:
-            tenant_query = ("&tag=%s&tag_scope=os_tid"
-                            % network['tenant_id'])
-        else:
-            tenant_query = ""
-        # Then fetch the correspondiong logical switch in NVP as well
-        # TODO(salvatore-orlando): verify whether the step on NVP
-        # can be completely avoided
-        lswitch_url_path = (
-            "/ws.v1/lswitch?"
-            "fields=uuid,display_name%s%s"
-            % (tenant_query, lswitch_query))
+
+        # verify the fabric status of the corresponding
+        # logical switch(es) in nvp
         try:
-            for c in self.clusters:
-                lswitch_results = nvplib.get_all_query_pages(
-                    lswitch_url_path, c)
-                if lswitch_results:
-                    result['lswitch-display-name'] = (
-                        lswitch_results[0]['display_name'])
+            # FIXME(salvatore-orlando): This is not going to work
+            # unless we store the nova_id in the database once we'l
+            # enable multiple clusters
+            cluster = self._find_target_cluster(network)
+            lswitches = nvplib.get_lswitches(cluster, id)
+            net_op_status = constants.NET_STATUS_ACTIVE
+            for lswitch in lswitches:
+                lswitch_status = lswitch.get('LogicalSwitchStatus', None)
+                # FIXME(salvatore-orlando): Being unable to fetch the
+                # logical switch status should be an exception.
+                if (lswitch_status and
+                    not lswitch_status.get('fabric_status', None)):
+                    net_op_status = constants.NET_STATUS_DOWN
                     break
+            LOG.debug("Current network status:%s; Status in Quantum DB:%s",
+                      net_op_status, network.status)
+            if net_op_status != network.status:
+                # update the network status
+                with context.session.begin(subtransactions=True):
+                    network.status = net_op_status
         except Exception:
-            LOG.error("Unable to get switches: %s" % traceback.format_exc())
-            raise exception.QuantumException()
+            err_msg = "Unable to get logical switches"
+            LOG.exception(err_msg)
+            raise nvp_exc.NvpPluginException(err_msg=err_msg)
 
-        if 'lswitch-display-name' not in result:
-            raise exception.NetworkNotFound(net_id=id)
-
-        d = {'id': id,
-             'name': result['lswitch-display-name'],
-             'tenant_id': network['tenant_id'],
-             'admin_state_up': True,
-             'status': constants.NET_STATUS_ACTIVE,
-             'shared': network['shared'],
-             'subnets': []}
-
-        LOG.debug("get_network() completed for tenant %s: %s" % (
-                  context.tenant_id, d))
-        return d
+        # Don't do filtering for fields here otherwise we won't be able
+        # to add provider networks fields
+        net_result = self._make_network_dict(network, None)
+        self._extend_network_dict_provider(context, net_result)
+        return self._fields(net_result, fields)
 
     def get_networks(self, context, filters=None, fields=None):
         """
@@ -723,6 +788,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         nvp_lswitches = []
         quantum_lswitches = (
             super(NvpPluginV2, self).get_networks(context, filters))
+        for net in quantum_lswitches:
+            self._extend_network_dict_provider(context, net)
 
         if context.is_admin and not filters.get("tenant_id"):
             tenant_filter = ""
@@ -733,19 +800,20 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         else:
             tenant_filter = "&tag=%s&tag_scope=os_tid" % context.tenant_id
 
-        lswitch_filters = "uuid,display_name,fabric_status"
+        lswitch_filters = "uuid,display_name,fabric_status,tags"
         lswitch_url_path = (
             "/ws.v1/lswitch?fields=%s&relations=LogicalSwitchStatus%s"
             % (lswitch_filters, tenant_filter))
         try:
-            for c in self.clusters:
+            for c in self.clusters.itervalues():
                 res = nvplib.get_all_query_pages(
                     lswitch_url_path, c)
 
                 nvp_lswitches.extend(res)
         except Exception:
-            LOG.error("Unable to get switches: %s" % traceback.format_exc())
-            raise exception.QuantumException()
+            err_msg = "Unable to get logical switches"
+            LOG.exception(err_msg)
+            raise nvp_exc.NvpPluginException(err_msg=err_msg)
 
         # TODO (Aaron) This can be optimized
         if filters.get("id"):
@@ -759,7 +827,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         for quantum_lswitch in quantum_lswitches:
             Found = False
             for nvp_lswitch in nvp_lswitches:
-                if nvp_lswitch["uuid"] == quantum_lswitch["id"]:
+                # TODO(salvatore-orlando): be carefult about "extended"
+                # logical switches
+                if nvp_lswitch['uuid'] == quantum_lswitch["id"]:
                     if (nvp_lswitch["_relations"]["LogicalSwitchStatus"]
                             ["fabric_status"]):
                         quantum_lswitch["status"] = constants.NET_STATUS_ACTIVE
@@ -771,7 +841,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     break
 
             if not Found:
-                raise Exception("Quantum and NVP Databases are out of Sync!")
+                raise nvp_exc.NvpOutOfSyncException()
         # do not make the case in which switches are found in NVP
         # but not in Quantum catastrophic.
         if len(nvp_lswitches):
@@ -817,9 +887,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         if network["network"].get("admin_state_up"):
             if network['network']["admin_state_up"] is False:
-                raise exception.NotImplementedError("admin_state_up=False "
-                                                    "networks are not "
-                                                    "supported.")
+                raise q_exc.NotImplementedError("admin_state_up=False "
+                                                "networks are not "
+                                                "supported.")
         params = {}
         params["network"] = network["network"]
         pairs = self._get_lswitch_cluster_pairs(id, context.tenant_id)
@@ -828,7 +898,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         if network['network'].get("name"):
             for (cluster, switches) in pairs:
                 for switch in switches:
-                    nvplib.update_network(cluster, switch, **params)
+                    nvplib.update_lswitch(cluster, switch,
+                                          network['network']['name'])
 
         LOG.debug("update_network() completed for tenant: %s" %
                   context.tenant_id)
@@ -883,7 +954,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         lport_fields_str = ("tags,admin_status_enabled,display_name,"
                             "fabric_status_up")
         try:
-            for c in self.clusters:
+            for c in self.clusters.itervalues():
                 lport_query_path = (
                     "/ws.v1/lswitch/%s/lport?fields=%s&%s%stag_scope=q_port_id"
                     "&relations=LogicalPortStatus" %
@@ -897,8 +968,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                 nvp_lports[tag["tag"]] = port
 
         except Exception:
-            LOG.error("Unable to get ports: %s" % traceback.format_exc())
-            raise exception.QuantumException()
+            err_msg = "Unable to get ports"
+            LOG.exception(err_msg)
+            raise nvp_exc.NvpPluginException(err_msg=err_msg)
 
         lports = []
         for quantum_lport in quantum_lports:
@@ -921,7 +993,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 del nvp_lports[quantum_lport["id"]]
                 lports.append(quantum_lport)
             except KeyError:
-                raise Exception("Quantum and NVP Databases are out of Sync!")
+                pass
+
         # do not make the case in which ports are found in NVP
         # but not in Quantum catastrophic.
         if len(nvp_lports):
@@ -951,8 +1024,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
          "admin_state_up": Sets admin state of port. if down, port
                            does not forward packets.
          "status": dicates whether port is currently operational
-                   (limit values to "ACTIVE", "DOWN", "BUILD", and
-                   "ERROR"?)
+                   (limit values to "ACTIVE", "DOWN", "BUILD", and "ERROR")
          "fixed_ips": list of subnet ID's and IP addresses to be used on
                       this port
          "device_id": identifies the device (e.g., virtual server) using
@@ -962,58 +1034,83 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.NetworkNotFound
         :raises: exception.StateInvalid
         """
-        p = port['port']
-        tenant_id = self._get_tenant_id_for_create(context, p)
+        tenant_id = self._get_tenant_id_for_create(context, port['port'])
         default_sg = self._ensure_default_security_group(context, tenant_id)
         self._validate_security_groups_on_port(context, port)
-        if not p.get(ext_sg.SECURITYGROUP):
+        if not port['port'].get(ext_sg.SECURITYGROUP):
             # For now let's not apply security groups to dhcp ports
-            if p.get('device_owner') == 'network:dhcp' and context.is_admin:
+            if (port['port'].get('device_owner') == 'network:dhcp' and
+                context.is_admin):
                 pass
             elif not cfg.CONF.SECURITYGROUP.proxy_mode:
                 port['port'][ext_sg.SECURITYGROUP] = [default_sg]
         # Set admin_state_up False since not created in NVP set
+        # TODO(salvatore-orlando) : verify whether subtransactions can help
+        # us avoiding multiple operations on the db. This might also allow
+        # us to use the same identifier for the NVP and the Quantum port
+
+        # Set admin_state_up False since not created in NVP yet
         port["port"]["admin_state_up"] = False
         # First we allocate port in quantum database
-        try:
-            quantum_db = super(NvpPluginV2, self).create_port(context, port)
-        except Exception as e:
-            raise e
+        quantum_db = super(NvpPluginV2, self).create_port(context, port)
 
-        # Update fields obtained from quantum db
+        # Update fields obtained from quantum db (eg: MAC address)
         port["port"].update(quantum_db)
-
         # We want port to be up in NVP
         port["port"]["admin_state_up"] = True
-        params = {}
-        params["max_lp_per_bridged_ls"] = \
-            self.nvp_opts["max_lp_per_bridged_ls"]
-        params["port"] = port["port"]
-        params["clusters"] = self.clusters
-
+        port_data = port['port'].copy()
+        # Fetch the correspondend network and network binding from Quantum db
+        network = self._get_network(context, port_data['network_id'])
+        network_binding = nicira_db.get_network_binding(
+            context.session, port_data['network_id'])
+        max_ports = self.nvp_opts.max_lp_per_overlay_ls
+        allow_extra_lswitches = False
+        if (network_binding and
+            network_binding.binding_type in (NetworkTypes.FLAT,
+                                             NetworkTypes.VLAN)):
+            max_ports = self.nvp_opts.max_lp_per_bridged_ls
+            allow_extra_lswitches = True
         try:
-            port["port"], nvp_port_id = nvplib.create_port(tenant_id,
-                                                           **params)
-            nvplib.plug_interface(self.clusters, port["port"]["network_id"],
-                                  nvp_port_id, "VifAttachment",
-                                  port["port"]["id"])
-        except Exception as e:
+            q_net_id = port_data['network_id']
+            cluster = self._find_target_cluster(port_data)
+            selected_lswitch = self._handle_lswitch_selection(
+                cluster, network, network_binding, max_ports,
+                allow_extra_lswitches)
+            lswitch_uuid = selected_lswitch['uuid']
+            lport = nvplib.create_lport(cluster,
+                                        lswitch_uuid,
+                                        port_data['tenant_id'],
+                                        port_data['id'],
+                                        port_data['name'],
+                                        port_data['device_id'],
+                                        port_data['admin_state_up'],
+                                        port_data['mac_address'],
+                                        port_data['fixed_ips'])
+            # Get NVP ls uuid for quantum network
+            nvplib.plug_interface(cluster, q_net_id,
+                                  lport['uuid'], "VifAttachment",
+                                  port_data['id'])
+        except Exception:
             # failed to create port in NVP delete port from quantum_db
+            LOG.exception("An exception occured while plugging the interface")
             super(NvpPluginV2, self).delete_port(context, port["port"]["id"])
-            raise e
+            raise
 
-        d = {"port-id": port["port"]["id"],
-             "port-op-status": port["port"]["status"]}
+        LOG.debug("create_port completed for tenant %s: (%s,%s)" %
+                  (port_data['tenant_id'],
+                   port_data['id'],
+                   port_data['status']))
 
         # Saves the security group that port is on.
-        if p.get('device_owner') != 'network:dhcp' and context.is_admin:
-            self._process_port_create_security_group(context, p['id'],
-                                                     p[ext_sg.SECURITYGROUP])
+        if (port_data.get('device_owner') != 'network:dhcp' and
+            context.is_admin):
+            self._process_port_create_security_group(
+                context, port_data['id'], port_data[ext_sg.SECURITYGROUP])
 
         LOG.debug("create_port() completed for tenant %s: %s" %
-                  (tenant_id, d))
+                  (tenant_id, port_data['id']))
 
-        # update port with admin_state_up True
+        # update port on Quantum DB with admin_state_up True
         port_update = {"port": {"admin_state_up": True}}
         port = super(NvpPluginV2, self).update_port(context,
                                                     port["port"]["id"],
@@ -1054,7 +1151,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         ret_port.update(port['port'])
 
         port_nvp, cluster = (
-            nvplib.get_port_by_quantum_tag(self.clusters,
+            nvplib.get_port_by_quantum_tag(self.clusters.itervalues(),
                                            ret_port["network_id"], id))
 
         # security groups
@@ -1064,7 +1161,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         params["cluster"] = cluster
         ret_port["port_security"] = (ret_port.get('port_security',
                                      nvplib.port_security_info(port_nvp)))
-
         params["port"] = ret_port
         LOG.debug("Update port request: %s" % (params))
         nvplib.update_port(ret_port["network_id"],
@@ -1092,10 +1188,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.NetworkNotFound
         """
 
-        port, cluster = nvplib.get_port_by_quantum_tag(self.clusters,
-                                                       '*', id)
+        # TODO(salvatore-orlando): pass only actual cluster
+        port, cluster = nvplib.get_port_by_quantum_tag(
+            self.clusters.itervalues(), '*', id)
         if port is None:
-            raise exception.PortNotFound(port_id=id)
+            raise q_exc.PortNotFound(port_id=id)
         # TODO(bgh): if this is a bridged network and the lswitch we just got
         # back will have zero ports after the delete we should garbage collect
         # the lswitch.
@@ -1125,9 +1222,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         quantum_db = super(NvpPluginV2, self).get_port(context, id, fields)
 
+        #TODO: pass only the appropriate cluster here
+        #Look for port in all lswitches
         port, cluster = (
-            nvplib.get_port_by_quantum_tag(self.clusters,
-                                           quantum_db["network_id"], id))
+            nvplib.get_port_by_quantum_tag(self.clusters.itervalues(),
+                                           "*", id))
 
         quantum_db["admin_state_up"] = port["admin_status_enabled"]
         if port["_relations"]["LogicalPortStatus"]["fabric_status_up"]:
