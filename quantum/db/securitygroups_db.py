@@ -454,12 +454,28 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
     def _validate_security_groups_on_port(self, context, port):
         p = port['port']
         if not p.get(ext_sg.SECURITYGROUP):
-            return
+            return []
+        security_group_ids = []
+        valid_groups = self.get_security_groups(
+            context, fields={'external_id': None, 'id': None})
+        sg_found = False
+        for security_group in p.get(ext_sg.SECURITYGROUP):
+            for valid_group in valid_groups:
+                # Proxy mode
+                if not re.match(attributes.UUID_PATTERN, str(security_group)):
+                    if (valid_group.get('external_id') and
+                        security_group == valid_group['external_id']):
+                        security_group_ids.append(valid_group['id'])
+                        sg_found = True
+                        break
 
-        valid_groups = self.get_security_groups(context, fields={'id': None})
-        valid_groups_set = set([x['id'] for x in valid_groups])
-        req_sg_set = set(p[ext_sg.SECURITYGROUP])
-        invalid_sg_set = req_sg_set - valid_groups_set
-        if invalid_sg_set:
-            msg = ' '.join(str(x) for x in invalid_sg_set)
-            raise ext_sg.SecurityGroupNotFound(id=msg)
+                # NonProxy Mode
+                else:
+                    if (security_group == valid_group['id']):
+                        security_group_ids.append(valid_group['id'])
+                        sg_found = True
+                        break
+
+            if not sg_found:
+                raise ext_sg.SecurityGroupNotFound(id=security_group)
+        return security_group_ids
