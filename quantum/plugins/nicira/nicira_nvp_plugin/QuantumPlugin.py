@@ -176,12 +176,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 http_timeout=cluster.http_timeout,
                 retries=cluster.retries,
                 redirects=cluster.redirects,
-                failover_time=self.nvp_opts.failover_time,
-                concurrent_connections=self.nvp_opts.concurrent_connections)
-
-            # TODO(salvatore-orlando): do login at first request,
-            # not when plugin, is instantiated
-            cluster.api_client.login()
+                concurrent_connections=self.nvp_opts['concurrent_connections'],
+                nvp_gen_timeout=self.nvp_opts['nvp_gen_timeout'])
 
             # TODO(pjb): What if the cluster isn't reachable this
             # instant?  It isn't good to fall back to invalid cluster
