@@ -742,14 +742,18 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             lswitches = nvplib.get_lswitches(cluster, id)
             net_op_status = constants.NET_STATUS_ACTIVE
             for lswitch in lswitches:
-                lswitch_status = lswitch.get('LogicalSwitchStatus', None)
-                # FIXME(salvatore-orlando): Being unable to fetch the
-                # logical switch status should be an exception.
-                if (lswitch_status and
-                    not lswitch_status.get('fabric_status', None)):
-                    net_op_status = constants.NET_STATUS_DOWN
-                    break
-            LOG.debug("Current network status:%s; Status in Quantum DB:%s",
+                relations = lswitch.get('_relations')
+                if relations:
+                    lswitch_status = relations.get('LogicalSwitchStatus',
+                                                   None)
+                    # FIXME(salvatore-orlando): Being unable to fetch the
+                    # logical switch status should be an exception.
+                    if (lswitch_status and
+                        not lswitch_status.get('fabric_status', None)):
+                        net_op_status = constants.NET_STATUS_DOWN
+                        break
+            LOG.debug("Current network status:%s;"
+                      "Status in Quantum DB:%s",
                       net_op_status, network.status)
             if net_op_status != network.status:
                 # update the network status
@@ -758,7 +762,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         except Exception:
             err_msg = "Unable to get logical switches"
             LOG.exception(err_msg)
-            raise nvp_exc.NvpPluginException(err_msg=err_msg)
+            raise nvp_exc.NvpPluginException(err_desc=err_msg)
 
         # Don't do filtering for fields here otherwise we won't be able
         # to add provider networks fields
