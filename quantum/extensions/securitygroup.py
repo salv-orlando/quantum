@@ -120,6 +120,15 @@ class SecurityGroupInvalidExternalID(qexception.InvalidInput):
     message = _("external_id wrong type %(data)s")
 
 
+class SecurityGroupNoIPMAC(qexception.InvalidInput):
+    message = _("Must have mac and ip on port in order to use security groups")
+
+
+class SecurityGroupNoIpMacPortUpdate(qexception.InvalidInput):
+    message = _("Cannot remove ip from port if it has security groups"
+                " associated")
+
+
 def convert_validate_port_value(port):
     if port is None:
         return port

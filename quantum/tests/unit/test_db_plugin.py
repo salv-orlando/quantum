@@ -261,7 +261,8 @@ class QuantumDbPluginV2TestCase(unittest2.TestCase):
 
         for arg in ('admin_state_up', 'device_id',
                     'mac_address', 'name', 'fixed_ips',
-                    'tenant_id', 'device_owner', 'security_groups'):
+                    'tenant_id', 'device_owner', 'security_groups',
+                    'port_security'):
             # Arg must be present and not empty
             if arg in kwargs and kwargs[arg]:
                 data['port'][arg] = kwargs[arg]
@@ -834,6 +835,10 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
         res = req.get_response(self.api)
         self.assertEquals(res.status_int, 204)
 
+    """
+    This test is commented out since port security doesn't allow
+    you to remove an ip from a port if it was created with one.
+
     def test_update_port_delete_ip(self):
         with self.subnet() as subnet:
             with self.port(subnet=subnet) as port:
@@ -846,7 +851,7 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
                                  data['port']['admin_state_up'])
                 self.assertEqual(res['port']['fixed_ips'],
                                  data['port']['fixed_ips'])
-
+    """
     def test_update_port_update_ip(self):
         """Test update of port IP.
 

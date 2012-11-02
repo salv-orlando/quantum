@@ -39,7 +39,9 @@ from quantum.db import db_base_plugin_v2
 from quantum.db import dhcp_rpc_base
 from quantum.db import models_v2
 from quantum.db import securitygroups_db
+from quantum.db import portsecurity_db
 from quantum.extensions import securitygroup as ext_sg
+from quantum.extensions import portsecurity as psec
 from quantum.extensions import providernet as pnet
 from quantum.openstack.common import cfg
 from quantum.openstack.common import context
@@ -76,6 +78,10 @@ def parse_config():
         NVPCluster objects, 'plugin_config' is a dictionary with plugin
         parameters (currently only 'max_lp_per_bridged_ls').
     """
+    if (cfg.CONF.PORTSECURITY.require_port_security not in
+        ['False', 'both', 'private', 'shared', False]):
+        LOG.error("require_port_security setting invalid on server!")
+        raise psec.PortSecurityInvalidConfiguration()
     db_options = {"sql_connection": cfg.CONF.DATABASE.sql_connection}
     db_options.update({'base': models_v2.model_base.BASEV2})
     sql_max_retries = cfg.CONF.DATABASE.sql_max_retries
@@ -121,7 +127,8 @@ class NVPRpcCallbacks(dhcp_rpc_base.DhcpRpcCallbackMixin):
 
 
 class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
-                  securitygroups_db.SecurityGroupDbMixin):
+                  securitygroups_db.SecurityGroupDbMixin,
+                  portsecurity_db.PortSecurityDbMixin):
     """
     NvpPluginV2 is a Quantum plugin that provides L2 Virtual Network
     functionality using NVP.
@@ -129,8 +136,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
     __native_bulk_support = True
 
-    supported_extension_aliases = ["security-group", "provider"]
-    sg_supported_protocols = ['tcp', 'udp', 'icmp']
+    supported_extension_aliases = ["provider", "port-security",
+                                   "security-group"]
+    sg_supported_protocols = ['tcp', 'udp', 'icp']
     sg_supported_ethertypes = ['IPv4', 'IPv6']
 
     # Map nova zones to cluster for easy retrieval
@@ -176,8 +184,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 http_timeout=cluster.http_timeout,
                 retries=cluster.retries,
                 redirects=cluster.redirects,
-                concurrent_connections=self.nvp_opts['concurrent_connections'],
-                nvp_gen_timeout=self.nvp_opts['nvp_gen_timeout'])
+                concurrent_connections=self.nvp_opts.concurrent_connections,
+                nvp_gen_timeout=self.nvp_opts.nvp_gen_timeout)
 
             # TODO(pjb): What if the cluster isn't reachable this
             # instant?  It isn't good to fall back to invalid cluster
@@ -978,6 +986,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     nvp_lports[quantum_lport["id"]]["display_name"])
 
                 self._extend_port_dict_security_group(context, quantum_lport)
+                self._extend_port_dict_port_security(context, quantum_lport)
+
                 if (nvp_lports[quantum_lport["id"]]
                         ["_relations"]
                         ["LogicalPortStatus"]
@@ -1030,43 +1040,52 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.NetworkNotFound
         :raises: exception.StateInvalid
         """
-        tenant_id = self._get_tenant_id_for_create(context, port['port'])
-        default_sg = self._ensure_default_security_group(context, tenant_id)
-        self._validate_security_groups_on_port(context, port)
-        if not port['port'].get(ext_sg.SECURITYGROUP):
-            # For now let's not apply security groups to dhcp ports
-            if (port['port'].get('device_owner') == 'network:dhcp' and
-                context.is_admin):
-                pass
-            elif not cfg.CONF.SECURITYGROUP.proxy_mode:
-                port['port'][ext_sg.SECURITYGROUP] = [default_sg]
         # Set admin_state_up False since not created in NVP set
         # TODO(salvatore-orlando) : verify whether subtransactions can help
         # us avoiding multiple operations on the db. This might also allow
         # us to use the same identifier for the NVP and the Quantum port
-
         # Set admin_state_up False since not created in NVP yet
+        requested_admin_state = port["port"]["admin_state_up"]
         port["port"]["admin_state_up"] = False
         # First we allocate port in quantum database
         quantum_db = super(NvpPluginV2, self).create_port(context, port)
-
         # Update fields obtained from quantum db (eg: MAC address)
         port["port"].update(quantum_db)
-        # We want port to be up in NVP
-        port["port"]["admin_state_up"] = True
-        port_data = port['port'].copy()
-        # Fetch the correspondend network and network binding from Quantum db
-        network = self._get_network(context, port_data['network_id'])
-        network_binding = nicira_db.get_network_binding(
-            context.session, port_data['network_id'])
-        max_ports = self.nvp_opts.max_lp_per_overlay_ls
-        allow_extra_lswitches = False
-        if (network_binding and
-            network_binding.binding_type in (NetworkTypes.FLAT,
-                                             NetworkTypes.VLAN)):
-            max_ports = self.nvp_opts.max_lp_per_bridged_ls
-            allow_extra_lswitches = True
+        p = port['port']
+        tenant_id = self._get_tenant_id_for_create(context, port['port'])
         try:
+            default_sg = self._ensure_default_security_group(
+                context, tenant_id)
+            self._validate_security_groups_on_port(context, port)
+            port_security = self._validate_port_security(context, p)
+            p[psec.PORTSECURITY] = port_security
+
+            if (not p.get(ext_sg.SECURITYGROUP) and port_security == 'mac_ip'):
+                # For now let's not apply security groups to dhcp ports
+                if (p.get('device_owner') == 'network:dhcp'
+                    and context.is_admin):
+                    pass
+                elif not cfg.CONF.SECURITYGROUP.proxy_mode:
+                    port['port'][ext_sg.SECURITYGROUP] = [default_sg]
+
+            elif p.get(ext_sg.SECURITYGROUP) and port_security != 'mac_ip':
+                raise psec.NoPortSecurityWithSecurityGroups()
+
+            # We want port to be up in NVP
+            port["port"]["admin_state_up"] = requested_admin_state
+            port_data = port['port'].copy()
+            # Fetch the correspondend network and network
+            # binding from Quantum db
+            network = self._get_network(context, port_data['network_id'])
+            network_binding = nicira_db.get_network_binding(
+                context.session, port_data['network_id'])
+            max_ports = self.nvp_opts.max_lp_per_overlay_ls
+            allow_extra_lswitches = False
+            if (network_binding and
+                network_binding.binding_type in (NetworkTypes.FLAT,
+                                                 NetworkTypes.VLAN)):
+                max_ports = self.nvp_opts.max_lp_per_bridged_ls
+                allow_extra_lswitches = True
             q_net_id = port_data['network_id']
             cluster = self._find_target_cluster(port_data)
             selected_lswitch = self._handle_lswitch_selection(
@@ -1081,16 +1100,19 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                         port_data['device_id'],
                                         port_data['admin_state_up'],
                                         port_data['mac_address'],
-                                        port_data['fixed_ips'])
+                                        port_data['fixed_ips'],
+                                        port_data.get(psec.PORTSECURITY),
+                                        port_data.get(ext_sg.SECURITYGROUP)
+                                        )
             # Get NVP ls uuid for quantum network
             nvplib.plug_interface(cluster, q_net_id,
                                   lport['uuid'], "VifAttachment",
                                   port_data['id'])
-        except Exception:
+        except Exception as e:
             # failed to create port in NVP delete port from quantum_db
             LOG.exception("An exception occured while plugging the interface")
             super(NvpPluginV2, self).delete_port(context, port["port"]["id"])
-            raise
+            raise e
 
         LOG.debug("create_port completed for tenant %s: (%s,%s)" %
                   (port_data['tenant_id'],
@@ -1098,20 +1120,22 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                    port_data['status']))
 
         # Saves the security group that port is on.
-        if (port_data.get('device_owner') != 'network:dhcp' and
-            context.is_admin):
-            self._process_port_create_security_group(
-                context, port_data['id'], port_data[ext_sg.SECURITYGROUP])
+        if p.get(ext_sg.SECURITYGROUP) and port_security == 'mac_ip':
+            self._process_port_create_security_group(context, p['id'],
+                                                     p[ext_sg.SECURITYGROUP])
 
+        self._process_port_security_create(context, p)
         LOG.debug("create_port() completed for tenant %s: %s" %
                   (tenant_id, port_data['id']))
 
         # update port on Quantum DB with admin_state_up True
-        port_update = {"port": {"admin_state_up": True}}
+        # TODO only if requested_admin_state is True
+        port_update = {"port": {"admin_state_up": requested_admin_state}}
         port = super(NvpPluginV2, self).update_port(context,
                                                     port["port"]["id"],
                                                     port_update)
         self._extend_port_dict_security_group(context, port)
+        self._extend_port_dict_port_security(context, port)
         return port
 
     def update_port(self, context, id, port):
@@ -1139,6 +1163,22 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.PortNotFound
         """
         params = {}
+        rollback_port = super(NvpPluginV2, self).get_port(context, id)
+
+        # If value is not passed in it gets assigned False
+        if psec.PORTSECURITY in port['port']:
+            update_port_security = port['port'].get(psec.PORTSECURITY)
+        else:
+            update_port_security = False
+
+        if ext_sg.SECURITYGROUP in port['port']:
+            update_security_groups = port['port'].get(ext_sg.SECURITYGROUP)
+            if (update_security_groups == [] or
+                update_security_groups == "None"):
+                update_security_groups = None
+        else:
+            update_security_groups = False
+
         # update in base class to leverage ip/subnetting update
         ret_port = super(NvpPluginV2, self).update_port(context, id, port)
 
@@ -1146,28 +1186,95 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         # are not in the _make_port-dict
         ret_port.update(port['port'])
 
-        port_nvp, cluster = (
-            nvplib.get_port_by_quantum_tag(self.clusters.itervalues(),
-                                           ret_port["network_id"], id))
+        # validate the update remove_ip/port_security
+        if update_port_security:
+            ret_port[psec.PORTSECURITY] = update_port_security
+        else:
+            ret_port[psec.PORTSECURITY] = (
+                self._get_port_security_binding(context, ret_port['id']))
 
-        # security groups
-        ret_port[ext_sg.SECURITYGROUP] = (
-            self._validate_security_groups_on_port(context, port))
+        ret_port[psec.PORTSECURITY] = self._validate_port_security(context,
+                                                                   ret_port)
 
-        params["cluster"] = cluster
-        ret_port["port_security"] = (ret_port.get('port_security',
-                                     nvplib.port_security_info(port_nvp)))
-        params["port"] = ret_port
-        LOG.debug("Update port request: %s" % (params))
-        nvplib.update_port(ret_port["network_id"],
-                           port_nvp["uuid"], **params)
-        LOG.debug("update_port() completed for tenant: %s" % context.tenant_id)
+        # validate security groups with port security type
+        if ret_port[psec.PORTSECURITY] != 'mac_ip':
+            if (update_security_groups is False):
+                filters = {'port_id': [id]}
+                security_groups = (
+                    super(NvpPluginV2, self)._get_port_security_group_bindings(
+                        context, filters))
+                if security_groups:
+                    raise ext_sg.SecurityGroupNoIpMacPortUpdate()
+            elif update_security_groups:
+                raise ext_sg.SecurityGroupNoIpMacPortUpdate()
 
-        # delete the port binding and read it with the new rules.
-        self._delete_port_security_group_bindings(context, id)
-        self._process_port_create_security_group(context, id,
-                                                 ret_port.get(
-                                                 ext_sg.SECURITYGROUP))
+        # Request to set port security is mac or off
+        if (ret_port[psec.PORTSECURITY] in ['mac', 'off']):
+            # update_security_groups will be set to None if we are removing
+            # them from a port. if update_security_groups == False there are
+            # no updates for the the security groups but since the request
+            # turns port_security to mac/off we need to confirm there are
+            # not any security_groups on the port because security groups
+            # require port_security mac_ip
+            if (update_security_groups is False):
+                filters = {'port_id': [id]}
+                security_groups = (
+                    super(NvpPluginV2, self)._get_port_security_group_bindings(
+                        context, filters))
+                if security_groups:
+                    raise psec.SecurityGroupsOnPortCannotRemovePortSecurity()
+            elif update_security_groups:
+                raise psec.SecurityGroupsOnPortCannotRemovePortSecurity()
+
+        # adding security groups
+        if update_security_groups:
+            # get the port_security type on port if not in update
+            if ret_port[psec.PORTSECURITY] != 'mac_ip':
+                raise psec.PortSecurityNotEnabled()
+            ret_port[ext_sg.SECURITYGROUP] = (
+                self._validate_security_groups_on_port(context, port))
+        # didn't modify
+        elif update_security_groups is False:
+            filters = {'port_id': [id]}
+            security_groups = (
+                super(NvpPluginV2, self)._get_port_security_group_bindings(
+                    context, filters))
+            ret_port[ext_sg.SECURITYGROUP] = security_groups
+        # delete security group on port
+        else:
+            ret_port[ext_sg.SECURITYGROUP] = None
+
+        # TODO Can this use a transaction instead?
+        try:
+            # TODO store this in db
+            port_nvp, cluster = (
+                nvplib.get_port_by_quantum_tag(self.clusters.itervalues(),
+                                               ret_port["network_id"], id))
+
+            params["cluster"] = cluster
+            params["port"] = ret_port
+            LOG.debug("Update port request: %s" % (params))
+            nvplib.update_port(ret_port["network_id"],
+                               port_nvp["uuid"], **params)
+            LOG.debug("update_port() completed for tenant: %s" %
+                      context.tenant_id)
+
+        except:
+            super(NvpPluginV2, self).update_port(context, id,
+                                                 {'port': rollback_port})
+
+        # TODO have some kind of roll back for this
+        if (update_security_groups is not False):
+            # delete the port binding and read it with the new rules.
+            self._delete_port_security_group_bindings(context, id)
+            self._process_port_create_security_group(context, id,
+                                                     ret_port.get(
+                                                     ext_sg.SECURITYGROUP))
+
+        if update_port_security is not False:
+            self._delete_port_security_bindings(context, id)
+            self._process_port_security_create(context, ret_port)
+        self._extend_port_dict_port_security(context, ret_port)
         self._extend_port_dict_security_group(context, ret_port)
         return ret_port
 
@@ -1217,6 +1324,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         """
 
         quantum_db = super(NvpPluginV2, self).get_port(context, id, fields)
+        self._extend_port_dict_security_group(context, quantum_db)
+        self._extend_port_dict_port_security(context, quantum_db)
 
         #TODO: pass only the appropriate cluster here
         #Look for port in all lswitches

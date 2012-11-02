@@ -30,6 +30,7 @@ from quantum.common import config
 from quantum.common import exceptions as q_exc
 from quantum import context
 from quantum.extensions import securitygroup as ext_sg
+from quantum.extensions import portsecurity as psec
 from quantum.extensions.extensions import PluginAwareExtensionManager
 from quantum.manager import QuantumManager
 from quantum.openstack.common import cfg
@@ -516,7 +517,9 @@ class JSONV2TestCase(APIv2TestBase):
                                'mac_address': attributes.ATTR_NOT_SPECIFIED,
                                'fixed_ips': attributes.ATTR_NOT_SPECIFIED,
                                'device_owner': '',
-                               ext_sg.SECURITYGROUP: None}}
+                               ext_sg.SECURITYGROUP: None,
+                               psec.PORTSECURITY: (
+                                   attributes.ATTR_NOT_SPECIFIED)}}
         full_input['port'].update(initial_input['port'])
         return_value = {'id': _uuid(), 'status': 'ACTIVE',
                         'admin_state_up': True,

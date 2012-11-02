@@ -418,51 +418,28 @@ def get_port(cluster, network, port, relations=None):
     return port
 
 
-def port_security_info(port):
-    if not port.get('allowed_address_pairs'):
-        return "off"
-    if port['allowed_address_pairs'][0]['ip_address'] == "0.0.0.0/0":
-        return "mac"
-    else:
-        return "mac_ip"
-
-
-def _configure_extensions(lport_obj, port):
-    lport_obj["security_profiles"] = []
-    if port.get(ext_sg.SECURITYGROUP):
-        if (PORT_SECURITY_DEFAULT or
-            port.get("port_security") == "mac_ip"):
-            lport_obj["security_profiles"] = (
-                port.get(ext_sg.SECURITYGROUP, ""))
-        else:
-            msg = ("Port must be configured using mac_ip port_security.")
-            LOG.error(msg)
-            raise exception.Error(msg)
-
+def _configure_extensions(lport_obj, port_data):
+    if 'security_profiles' in port_data:
+        lport_obj["security_profiles"] = port_data.get('security_profiles')
     # Port Security (MAC)
     lport_obj["allowed_address_pairs"] = []
-    if (PORT_SECURITY_DEFAULT or
-        port.get("port_security") == "mac_ip"):
-        for fixed_ip in port["fixed_ips"]:
+    if port_data["port_security"] == "mac_ip":
+        for fixed_ip in port_data["fixed_ips"]:
             ip_address = fixed_ip.get("ip_address")
             if ip_address:
                 lport_obj["allowed_address_pairs"].append(
-                    {"mac_address": port["mac_address"],
+                    {"mac_address": port_data["mac_address"],
                      "ip_address": fixed_ip["ip_address"]})
-
-        if not len(lport_obj["allowed_address_pairs"]):
-#           TODO: Need to port portsecurity extension upstream in order to
-#           inorder to avoid this..
-#            raise exception.Error("No IP allocated to port to prevent "
-            lport_obj["security_profiles"] = []
-            LOG.error("No IP allocated to port to prevent spoofing on.")
-#            raise exception.Error("No IP allocated to port to "
-#                                  "prevent spoofing on.")
+        # add address pair allowing src_ip 0.0.0.0 to leave
+        # this is required for outgoing dhcp request
+        lport_obj["allowed_address_pairs"].append(
+            {"mac_address": port_data["mac_address"],
+             "ip_address": "0.0.0.0"})
 
     # Port Security (mac/ip)
-    elif port.get("port_security") == "mac":
+    elif port_data.get("port_security") == "mac":
         lport_obj["allowed_address_pairs"].append(
-            {"mac_address": port["mac_address"]})
+            {"mac_address": port_data["mac_address"]})
 
 
 def update_port(network, port_id, **params):
@@ -485,7 +462,19 @@ def update_port(network, port_id, **params):
              dict(scope='q_port_id', tag=params["port"]["id"]),
              dict(scope='vm_id', tag=device_id)])
 
-    _configure_extensions(lport_obj, params['port'])
+    port_data = {'id': params["port"]["id"],
+                 'mac_address': params["port"]["mac_address"],
+                 'fixed_ips': params["port"]["fixed_ips"],
+                 'device_id': params["port"]["device_id"],
+                 'port_security': params["port"].get("port_security")}
+    if 'security_groups' in params["port"]:
+        security_groups = params["port"].get(ext_sg.SECURITYGROUP)
+        if security_groups:
+            port_data['security_profiles'] = security_groups
+        else:
+            port_data['security_profiles'] = []
+
+    _configure_extensions(lport_obj, port_data)
     uri = "/ws.v1/lswitch/" + network + "/lport/" + port_id
     try:
         resp_obj = do_single_request("PUT", uri, json.dumps(lport_obj),
@@ -503,7 +492,8 @@ def update_port(network, port_id, **params):
 
 def create_lport(cluster, lswitch_uuid, tenant_id, quantum_port_id,
                  display_name, device_id, admin_status_enabled,
-                 mac_address=None, fixed_ips=None):
+                 mac_address=None, fixed_ips=None, port_security=None,
+                 security_profiles=None):
     """ Creates a logical port on the assigned logical switch """
     # device_id can be longer than 40 so we rehash it
     hashed_device_id = hashlib.sha1(device_id).hexdigest()
@@ -517,7 +507,10 @@ def create_lport(cluster, lswitch_uuid, tenant_id, quantum_port_id,
     port_data = {'id': quantum_port_id,
                  'mac_address': mac_address,
                  'fixed_ips': fixed_ips,
-                 'device_id': device_id}
+                 'device_id': device_id,
+                 'port_security': port_security}
+    if security_profiles:
+        port_data['security_profiles'] = security_profiles
     _configure_extensions(lport_obj, port_data)
     path = _build_uri_path(LPORT_RESOURCE, parent_resource_id=lswitch_uuid)
     try:

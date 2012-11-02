@@ -27,8 +27,10 @@ from quantum.common.test_lib import test_config
 from quantum.common import config
 from quantum.db import api as db
 from quantum.db import db_base_plugin_v2
+from quantum.db import portsecurity_db
 from quantum.db import securitygroups_db
 from quantum.extensions.extensions import PluginAwareExtensionManager
+from quantum.extensions import portsecurity as psec
 from quantum.extensions import securitygroup as ext_sg
 from quantum.manager import QuantumManager
 from quantum.openstack.common import cfg
@@ -205,7 +207,8 @@ class SecurityGroupsTestCase(test_db_plugin.QuantumDbPluginV2TestCase,
 
 
 class SecurityGroupTestPlugin(db_base_plugin_v2.QuantumDbPluginV2,
-                              securitygroups_db.SecurityGroupDbMixin):
+                              securitygroups_db.SecurityGroupDbMixin,
+                              portsecurity_db.PortSecurityDbMixin):
     """ Test plugin that implements necessary calls on create/delete port for
     associating ports with security groups.
     """
@@ -223,6 +226,10 @@ class SecurityGroupTestPlugin(db_base_plugin_v2.QuantumDbPluginV2,
             sgids = port['port'].get(ext_sg.SECURITYGROUP)
             port = super(SecurityGroupTestPlugin, self).create_port(context,
                                                                     port)
+            port_security = self._validate_port_security(context, port)
+            port[psec.PORTSECURITY] = port_security
+            self._process_port_security_create(context, port)
+
             self._process_port_create_security_group(context, port['id'],
                                                      sgids)
             self._extend_port_dict_security_group(context, port)
@@ -628,6 +635,27 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
 
                     data = {'port': {'fixed_ips': port['port']['fixed_ips'],
                                      'name': port['port']['name'],
+                                     psec.PORTSECURITY: 'mac_ip',
+                                     ext_sg.SECURITYGROUP:
+                                     [sg['security_group']['id']]}}
+
+                    req = self.new_update_request('ports', data,
+                                                  port['port']['id'])
+                    res = self.deserialize('json', req.get_response(self.api))
+                    self.assertEquals(res['port'][ext_sg.SECURITYGROUP][0],
+                                      sg['security_group']['id'])
+                    self._delete('ports', port['port']['id'])
+
+    def test_update_port_with_security_group_specify_port_security(self):
+        with self.network() as n:
+            with self.subnet(n):
+                with self.security_group() as sg:
+                    res = self._create_port('json', n['network']['id'],
+                                            port_security='mac_ip')
+                    port = self.deserialize('json', res)
+
+                    data = {'port': {'fixed_ips': port['port']['fixed_ips'],
+                                     'name': port['port']['name'],
                                      ext_sg.SECURITYGROUP:
                                      [sg['security_group']['id']]}}
 
@@ -645,6 +673,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                     with self.security_group() as sg2:
                         res = self._create_port(
                             'json', n['network']['id'],
+                            port_security='mac_ip',
                             security_groups=[sg1['security_group']['id'],
                                              sg2['security_group']['id']])
                         port = self.deserialize('json', res)
@@ -657,12 +686,14 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
             with self.subnet(n):
                 with self.security_group() as sg:
                     res = self._create_port('json', n['network']['id'],
+                                            port_security='mac_ip',
                                             security_groups=(
                                             [sg['security_group']['id']]))
                     port = self.deserialize('json', res)
 
                     data = {'port': {'fixed_ips': port['port']['fixed_ips'],
-                                     'name': port['port']['name']}}
+                                     'name': port['port']['name'],
+                                     ext_sg.SECURITYGROUP: []}}
 
                     req = self.new_update_request('ports', data,
                                                   port['port']['id'])
@@ -684,6 +715,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
             with self.subnet(n):
                 with self.security_group() as sg:
                     res = self._create_port('json', n['network']['id'],
+                                            port_security='mac_ip',
                                             security_groups=(
                                             [sg['security_group']['id']]))
                     port = self.deserialize('json', res)
