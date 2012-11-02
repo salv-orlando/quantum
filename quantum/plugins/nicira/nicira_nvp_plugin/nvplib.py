@@ -350,9 +350,10 @@ def query_ports(cluster, network, relations=None, fields="*", filters=None):
     return json.loads(resp_obj)["results"]
 
 
-def delete_port(cluster, port):
+def delete_port(cluster, switch, port):
+    uri = "/ws.v1/lswitch/" + switch + "/lport/" + port
     try:
-        do_single_request("DELETE", port['_href'], cluster=cluster)
+        do_single_request("DELETE", uri, cluster=cluster)
     except NvpApiClient.ResourceNotFound as e:
         LOG.error("Port or Network not found, Error: %s" % str(e))
         raise exception.PortNotFound(port_id=port['uuid'])
@@ -360,26 +361,21 @@ def delete_port(cluster, port):
         raise exception.QuantumException()
 
 
-def get_port_by_quantum_tag(clusters, lswitch, quantum_tag):
-    """Return (url, cluster_id) of port or raises ResourceNotFound
-    """
-    query = ("/ws.v1/lswitch/%s/lport?fields=admin_status_enabled,"
-             "fabric_status_up,uuid,allowed_address_pairs&tag=%s&tag_scope="
-             "q_port_id&relations=LogicalPortStatus" % (lswitch, quantum_tag))
-
-    LOG.debug("Looking for port with q_tag \"%s\" on: %s"
-              % (quantum_tag, lswitch))
-    for c in clusters:
-        try:
-            res_obj = do_single_request('GET', query, cluster=c)
-        except Exception as e:
-            continue
-        res = json.loads(res_obj)
-        if len(res["results"]) == 1:
-            return (res["results"][0], c)
-
-    LOG.error("Port or Network not found")
-    raise exception.PortNotFound(port_id=quantum_tag, net_id=lswitch)
+def get_logical_port_status(cluster, switch, port):
+    query = ("/ws.v1/lswitch/" + switch + "/lport/"
+             + port + "?relations=LogicalPortStatus")
+    try:
+        res_obj = do_single_request('GET', query, cluster=cluster)
+    except NvpApiClient.ResourceNotFound as e:
+        LOG.error("Port or Network not found, Error: %s" % str(e))
+        raise exception.PortNotFound(port_id=port, net_id=switch)
+    except NvpApiClient.NvpApiException as e:
+        raise exception.QuantumException()
+    res = json.loads(res_obj)
+    # copy over admin_status_enabled
+    res["_relations"]["LogicalPortStatus"]["admin_status_enabled"] = (
+        res["admin_status_enabled"])
+    return res["_relations"]["LogicalPortStatus"]
 
 
 def get_port_by_display_name(clusters, lswitch, display_name):

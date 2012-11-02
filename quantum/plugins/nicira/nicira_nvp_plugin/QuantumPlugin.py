@@ -1104,6 +1104,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                         port_data.get(psec.PORTSECURITY),
                                         port_data.get(ext_sg.SECURITYGROUP)
                                         )
+            nicira_db.add_quantum_nvp_port_mapping(
+                context.session, port_data['id'], lport['uuid'])
             # Get NVP ls uuid for quantum network
             nvplib.plug_interface(cluster, q_net_id,
                                   lport['uuid'], "VifAttachment",
@@ -1246,16 +1248,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         # TODO Can this use a transaction instead?
         try:
-            # TODO store this in db
-            port_nvp, cluster = (
-                nvplib.get_port_by_quantum_tag(self.clusters.itervalues(),
-                                               ret_port["network_id"], id))
-
-            params["cluster"] = cluster
+            nvp_id = nicira_db.get_nvp_port_id(context.session, id)
+            params["cluster"] = self.default_cluster
             params["port"] = ret_port
             LOG.debug("Update port request: %s" % (params))
             nvplib.update_port(ret_port["network_id"],
-                               port_nvp["uuid"], **params)
+                               nvp_id, **params)
             LOG.debug("update_port() completed for tenant: %s" %
                       context.tenant_id)
 
@@ -1291,15 +1289,15 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.NetworkNotFound
         """
 
+        quantum_db = super(NvpPluginV2, self).get_port(context, id,
+                                                       ['network_id'])
         # TODO(salvatore-orlando): pass only actual cluster
-        port, cluster = nvplib.get_port_by_quantum_tag(
-            self.clusters.itervalues(), '*', id)
-        if port is None:
-            raise q_exc.PortNotFound(port_id=id)
+        port = nicira_db.get_nvp_port_id(context.session, id)
         # TODO(bgh): if this is a bridged network and the lswitch we just got
         # back will have zero ports after the delete we should garbage collect
         # the lswitch.
-        nvplib.delete_port(cluster, port)
+        nvplib.delete_port(self.default_cluster, quantum_db['network_id'],
+                           port)
 
         self._delete_port_security_group_bindings(context, id)
 
@@ -1327,14 +1325,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self._extend_port_dict_security_group(context, quantum_db)
         self._extend_port_dict_port_security(context, quantum_db)
 
+        nvp_id = nicira_db.get_nvp_port_id(context.session, id)
         #TODO: pass only the appropriate cluster here
-        #Look for port in all lswitches
-        port, cluster = (
-            nvplib.get_port_by_quantum_tag(self.clusters.itervalues(),
-                                           "*", id))
-
+        port = nvplib.get_logical_port_status(
+            self.default_cluster, quantum_db['network_id'], nvp_id)
         quantum_db["admin_state_up"] = port["admin_status_enabled"]
-        if port["_relations"]["LogicalPortStatus"]["fabric_status_up"]:
+        if port["fabric_status_up"]:
             quantum_db["status"] = constants.PORT_STATUS_ACTIVE
         else:
             quantum_db["status"] = constants.PORT_STATUS_DOWN
