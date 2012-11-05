@@ -1116,20 +1116,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             super(NvpPluginV2, self).delete_port(context, port["port"]["id"])
             raise e
 
-        LOG.debug("create_port completed for tenant %s: (%s,%s)" %
-                  (port_data['tenant_id'],
-                   port_data['id'],
-                   port_data['status']))
-
         # Saves the security group that port is on.
         if p.get(ext_sg.SECURITYGROUP) and port_security == 'mac_ip':
             self._process_port_create_security_group(context, p['id'],
                                                      p[ext_sg.SECURITYGROUP])
 
         self._process_port_security_create(context, p)
-        LOG.debug("create_port() completed for tenant %s: %s" %
-                  (tenant_id, port_data['id']))
-
         # update port on Quantum DB with admin_state_up True
         # TODO only if requested_admin_state is True
         port_update = {"port": {"admin_state_up": requested_admin_state}}
@@ -1138,6 +1130,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                                     port_update)
         self._extend_port_dict_security_group(context, port)
         self._extend_port_dict_port_security(context, port)
+
+        LOG.debug("create_port completed for tenant %s, on network %s."
+                  "New port id:%s" % (tenant_id, port_data['network_id'],
+                                      port_data['id']))
         return port
 
     def update_port(self, context, id, port):
