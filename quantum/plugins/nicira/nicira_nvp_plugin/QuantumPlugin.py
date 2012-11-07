@@ -138,7 +138,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
     supported_extension_aliases = ["provider", "port-security",
                                    "security-group"]
-    sg_supported_protocols = ['tcp', 'udp', 'icp']
+    sg_supported_protocols = ['tcp', 'udp', 'icmp']
     sg_supported_ethertypes = ['IPv4', 'IPv6']
 
     # Map nova zones to cluster for easy retrieval
