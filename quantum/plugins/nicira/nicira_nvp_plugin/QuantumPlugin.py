@@ -431,19 +431,40 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             raise ext_sg.SecurityGroupNotFound(id=source_group_id)
         return security_group['id']
 
-    def _remove_none_values(self, rules):
+    def _remove_none_values_and_convert(self, rules):
         """Remove none values or NVP will complain about them.
         """
-        delete_if_present = ['source_group_id', 'source_ip_prefix',
-                             'port_range_min', 'port_range_max', 'protocol']
-        for key in delete_if_present:
-            for rule in rules['logical_port_ingress_rules']:
-                if key in rule:
+        supported_protocols = {'tcp': 6, 'icmp': 1, 'udp': 17}
+        delete_if_present = ['source_ip_prefix', 'protocol'
+                             'source_group_id', 'port_range_min',
+                             'port_range_max']
+        for rule in rules['logical_port_ingress_rules']:
+            for key in delete_if_present:
+                val = rule.get(key)
+                if not val and key in rule:
                     del rule[key]
+                if 'source_ip_prefix' == key and key in rule:
+                    rule['ip_prefix'] = rule['source_ip_prefix']
+                    del rule['source_ip_prefix']
+                elif 'source_group_id' == key and key in rule:
+                    rule['profile_uuid'] = rule['source_group_id']
+                    del rule['source_group_id']
+                elif 'protocol' == key and key in rule:
+                    rule['protocol'] = supported_protocols[rule['protocol']]
 
-            for rule in rules['logical_port_egress_rules']:
-                if key in rule:
+        for rule in rules['logical_port_egress_rules']:
+            for key in delete_if_present:
+                val = rule.get(key)
+                if not val and key in rule:
                     del rule[key]
+                if 'source_ip_prefix' == key and key in rule:
+                    rule['ip_prefix'] = rule['source_ip_prefix']
+                    del rule['source_ip_prefix']
+                elif 'source_group_id' == key and key in rule:
+                    rule['profile_uuid'] = rule['source_group_id']
+                    del rule['source_group_id']
+                elif 'protocol' == key and key in rule:
+                    rule['protocol'] = supported_protocols[rule['protocol']]
 
         return rules
 
@@ -479,7 +500,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         # gather all the existing security group rules since we need all
         # of them to PUT to NVP.
-        current_rules = self._remove_none_values(
+        current_rules = self._remove_none_values_and_convert(
             self._get_security_group_rules_by_nvp_id(context, nvp_id))
 
         # combine old rules with new rules
@@ -489,16 +510,16 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             if rule['source_group_id']:
                 rule['profile_uuid'] = self._get_profile_uuid(
                     context, rule['source_group_id'])
-            if rule['direction'] == 'egress':
+            if rule['direction'] == 'ingress':
                 current_rules['logical_port_egress_rules'].append(
                     self._convert_to_nvp_rule(rule))
-            elif rule['direction'] == 'ingress':
+            elif rule['direction'] == 'egress':
                 current_rules['logical_port_ingress_rules'].append(
                     self._convert_to_nvp_rule(rule))
 
-        nvplib.create_security_group_rules(self.default_cluster,
-                                           tenant_id, nvp_id,
-                                           current_rules, security_group_id)
+        nvplib.update_security_group_rules(self.default_cluster,
+                                           nvp_id,
+                                           current_rules)
         return super(NvpPluginV2, self).create_security_group_rule_bulk_native(
             context, security_group_rule)
 
@@ -507,16 +528,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         """Query quantum db for security group rules. If external_id is
         provided the external_id will also be returned.
         """
-        fields = {'source_ip_prefix': None,
-                  'profile_uuid': None,
-                  'protocol': None,
-                  'port_range_min': None,
-                  'port_range_max': None,
-                  'protocol': None,
-                  'ethertype': None}
+        fields = ['source_ip_prefix', 'source_group_id', 'protocol',
+                  'port_range_min', 'port_range_max', 'protocol', 'ethertype']
 
         if want_id:
-            fields['id'] = None
+            fields.append('id')
 
         filters = {'security_group_id': [nvp_id], 'direction': ['ingress']}
         ingress_rules = super(NvpPluginV2, self).get_security_group_rules(
@@ -524,8 +540,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         filters = {'security_group_id': [nvp_id], 'direction': ['egress']}
         egress_rules = super(NvpPluginV2, self).get_security_group_rules(
             context, filters, fields)
-        return {'logical_port_ingress_rules': ingress_rules,
-                'logical_port_egress_rules': egress_rules}
+        return {'logical_port_ingress_rules': egress_rules,
+                'logical_port_egress_rules': ingress_rules}
 
     def _remove_id_from_rules(self, rules, id):
         """This function recieves all of the current rules
@@ -571,7 +587,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             context, nvp_id, True)
 
         self._remove_id_from_rules(current_rules, security_group_id)
-        self._remove_none_values(current_rules)
+        self._remove_none_values_and_convert(current_rules)
         nvplib.update_security_group_rules(self.default_cluster, nvp_id,
                                            current_rules)
         return super(NvpPluginV2, self).delete_security_group_rule(context,

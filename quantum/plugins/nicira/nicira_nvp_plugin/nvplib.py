@@ -24,7 +24,6 @@
 # growing as we add more features :)
 
 from copy import copy
-import functools
 import itertools
 import json
 import hashlib
@@ -388,7 +387,7 @@ def get_port_by_display_name(clusters, lswitch, display_name):
     for c in clusters:
         try:
             res_obj = do_single_request('GET', query, cluster=c)
-        except Exception as e:
+        except Exception:
             continue
         res = json.loads(res_obj)
         if len(res["results"]) == 1:
@@ -672,27 +671,22 @@ def create_security_profile(cluster, tenant_id, security_profile):
     except NvpApiClient.NvpApiException as e:
         LOG.error(format_exception("Unknown", e, locals()))
         raise exception.QuantumException()
-
     if security_profile.get('name') == 'default':
-        # allow all outgoing and intergroup communication
-        default_rules = (
-            {'logical_port_egress_rules':
-                [{'ethertype': 'IPv4', 'profile_uuid': rsp['uuid']},
-                 {'ethertype': 'IPv6', 'profile_uuid': rsp['uuid']}],
-             'logical_port_ingress_rules':
-                [{'ethertype': 'IPv4'}, {'ethertype': 'IPv6'}]})
-        create_security_group_rules(cluster, tenant_id, rsp['uuid'],
-                                    default_rules,
-                                    security_profile.get('external_id'))
+        # If if security group is default allow ip traffic between
+        # members of the same security profile.
+        rules = {'logical_port_egress_rules': [{'ethertype': 'IPv4',
+                                                'profile_uuid': rsp['uuid']},
+                                               {'ethertype': 'IPv6',
+                                                'profile_uuid': rsp['uuid']}],
+                 'logical_port_ingress_rules': []}
 
+        update_security_group_rules(cluster, rsp['uuid'], rules)
     LOG.debug("Created Security Profile: %s" % rsp)
     return rsp
 
 
-def create_security_group_rules(cluster, tenant_id, spid, rules, external_id):
+def update_security_group_rules(cluster, spid, rules):
     path = "/ws.v1/security-profile/%s" % spid
-    tags = set_tenant_id_tag(tenant_id)
-    tags = set_ext_security_profile_id_tag(external_id, tags)
 
     # Allow all dhcp responses in
     rules['logical_port_egress_rules'].append({'ethertype': 'IPv4',
@@ -700,21 +694,6 @@ def create_security_group_rules(cluster, tenant_id, spid, rules, external_id):
                                                'port_range_min': 68,
                                                'port_range_max': 68,
                                                'ip_prefix': '0.0.0.0/0'})
-    try:
-        body = mk_body(
-            tags=tags,
-            logical_port_ingress_rules=rules['logical_port_ingress_rules'],
-            logical_port_egress_rules=rules['logical_port_egress_rules'])
-        rsp = do_request("PUT", path, body, cluster=cluster)
-    except NvpApiClient.NvpApiException as e:
-        LOG.error(format_exception("Unknown", e, locals()))
-        raise exception.QuantumException()
-    LOG.debug("Created Security Profile: %s" % rsp)
-    return rsp
-
-
-def update_security_group_rules(cluster, spid, rules):
-    path = "/ws.v1/security-profile/%s" % spid
     try:
         body = mk_body(
             logical_port_ingress_rules=rules['logical_port_ingress_rules'],
