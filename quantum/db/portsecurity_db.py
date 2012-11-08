@@ -46,9 +46,11 @@ class PortSecurityDbMixin(object):
         has_ip = self._ip_on_port(port)
         has_mac = self._mac_on_port(port)
         port_security = port.get(psec.PORTSECURITY)
-
         if port_security == attributes.ATTR_NOT_SPECIFIED:
             port_security = 'off'
+        # Do not apply port security to DHCP ports
+        if port.get('device_owner') == 'network:dhcp':
+            return port_security
 
         if ((server_policy == 'shared' or server_policy == 'both') and
             net_info['shared']):
