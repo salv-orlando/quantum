@@ -648,6 +648,26 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 raise nvp_exc.NvpNoMorePortsException(network=network.id)
         return selected_lswitch
 
+    def _ensure_metadata_host_route(self, context, fixed_ip_data,
+                                    is_delete=False):
+        subnet = self._get_subnet(context, fixed_ip_data['subnet_id'])
+        metadata_routes = [r for r in subnet.routes
+                           if r['destination'] == '169.254.169.254/32']
+        if metadata_routes:
+            # We should have only a single metadata route at any time
+            # because the route logic forbids two routes with the same
+            # destination. Update next hop with the provided IP address
+            if not is_delete:
+                metadata_routes[0].nexthop = fixed_ip_data['ip_address']
+            else:
+                context.session.delete(metadata_routes[0])
+        else:
+            # add the metadata route
+            route = models_v2.Route(subnet_id=subnet.id,
+                                    destination='169.254.169.254/32',
+                                    nexthop=fixed_ip_data['ip_address'])
+            context.session.add(route)
+
     def setup_rpc(self):
         # RPC support for dhcp
         self.topic = topics.PLUGIN
@@ -1399,6 +1419,15 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         tenant_id = self._get_tenant_id_for_create(context, port['port'])
         # First, we allocate port in quantum database
         quantum_db = super(NvpPluginV2, self).create_port(context, port)
+        # If we have just created a dhcp port, and metadata request are
+        # forwarded there, we need to verify the appropriate host route is
+        # in place
+        if (cfg.CONF.metadata_dhcp_host_route and
+            quantum_db.get('device_owner') == 'network:dhcp'):
+            if (quantum_db.get('fixed_ips') and
+                len(quantum_db.get('fixed_ips'))):
+                self._ensure_metadata_host_route(
+                    context, quantum_db.get('fixed_ips')[0])
         # Update fields obtained from quantum db (eg: MAC address)
         port["port"].update(quantum_db)
         try:
@@ -1505,9 +1534,16 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         else:
             update_security_groups = False
 
-        # update in base class to leverage ip/subnetting update
+        # TODO(salvatore-orlando): We might need transaction management here
+        # But the change for metadata support should not be too disruptive
+        fixed_ip_data = port['port'].get('fixed_ips')
+        if (cfg.CONF.metadata_dhcp_host_route and
+            rollback_port.get('device_owner') == 'network:dhcp' and
+            fixed_ip_data):
+                self._ensure_metadata_host_route(context,
+                                                 fixed_ip_data[0],
+                                                 is_delete=True)
         ret_port = super(NvpPluginV2, self).update_port(context, id, port)
-
         # Copy of addition fields we want to update but
         # are not in the _make_port-dict
         ret_port.update(port['port'])
@@ -1625,7 +1661,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         port_delete_func(context, quantum_db_port)
         self.disassociate_floatingips(context, id)
-        return super(NvpPluginV2, self).delete_port(context, id)
+        with context.session.begin(subtransactions=True):
+            if (cfg.CONF.metadata_dhcp_host_route and
+                quantum_db_port.device_owner == 'network:dhcp'):
+                    self._ensure_metadata_host_route(
+                        context, quantum_db_port.fixed_ips[0], is_delete=True)
+            super(NvpPluginV2, self).delete_port(context, id)
 
     def get_port(self, context, id, fields=None):
         """

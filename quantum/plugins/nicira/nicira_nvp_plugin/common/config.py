@@ -17,6 +17,10 @@
 from quantum.openstack.common import cfg
 
 
+core_opts = [
+    cfg.BoolOpt('metadata_dhcp_host_route', default=False),
+]
+
 database_opts = [
     cfg.StrOpt('sql_connection', default='sqlite://'),
     cfg.IntOpt('sql_max_retries', default=-1),
@@ -39,6 +43,8 @@ cluster_opts = [
     cfg.MultiStrOpt('nvp_controller_connection')
 ]
 
+# Register the configuration options
+cfg.CONF.register_opts(core_opts)
 cfg.CONF.register_opts(database_opts, "DATABASE")
 cfg.CONF.register_opts(nvp_opts, "NVP")
 
