@@ -262,12 +262,13 @@ def create_lswitch(cluster, tenant_id, display_name,
 
 def update_lswitch(cluster, lswitch, display_name, tenant_id=None, **kwargs):
     uri = _build_uri_path(LSWITCH_RESOURCE, resource_id=lswitch)
-    # TODO(salvatore-orlando): Make sure this operation does not remove
-    # any other important tag set on the lswtich object
-    lswitch_obj = {"display_name": display_name,
-                   "tags": [{"tag": tenant_id, "scope": "os_tid"}]}
-    if "tags" in kwargs:
-        lswitch_obj["tags"].extend(kwargs["tags"])
+    lswitch_obj = {"display_name": display_name}
+    tags = kwargs.get('tags', [])
+    if tenant_id:
+        tags.append({"tag": tenant_id, "scope": "os_tid"})
+    if tags:
+        lswitch_obj['tags'] = tags
+
     try:
         resp_obj = do_single_request("PUT", uri, json.dumps(lswitch_obj),
                                      cluster=cluster)
