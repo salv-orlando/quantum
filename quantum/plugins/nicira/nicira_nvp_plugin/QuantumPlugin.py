@@ -435,9 +435,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         """Remove none values or NVP will complain about them.
         """
         supported_protocols = {'tcp': 6, 'icmp': 1, 'udp': 17}
-        delete_if_present = ['source_ip_prefix', 'protocol'
+        delete_if_present = ['source_ip_prefix', 'protocol',
                              'source_group_id', 'port_range_min',
                              'port_range_max']
+
         for rule in rules['logical_port_ingress_rules']:
             for key in delete_if_present:
                 val = rule.get(key)
@@ -465,7 +466,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     del rule['source_group_id']
                 elif 'protocol' == key and key in rule:
                     rule['protocol'] = supported_protocols[rule['protocol']]
-
         return rules
 
     def create_security_group_rule(self, context, security_group_rule):
@@ -508,7 +508,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             rule = r['security_group_rule']
             rule['security_group_id'] = nvp_id
             if rule['source_group_id']:
-                rule['profile_uuid'] = self._get_profile_uuid(
+                rule['source_group_id'] = self._get_profile_uuid(
                     context, rule['source_group_id'])
             if rule['direction'] == 'ingress':
                 current_rules['logical_port_egress_rules'].append(
