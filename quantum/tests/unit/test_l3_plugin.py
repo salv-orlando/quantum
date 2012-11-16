@@ -971,6 +971,9 @@ class L3NatDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
                     port_id=p['port']['id'])
                 self.assertEqual(res.status_int, exc.HTTPCreated.code)
                 floatingip = self.deserialize(fmt, res)
+                self._remove_external_gateway_from_router(
+                    r['router']['id'],
+                    public_sub['subnet']['network_id'])
                 self._delete('routers', r['router']['id'],
                              expected_code=exc.HTTPConflict.code)
                 # Cleanup
