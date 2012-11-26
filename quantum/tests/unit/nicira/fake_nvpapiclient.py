@@ -39,10 +39,11 @@ class FakeClient:
     LSWITCH_LPORT_ATT = 'lswitch_lportattachment'
     LROUTER_LPORT_STATUS = 'lrouter_lportstatus'
     LROUTER_LPORT_ATT = 'lrouter_lportattachment'
+    GWSERVICE_RESOURCE = 'gatewayservice'
 
     RESOURCES = [LSWITCH_RESOURCE, LROUTER_RESOURCE,
                  LPORT_RESOURCE, SECPROF_RESOURCE, NAT_RESOURCE,
-                 LQUEUE_RESOURCE]
+                 LQUEUE_RESOURCE, GWSERVICE_RESOURCE]
 
     FAKE_GET_RESPONSES = {
         LSWITCH_RESOURCE: "fake_get_lswitch.json",
@@ -54,7 +55,8 @@ class FakeClient:
         LROUTER_LPORT_STATUS: "fake_get_lrouter_lport_status.json",
         LROUTER_LPORT_ATT: "fake_get_lrouter_lport_att.json",
         LROUTER_STATUS: "fake_get_lrouter_status.json",
-        LROUTER_NAT_RESOURCE: "fake_get_lrouter_nat.json"
+        LROUTER_NAT_RESOURCE: "fake_get_lrouter_nat.json",
+        GWSERVICE_RESOURCE: "fake_get_gwservice.json"
     }
 
     FAKE_POST_RESPONSES = {
@@ -64,7 +66,8 @@ class FakeClient:
         LROUTER_LPORT_RESOURCE: "fake_post_lrouter_lport.json",
         LROUTER_NAT_RESOURCE: "fake_post_lrouter_nat.json",
         SECPROF_RESOURCE: "fake_post_security_profile.json",
-        LQUEUE_RESOURCE: "fake_post_lqueue.json"
+        LQUEUE_RESOURCE: "fake_post_lqueue.json",
+        GWSERVICE_RESOURCE: "fake_post_gwservice.json"
     }
 
     FAKE_PUT_RESPONSES = {
@@ -76,7 +79,8 @@ class FakeClient:
         LSWITCH_LPORT_ATT: "fake_put_lswitch_lport_att.json",
         LROUTER_LPORT_ATT: "fake_put_lrouter_lport_att.json",
         SECPROF_RESOURCE: "fake_post_security_profile.json",
-        LQUEUE_RESOURCE: "fake_post_lqueue.json"
+        LQUEUE_RESOURCE: "fake_post_lqueue.json",
+        GWSERVICE_RESOURCE: "fake_post_gwservice.json"
     }
 
     MANAGED_RELATIONS = {
@@ -95,6 +99,7 @@ class FakeClient:
     _fake_lrouter_lportstatus_dict = {}
     _fake_securityprofile_dict = {}
     _fake_lqueue_dict = {}
+    _fake_gatewayservice_dict = {}
 
     def __init__(self, fake_files_path):
         self.fake_files_path = fake_files_path
@@ -218,6 +223,20 @@ class FakeClient:
         self._fake_securityprofile_dict[fake_securityprofile['uuid']] = (
             fake_securityprofile)
         return fake_securityprofile
+
+    def _add_gatewayservice(self, body):
+        fake_gwservice = json.loads(body)
+        fake_gwservice['uuid'] = str(uuid.uuid4())
+        fake_gwservice['tenant_id'] = self._get_tag(
+            fake_gwservice, 'os_tid')
+        # FIXME(salvatore-orlando): For simplicity we're managing only a
+        # single device. Extend the fake client for supporting multiple devices
+        first_gw = fake_gwservice['gateways'][0]
+        fake_gwservice['transport_node_uuid'] = first_gw['transport_node_uuid']
+        fake_gwservice['device_id'] = first_gw['device_id']
+        self._fake_gatewayservice_dict[fake_gwservice['uuid']] = (
+            fake_gwservice)
+        return fake_gwservice
 
     def _build_relation(self, src, dst, resource_type, relation):
         if not relation in self.MANAGED_RELATIONS[resource_type]:
@@ -357,20 +376,20 @@ class FakeClient:
                      if (parent_func(res_uuid) and
                          _tag_match(res_uuid) and
                          _attr_match(res_uuid))]
-
             return json.dumps({'results': items,
                                'result_count': len(items)})
 
     def _show(self, resource_type, response_file,
               uuid1, uuid2=None, relations=None):
         target_uuid = uuid2 or uuid1
+        if resource_type.endswith('attachment'):
+            resource_type = resource_type[:resource_type.index('attachment')]
         with open("%s/%s" % (self.fake_files_path, response_file)) as f:
             response_template = f.read()
             res_dict = getattr(self, '_fake_%s_dict' % resource_type)
             for item in res_dict.itervalues():
                 if 'tags' in item:
                     item['tags_json'] = json.dumps(item['tags'])
-
             items = [json.loads(response_template % res_dict[res_uuid])
                      for res_uuid in res_dict if res_uuid == target_uuid]
             if items:
@@ -393,7 +412,9 @@ class FakeClient:
             else:
                 return self._list(res_type, response_file, uuids[0],
                                   query=parsedurl.query, relations=relations)
-        elif 'lswitch' in res_type or 'lrouter' in res_type:
+        elif ('lswitch' in res_type or 'lrouter' in res_type or
+              'gatewayservice' in res_type):
+            LOG.debug("UUIDS:%s", uuids)
             if len(uuids) > 0:
                 return self._show(res_type, response_file, uuids[0],
                                   relations=relations)
@@ -443,6 +464,7 @@ class FakeClient:
                 relations['LogicalPortAttachment'] = json.loads(body)
                 resource['_relations'] = relations
                 body_2 = json.loads(body)
+                resource['att_type'] = body_2['type']
                 if body_2['type'] == "PatchAttachment":
                     # We need to do a trick here
                     if self.LROUTER_RESOURCE in res_type:
@@ -462,6 +484,10 @@ class FakeClient:
                 elif body_2['type'] == "L3GatewayAttachment":
                     resource['attachment_gwsvc_uuid'] = (
                         body_2['l3_gateway_service_uuid'])
+                elif body_2['type'] == "L2GatewayAttachment":
+                    resource['attachment_gwsvc_uuid'] = (
+                        body_2['l2_gateway_service_uuid'])
+
             if not is_attachment:
                 response = response_template % resource
             else:
@@ -499,3 +525,4 @@ class FakeClient:
         self._fake_lswitch_lportstatus_dict.clear()
         self._fake_lrouter_lportstatus_dict.clear()
         self._fake_securityprofile_dict.clear()
+        self._fake_gatewayservice_dict.clear()

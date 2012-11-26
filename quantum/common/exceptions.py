@@ -151,7 +151,7 @@ class NoNetworkAvailable(ResourceExhausted):
 
 
 class AlreadyAttached(QuantumException):
-    message = _("Unable to plug the attachment %(att_id)s into port "
+    message = _("Unable to plug the attachment into port "
                 "%(port_id)s for network %(net_id)s. The attachment is "
                 "already plugged into port %(att_port_id)s")
 

@@ -24,6 +24,7 @@ from quantum import context
 from quantum.extensions import providernet as pnet
 from quantum import manager
 from quantum.openstack.common import cfg
+import quantum.plugins.nicira.nicira_nvp_plugin as nvp_plugin
 from quantum.plugins.nicira.nicira_nvp_plugin import nvplib
 from quantum.tests.unit.nicira import fake_nvpapiclient
 import quantum.tests.unit.test_db_plugin as test_plugin
@@ -33,7 +34,7 @@ import quantum.tests.unit.test_extension_nvp_qos as test_nvp_qos
 import quantum.tests.unit.test_extension_port_security as psec
 
 LOG = logging.getLogger(__name__)
-NICIRA_PKG_PATH = 'quantum.plugins.nicira.nicira_nvp_plugin'
+NICIRA_PKG_PATH = nvp_plugin.__name__
 
 
 class NiciraPluginV2TestCase(test_plugin.QuantumDbPluginV2TestCase):
