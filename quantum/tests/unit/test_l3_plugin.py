@@ -694,6 +694,21 @@ class L3NatDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
                         r['router']['id'],
                         s2['subnet']['network_id'])
 
+    def test_router_update_gateway_with_existed_floatingip(self):
+        with self.subnet() as subnet:
+            self._set_net_external(subnet['subnet']['network_id'])
+            with self.floatingip_with_assoc() as fip:
+                self._add_external_gateway_to_router(
+                    fip['floatingip']['router_id'],
+                    subnet['subnet']['network_id'],
+                    expected_code=exc.HTTPConflict.code)
+
+    def test_router_update_gateway_to_empty_with_existed_floatingip(self):
+        with self.floatingip_with_assoc() as fip:
+            self._remove_external_gateway_from_router(
+                fip['floatingip']['router_id'], None,
+                expected_code=exc.HTTPConflict.code)
+
     def test_router_add_gateway_invalid_network(self):
         with self.router() as r:
             self._add_external_gateway_to_router(
@@ -906,6 +921,35 @@ class L3NatDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
                                                   r['router']['id'],
                                                   private_sub['subnet']['id'],
                                                   None)
+
+    def test_router_delete_with_floatingip(self):
+        with self.port() as p:
+            private_sub = {'subnet': {'id':
+                                      p['port']['fixed_ips'][0]['subnet_id']}}
+            with self.subnet(cidr='12.0.0.0/24') as public_sub:
+                fmt = 'json'
+                self._set_net_external(public_sub['subnet']['network_id'])
+                res = self._create_router(fmt, _uuid())
+                r = self.deserialize(fmt, res)
+                self._add_external_gateway_to_router(
+                    r['router']['id'],
+                    public_sub['subnet']['network_id'])
+                self._router_interface_action('add', r['router']['id'],
+                                              private_sub['subnet']['id'],
+                                              None)
+                res = self._create_floatingip(
+                    fmt, public_sub['subnet']['network_id'],
+                    port_id=p['port']['id'])
+                self.assertEqual(res.status_int, exc.HTTPCreated.code)
+                floatingip = self.deserialize(fmt, res)
+                self._delete('routers', r['router']['id'],
+                             expected_code=exc.HTTPConflict.code)
+                # Cleanup
+                self._delete('floatingips', floatingip['floatingip']['id'])
+                self._router_interface_action('remove', r['router']['id'],
+                                              private_sub['subnet']['id'],
+                                              None)
+                self._delete('routers', r['router']['id'])
 
     def test_floatingip_update(self):
         with self.port() as p:
