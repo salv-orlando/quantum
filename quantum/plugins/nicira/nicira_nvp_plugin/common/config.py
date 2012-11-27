@@ -39,9 +39,9 @@ cluster_opts = [
     cfg.StrOpt('default_tz_uuid'),
     cfg.StrOpt('nvp_cluster_uuid'),
     cfg.StrOpt('nova_zone_id'),
-    cfg.StrOpt('default_l3_gw_uuid'),
-    cfg.StrOpt('default_l2_gw_uuid'),
-    cfg.StrOpt('default_phy_net', default='breth0'),
+    cfg.StrOpt('default_l3_gw_service_uuid'),
+    cfg.StrOpt('default_l2_gw_node_uuid'),
+    cfg.StrOpt('default_iface_name', default='breth0'),
     cfg.MultiStrOpt('nvp_controller_connection')
 ]
 

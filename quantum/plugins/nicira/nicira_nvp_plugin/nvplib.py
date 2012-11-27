@@ -884,7 +884,7 @@ def find_router_gw_port(context, cluster, router_id):
     # TODO(salvatore-orlando): Consider storing it in Quantum DB
     results = query_lrouter_lports(
         cluster, router_id,
-        filters={'attachment_gwsvc_uuid': cluster.default_l3_gw_uuid})
+        filters={'attachment_gwsvc_uuid': cluster.default_l3_gw_service_uuid})
     if len(results):
         # Return logical router port
         return results[0]

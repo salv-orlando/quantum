@@ -27,6 +27,7 @@ from quantum.openstack.common import cfg
 import quantum.plugins.nicira.nicira_nvp_plugin as nvp_plugin
 from quantum.plugins.nicira.nicira_nvp_plugin import nvplib
 from quantum.tests.unit.nicira import fake_nvpapiclient
+import quantum.tests.unit.nicira.test_networkgw as test_l2_gw
 import quantum.tests.unit.test_db_plugin as test_plugin
 import quantum.tests.unit.test_extension_security_group as ext_sg
 import quantum.tests.unit.test_l3_plugin as test_l3_plugin
@@ -261,4 +262,9 @@ class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
 
 class TestNiciraQoSQueue(test_nvp_qos.TestNvpQoS,
                          NiciraQoSQueueTestCase):
+    pass
+
+
+class TestNiciraNetworkGatewayTestCase(test_l2_gw.NetworkGatewayDbTestCase,
+                                       NiciraPluginV2TestCase):
     pass

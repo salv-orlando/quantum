@@ -27,6 +27,7 @@ from webob import exc as web_exc
 from quantum.api.v2 import attributes
 from quantum.api.v2 import base
 from quantum.common import exceptions
+from quantum.common import utils
 from quantum.db import db_base_plugin_v2
 from quantum.db import model_base
 from quantum.db import models_v2
@@ -122,10 +123,6 @@ class NetworkGateway(model_base.BASEV2, models_v2.HasId,
     devices = orm.relationship(NetworkGatewayDevice)
     network_connections = orm.relationship(NetworkConnection)
 
-    def __init__(self, name, tenant_id):
-        self.name = name
-        self.tenant_id = tenant_id
-
 
 class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
 
@@ -141,7 +138,8 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
                                 'interface_name': d['interface_name']})
         res = {'id': network_gateway['id'],
                'name': network_gateway['name'],
-               'devices': device_list}
+               'devices': device_list,
+               'tenant_id': network_gateway['tenant_id']}
         # NOTE(salvatore-orlando):perhaps return list of connected networks
         return self._fields(res, fields)
 
@@ -176,9 +174,11 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
         tenant_id = self._get_tenant_id_for_create(context, gw_data)
         with context.session.begin(subtransactions=True):
             gw_db = NetworkGateway(
-                tenant_id=tenant_id, name=gw_data['name'])
+                id=gw_data.get('id') or utils.str_uuid(),
+                tenant_id=tenant_id,
+                name=gw_data.get('name'))
             # Create records for gateway devices
-            devices = gw_data['devices'] or []
+            devices = gw_data.get('devices') or []
             for device in devices:
                 gw_db.devices.append(
                     NetworkGatewayDevice(**device))
@@ -227,6 +227,11 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
                 # should have a way to say a port shall not be associated with
                 # any subnet
                 try:
+                    # We pass the segmenetation type and id too - the plugin
+                    # might find them useful as the network connection object
+                    # does not exist yet.
+                    # NOTE: they're not extended attributes, just extra data
+                    # passed in the port structure to the plugin
                     port = self.create_port(context, {
                         'port':
                         {'tenant_id': gw_db['tenant_id'],
@@ -236,7 +241,11 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
                          'fixed_ips': attributes.ATTR_NOT_SPECIFIED,
                          'device_id': network_gateway_id,
                          'device_owner': DEVICE_OWNER_NET_GW_INTF,
-                         'name': ''}})
+                         'name': '',
+                         'gw:segmentation_type':
+                         network_mapping_info.get('segmentation_type'),
+                         'gw:segmentation_id':
+                         network_mapping_info.get('segmentation_id')}})
                 except exceptions.NetworkNotFound:
                     err_msg = _("Requested network '%(network_id)s' not found."
                                 "Unable to create network connection on "

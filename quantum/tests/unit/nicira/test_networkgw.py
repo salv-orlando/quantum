@@ -298,12 +298,9 @@ class NetworkGatewayDbTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
     def test_create_network_gateway(self):
         name = 'test-gw'
         devices = [{'id': _uuid(), 'interface_name': 'xxx'},
-                   {'id': _uuid()}]
+                   {'id': _uuid(), 'interface_name': 'yyy'}]
         keys = [('devices', devices), ('name', name)]
         with self._network_gateway(name=name, devices=devices) as gw:
-            # The response will include interface name set to None
-            # if it was not specified in the request
-            keys[0][1][1]['interface_name'] = None
             for k, v in keys:
                 self.assertEquals(gw[self.resource][k], v)
 
