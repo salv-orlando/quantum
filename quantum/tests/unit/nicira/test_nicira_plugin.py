@@ -29,6 +29,7 @@ from quantum.tests.unit.nicira import fake_nvpapiclient
 import quantum.tests.unit.test_db_plugin as test_plugin
 import quantum.tests.unit.test_extension_security_group as ext_sg
 import quantum.tests.unit.test_l3_plugin as test_l3_plugin
+import quantum.tests.unit.test_extension_nvp_qos as test_nvp_qos
 import quantum.tests.unit.test_extension_port_security as psec
 
 LOG = logging.getLogger(__name__)
@@ -79,6 +80,32 @@ class NiciraPluginV2TestCase(test_plugin.QuantumDbPluginV2TestCase):
     def tearDown(self):
         self.fc.reset_all()
         super(NiciraPluginV2TestCase, self).tearDown()
+        self.mock_nvpapi.stop()
+
+
+class NiciraQoSQueueTestCase(test_nvp_qos.NvpQoSTestCase):
+
+    _plugin_name = ('%s.QuantumPlugin.NvpPluginV2' % NICIRA_PKG_PATH)
+
+    def setUp(self):
+        etc_path = os.path.join(os.path.dirname(__file__), 'etc')
+        test_lib.test_config['config_files'] = [os.path.join(etc_path,
+                                                             'nvp.ini.test')]
+        # mock nvp api client
+        fc = fake_nvpapiclient.FakeClient(etc_path)
+        self.mock_nvpapi = mock.patch('%s.NvpApiClient.NVPApiHelper'
+                                      % NICIRA_PKG_PATH, autospec=True)
+        instance = self.mock_nvpapi.start()
+        instance.return_value.login.return_value = "the_cookie"
+
+        def _fake_request(*args, **kwargs):
+            return fc.fake_request(*args, **kwargs)
+
+        instance.return_value.request.side_effect = _fake_request
+        super(NiciraQoSQueueTestCase, self).setUp(self._plugin_name)
+
+    def tearDown(self):
+        super(NiciraQoSQueueTestCase, self).tearDown()
         self.mock_nvpapi.stop()
 
 
@@ -228,4 +255,9 @@ class TestNiciraPortSecurity(psec.TestPortSecurity,
 
 class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
                               NiciraPluginV2TestCase):
+    pass
+
+
+class TestNiciraQoSQueue(test_nvp_qos.TestNvpQoS,
+                         NiciraQoSQueueTestCase):
     pass

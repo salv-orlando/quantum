@@ -47,6 +47,7 @@ from quantum.extensions import l3
 from quantum.extensions import portsecurity as psec
 from quantum.extensions import securitygroup as ext_sg
 from quantum.extensions import l3
+from quantum.extensions import nvp_qos as ext_qos
 from quantum.extensions import providernet as pnet
 from quantum.openstack.common import cfg
 from quantum.openstack.common import context
@@ -58,6 +59,7 @@ from quantum.plugins.nicira.nicira_nvp_plugin.common import (exceptions
                                                              as nvp_exc)
 from quantum.plugins.nicira.nicira_nvp_plugin import nvp_cluster
 from quantum.plugins.nicira.nicira_nvp_plugin import nicira_db
+from quantum.plugins.nicira.nicira_nvp_plugin import nicira_qos_db as qos
 
 import NvpApiClient
 import nvplib
@@ -136,6 +138,7 @@ class NVPRpcCallbacks(dhcp_rpc_base.DhcpRpcCallbackMixin):
 class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                   securitygroups_db.SecurityGroupDbMixin,
                   portsecurity_db.PortSecurityDbMixin,
+                  qos.NVPQoSDbMixin,
                   l3_db.L3_NAT_db_mixin):
     """
     NvpPluginV2 is a Quantum plugin that provides L2 Virtual Network
@@ -145,7 +148,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
     __native_bulk_support = True
 
     supported_extension_aliases = ["provider", "security-group", "router",
-                                   "port-security"]
+                                   "port-security", "nvp-qos"]
     sg_supported_protocols = ['tcp', 'udp', 'icmp']
     sg_supported_ethertypes = ['IPv4', 'IPv6']
 
@@ -234,6 +237,61 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self._extend_fault_map()
         # Set up RPC interface for DHCP agent
         self.setup_rpc()
+
+    def _nvp_lqueue(self, queue):
+        """Convert fields to nvp fields."""
+        nvp_queue = {}
+        params = [{'name': 'display_name'},
+                  {'qos_marking': 'qos_marking'},
+                  {'min': 'min_bandwidth_rate'},
+                  {'max': 'max_bandwidth_rate'},
+                  {'dscp': 'dscp'}]
+        for param in params:
+            for api_name, nvp_name in param.items():
+                val = queue.get(api_name)
+                # TODO API attribute map should do this.
+                if api_name == 'dscp' or api_name == 'min':
+                    if val is None:
+                        val = 0
+                        queue[api_name] = 0
+                if val or val == 0:
+                    nvp_queue[nvp_name] = val
+        return nvp_queue
+
+    def _validate_qos_queue(self, context, qos_queue):
+        if qos_queue.get('default') is True and not context.is_admin:
+            raise  ext_qos.DefaultQueueCreateNotAdmin()
+        elif qos_queue.get('default') is True and context.is_admin:
+            # Check if there is already a default queue in the system
+            filters = {'default': [True]}
+            if self.get_qos_queues(context, filters):
+                raise ext_qos.DefaultQueueAlreadyExists()
+        if (qos_queue.get('qos_marking') == 'trusted' and
+            not qos_queue.get('dscp')):
+            raise ext_qos.MissingDSCPForTrusted()
+        max = qos_queue.get('max')
+        min = qos_queue.get('min')
+        if max >= 0 and min >= 0:
+            if min > max:
+                raise ext_qos.QueueMinGreaterMax()
+
+    def create_qos_queue(self, context, qos_queue):
+        q = qos_queue.get('qos_queue')
+        self._validate_qos_queue(context, q)
+        q['id'] = nvplib.create_lqueue(self.default_cluster,
+                                       self._nvp_lqueue(q))
+        return super(NvpPluginV2, self).create_qos_queue(context, qos_queue)
+
+    def delete_qos_queue(self, context, id, raise_in_use=True):
+        filters = {'queue_id': [id]}
+        queues = self._get_port_queue_bindings(context, filters)
+        if len(queues):
+            if raise_in_use:
+                raise ext_qos.QueueInUseByPort()
+            else:
+                return
+        nvplib.delete_lqueue(self.default_cluster, id)
+        return super(NvpPluginV2, self).delete_qos_queue(context, id)
 
     def _build_ip_address_list(self, context, fixed_ips, subnet_ids=None):
         """  Build ip_addresses data structure for logical router port
@@ -364,6 +422,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                         port_data['fixed_ips'],
                                         port_data.get(psec.PORTSECURITY),
                                         port_data.get(ext_sg.SECURITYGROUP),
+                                        port_data.get(ext_qos.QUEUE),
                                         do_port_security
                                         )
             nicira_db.add_quantum_nvp_port_mapping(
@@ -406,6 +465,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         nvplib.delete_port(self.default_cluster,
                            port_data['network_id'],
                            port)
+
         self._delete_port_security_group_bindings(context, port_data['id'])
         LOG.debug("_nvp_delete_port completed for port %s on network %s",
                   port_data['id'], port_data['network_id'])
@@ -962,6 +1022,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         tenant_id = self._get_tenant_id_for_create(context, network['network'])
         self._ensure_default_security_group(context, tenant_id)
         net_data = network['network'].copy()
+
+        # Process qos queue extension
+        if network['network'].get(ext_qos.QUEUE):
+            # This raises if not found
+            self._get_qos_queue(context, network['network'].get(ext_qos.QUEUE))
+
         # Process the provider network extension
         self._handle_provider_create(context, net_data)
         # Replace ATTR_NOT_SPECIFIED with None before sending to NVP
@@ -1004,6 +1070,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 self._extend_network_dict_provider(context, new_net,
                                                    net_binding)
             self._extend_network_dict_l3(context, new_net)
+            if network['network'].get(ext_qos.QUEUE):
+                new_net[ext_qos.QUEUE] = network['network'].get(ext_qos.QUEUE)
+                self._process_network_queue_mapping(context,
+                                                    new_net)
+                self._extend_network_qos_queue(context, new_net)
         return new_net
 
     def delete_network(self, context, id):
@@ -1139,6 +1210,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         for net in quantum_lswitches:
             self._extend_network_dict_provider(context, net)
             self._extend_network_dict_l3(context, net)
+            self._extend_network_qos_queue(context, net)
         quantum_lswitches = self._filter_nets_l3(context,
                                                  quantum_lswitches,
                                                  filters)
@@ -1247,6 +1319,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 raise q_exc.NotImplementedError("admin_state_up=False "
                                                 "networks are not "
                                                 "supported.")
+
+        # Process qos queue extension
+        if network['network'].get(ext_qos.QUEUE):
+            # This raises if not found
+            self._get_qos_queue(context, network['network'].get(ext_qos.QUEUE))
+
         params = {}
         params["network"] = network["network"]
         pairs = self._get_lswitch_cluster_pairs(id, context.tenant_id)
@@ -1262,6 +1340,13 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                   context.tenant_id)
         with context.session.begin(subtransactions=True):
             net = super(NvpPluginV2, self).update_network(context, id, network)
+
+            if network['network'].get(ext_qos.QUEUE):
+                net[ext_qos.QUEUE] = network['network'].get(ext_qos.QUEUE)
+                self._delete_network_queue_mapping(context, id)
+                self._process_network_queue_mapping(context,
+                                                    net)
+
             self._process_l3_update(context, network['network'], id)
             self._extend_network_dict_provider(context, net)
             self._extend_network_dict_l3(context, net)
@@ -1431,6 +1516,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         # Update fields obtained from quantum db (eg: MAC address)
         port["port"].update(quantum_db)
         try:
+            # QoS Queue
+            p[ext_qos.QUEUE] = self._check_for_queue_and_create(context, p)
             # TODO(salvatore-orlando): Verify whether security group and port
             # secutiy settings can be moved in port_driver
             default_sg = self._ensure_default_security_group(
@@ -1479,6 +1566,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                                      p[ext_sg.SECURITYGROUP])
 
         self._process_port_security_create(context, p)
+        self._process_port_queue_mapping(context, p)
         # update port on Quantum DB with admin_state_up True
         # TODO only if requested_admin_state is True
         port_update = {"port": {"admin_state_up": requested_admin_state}}
@@ -1487,6 +1575,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                                     port_update)
         self._extend_port_dict_security_group(context, port)
         self._extend_port_dict_port_security(context, port)
+        self._extend_port_qos_queue(context, port)
 
         LOG.debug("create_port completed for tenant %s, on network %s."
                   "New port id:%s" % (tenant_id, port_data['network_id'],
@@ -1606,6 +1695,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         else:
             ret_port[ext_sg.SECURITYGROUP] = None
 
+        # Qos
+        ret_port[ext_qos.QUEUE] = self._check_for_queue_and_create(context,
+                                                                   ret_port)
+
         # TODO Can this use a transaction instead?
         try:
             nvp_id = nicira_db.get_nvp_port_id(context.session, id)
@@ -1650,11 +1743,13 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.PortNotFound
         :raises: exception.NetworkNotFound
         """
+        queue = self._get_port_queue_bindings(context, {'port_id': [id]})
         # if needed, check to see if this is a port owned by
         # and l3-router.  If so, we should prevent deletion here
         if l3_port_check:
             self.prevent_l3_port_deletion(context, id)
         quantum_db_port = self._get_port(context, id)
+
         port_delete_func = self._port_drivers['delete'].get(
             quantum_db_port.device_owner,
             self._port_drivers['delete']['default'])
@@ -1667,6 +1762,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     self._ensure_metadata_host_route(
                         context, quantum_db_port.fixed_ips[0], is_delete=True)
             super(NvpPluginV2, self).delete_port(context, id)
+
+            # Delete qos queue if possible
+            if len(queue):
+                self.delete_qos_queue(context, queue[0]['queue_id'], False)
 
     def get_port(self, context, id, fields=None):
         """
@@ -1689,6 +1788,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                                             id, fields)
         self._extend_port_dict_security_group(context, quantum_db_port)
         self._extend_port_dict_port_security(context, quantum_db_port)
+        self._extend_port_qos_queue(context, quantum_db_port)
         if self._network_is_external(context, quantum_db_port['network_id']):
             return quantum_db_port
 

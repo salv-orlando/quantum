@@ -29,6 +29,7 @@ class FakeClient:
     LROUTER_RESOURCE = 'lrouter'
     SECPROF_RESOURCE = 'securityprofile'
     NAT_RESOURCE = 'nat'
+    LQUEUE_RESOURCE = 'lqueue'
     LSWITCH_STATUS = 'lswitchstatus'
     LROUTER_STATUS = 'lrouterstatus'
     LSWITCH_LPORT_RESOURCE = 'lswitch_lport'
@@ -40,7 +41,8 @@ class FakeClient:
     LROUTER_LPORT_ATT = 'lrouter_lportattachment'
 
     RESOURCES = [LSWITCH_RESOURCE, LROUTER_RESOURCE,
-                 LPORT_RESOURCE, SECPROF_RESOURCE, NAT_RESOURCE]
+                 LPORT_RESOURCE, SECPROF_RESOURCE, NAT_RESOURCE,
+                 LQUEUE_RESOURCE]
 
     FAKE_GET_RESPONSES = {
         LSWITCH_RESOURCE: "fake_get_lswitch.json",
@@ -61,7 +63,8 @@ class FakeClient:
         LSWITCH_LPORT_RESOURCE: "fake_post_lswitch_lport.json",
         LROUTER_LPORT_RESOURCE: "fake_post_lrouter_lport.json",
         LROUTER_NAT_RESOURCE: "fake_post_lrouter_nat.json",
-        SECPROF_RESOURCE: "fake_post_security_profile.json"
+        SECPROF_RESOURCE: "fake_post_security_profile.json",
+        LQUEUE_RESOURCE: "fake_post_lqueue.json"
     }
 
     FAKE_PUT_RESPONSES = {
@@ -72,7 +75,8 @@ class FakeClient:
         LROUTER_NAT_RESOURCE: "fake_post_lrouter_nat.json",
         LSWITCH_LPORT_ATT: "fake_put_lswitch_lport_att.json",
         LROUTER_LPORT_ATT: "fake_put_lrouter_lport_att.json",
-        SECPROF_RESOURCE: "fake_post_security_profile.json"
+        SECPROF_RESOURCE: "fake_post_security_profile.json",
+        LQUEUE_RESOURCE: "fake_post_lqueue.json"
     }
 
     MANAGED_RELATIONS = {
@@ -90,6 +94,7 @@ class FakeClient:
     _fake_lswitch_lportstatus_dict = {}
     _fake_lrouter_lportstatus_dict = {}
     _fake_securityprofile_dict = {}
+    _fake_lqueue_dict = {}
 
     def __init__(self, fake_files_path):
         self.fake_files_path = fake_files_path
@@ -111,6 +116,12 @@ class FakeClient:
         elif 'uuid' in params:
             attr_filter = {'uuid': params['uuid'][0]}
         return (tag_filter, attr_filter)
+
+    def _add_lqueue(self, body):
+        fake_lqueue = json.loads(body)
+        fake_lqueue['uuid'] = str(uuid.uuid4())
+        self._fake_lqueue_dict[fake_lqueue['uuid']] = fake_lqueue
+        return fake_lqueue
 
     def _add_lswitch(self, body):
         fake_lswitch = json.loads(body)
@@ -251,6 +262,7 @@ class FakeClient:
         /ws.v1/lrouter/zzz/status
         /ws.v1/lrouter/zzz/lport/www
         /ws.v1/lrouter/zzz/lport/www/status
+        /ws.v1/lqueue/xxx
         """
         # The first element will always be 'ws.v1' - so we just discard it
         uri_split = path.split('/')[1:]

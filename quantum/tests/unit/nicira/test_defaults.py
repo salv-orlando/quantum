@@ -28,4 +28,3 @@ class ConfigurationTest(unittest.TestCase):
         self.assertEqual(64, cfg.CONF.NVP.max_lp_per_bridged_ls)
         self.assertEqual(256, cfg.CONF.NVP.max_lp_per_overlay_ls)
         self.assertEqual(5, cfg.CONF.NVP.concurrent_connections)
-        self.assertEqual(240, cfg.CONF.NVP.failover_time)

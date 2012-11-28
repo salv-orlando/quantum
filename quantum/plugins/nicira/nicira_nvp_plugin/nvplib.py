@@ -52,6 +52,7 @@ LSWITCHPORT_RESOURCE = "lport-%s" % LSWITCH_RESOURCE
 LROUTER_RESOURCE = "lrouter"
 LROUTERPORT_RESOURCE = "lport-%s" % LROUTER_RESOURCE
 LROUTERNAT_RESOURCE = "nat-lrouter"
+LQUEUE_RESOURCE = "lqueue"
 
 # Constants for NAT rules
 MATCH_KEYS = ["destination_ip_addresses", "destination_port_max",
@@ -533,7 +534,7 @@ def get_port_by_display_name(clusters, lswitch, display_name):
         if len(res["results"]) == 1:
             return (res["results"][0], c)
 
-    LOG.error("Port or Network not found, Error: %s" % str(e))
+    LOG.error("Port or Network not found")
     raise exception.PortNotFound(port_id=display_name, net_id=lswitch)
 
 
@@ -579,6 +580,10 @@ def _configure_extensions(lport_obj, port_data, do_port_security=True):
         lport_obj["allowed_address_pairs"].append(
             {"mac_address": port_data["mac_address"]})
 
+    # Qos
+    if 'queue_id' in port_data:
+        lport_obj['queue_uuid'] = port_data.get('queue_id')
+
 
 def update_port(network, port_id, **params):
     cluster = params["cluster"]
@@ -613,6 +618,9 @@ def update_port(network, port_id, **params):
         else:
             port_data['security_profiles'] = []
 
+    if params['port'].get('queue_id'):
+        port_data['queue_id'] = params['port']['queue_id']
+
     _configure_extensions(lport_obj, port_data,
                           params.get('do_port_security', True))
     uri = "/ws.v1/lswitch/" + network + "/lport/" + port_id
@@ -633,7 +641,7 @@ def update_port(network, port_id, **params):
 def create_lport(cluster, lswitch_uuid, tenant_id, quantum_port_id,
                  display_name, device_id, admin_status_enabled,
                  mac_address=None, fixed_ips=None, port_security=None,
-                 security_profiles=None, do_port_security=True):
+                 security_profiles=None, queue_id=None, do_port_security=True):
     """ Creates a logical port on the assigned logical switch """
     # device_id can be longer than 40 so we rehash it
     hashed_device_id = hashlib.sha1(device_id).hexdigest()
@@ -652,6 +660,9 @@ def create_lport(cluster, lswitch_uuid, tenant_id, quantum_port_id,
                  'port_security': port_security}
     if security_profiles:
         port_data['security_profiles'] = security_profiles
+    if queue_id:
+        port_data['queue_id'] = queue_id
+
     _configure_extensions(lport_obj, port_data, do_port_security)
     path = _build_uri_path(LSWITCHPORT_RESOURCE,
                            parent_resource_id=lswitch_uuid)
@@ -1088,7 +1099,7 @@ def get_router_nat_rule(cluster, tenant_id, router_id, rule_id):
     except NvpApiClient.ResourceNotFound:
         LOG.exception("NAT rule %s not found", rule_id)
         raise
-    except NvpApiClient.NvpApiException as e:
+    except NvpApiClient.NvpApiException:
         LOG.exception("An error occured while retrieving NAT rule %s"
                       "from NVP platform", rule_id)
         raise
@@ -1111,3 +1122,30 @@ def query_nat_rules(cluster, router_id, fields="*", filters=None):
     res = json.loads(resp)
     LOG.debug("NAT rules retrieved from router %s: %s", router_id, res)
     return res["results"]
+
+
+# -----------------------------------------------------------------------------
+# QOS API Calls
+# -----------------------------------------------------------------------------
+
+def create_lqueue(cluster, lqueue):
+    uri = _build_uri_path(LQUEUE_RESOURCE)
+    lqueue['tags'] = [{'tag': VERSION, 'scope': 'quantum'}]
+    try:
+        resp_obj = do_single_request("POST", uri, json.dumps(lqueue),
+                                     cluster=cluster)
+    except NvpApiClient.NvpApiException as e:
+        LOG.error("Failed to create logical queue %s" % str(e))
+        raise exception.QuantumException()
+    return json.loads(resp_obj)['uuid']
+
+
+def delete_lqueue(cluster, id):
+    try:
+        do_single_request("DELETE",
+                          _build_uri_path(LQUEUE_RESOURCE,
+                                          resource_id=id),
+                          cluster=cluster)
+    except Exception as e:
+        LOG.error("Failed to delete logical queue %s" % str(e))
+        raise exception.QuantumException()
