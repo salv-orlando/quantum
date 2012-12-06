@@ -13,3 +13,12 @@ quantum/vcsversion.py
 requirements.txt
 ChangeLog
 .tox/
+debian/python-quantum
+debian/quantum-common
+debian/quantum-plugin-nicira
+debian/quantum-server
+debian/quantum-dhcp-agent
+debian/tmp
+debian/*debhelper
+debian/*log
+debian/*substvars

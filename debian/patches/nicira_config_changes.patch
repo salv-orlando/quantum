@@ -1,0 +1,47 @@
+Description: <short summary of the patch>
+ TODO: Put a short summary on the line above and replace this paragraph
+ with a longer explanation of this change. Complete the meta-information
+ with other relevant fields (see below for details). To make it easier, the
+ information below has been extracted from the changelog. Adjust it or drop
+ it.
+ .
+ quantum (2012.2.nicira.2) UNRELEASED; urgency=low
+ .
+   * None
+Author: arosen <arosen@awesome>
+
+---
+The information above should follow the Patch Tagging Guidelines, please
+checkout http://dep.debian.net/deps/dep3/ to learn about the format. Here
+are templates for supplementary fields that you might want to add:
+
+Origin: <vendor|upstream|other>, <url of original patch>
+Bug: <url in upstream bugtracker>
+Bug-Debian: http://bugs.debian.org/<bugnumber>
+Bug-Ubuntu: https://launchpad.net/bugs/<bugnumber>
+Forwarded: <no|not-needed|url proving that it has been forwarded>
+Reviewed-By: <name and email of someone who approved the patch>
+Last-Update: <YYYY-MM-DD>
+
+--- quantum-2012.2.nicira.2.orig/etc/quantum.conf
++++ quantum-2012.2.nicira.2/etc/quantum.conf
+@@ -19,7 +19,7 @@ bind_port = 9696
+ # api_extensions_path =
+ 
+ # Quantum plugin provider module
+-core_plugin = quantum.plugins.sample.SamplePlugin.FakePlugin
++core_plugin = quantum.plugins.nicira.nicira_nvp_plugin.QuantumPlugin.NvpPluginV2
+ 
+ # Paste configuration file
+ api_paste_config = api-paste.ini
+--- quantum-2012.2.nicira.2.orig/etc/dhcp_agent.ini
++++ quantum-2012.2.nicira.2/etc/dhcp_agent.ini
+@@ -16,7 +16,7 @@ state_path = /opt/stack/data
+ # matches you plugin.
+ 
+ # OVS
+-interface_driver = quantum.agent.linux.interface.OVSInterfaceDriver
++interface_driver = quantum.agent.linux.interface.OVSVethInterfaceDriver
+ # LinuxBridge
+ #interface_driver = quantum.agent.linux.interface.BridgeInterfaceDriver
+ # Ryu

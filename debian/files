@@ -1,0 +1,5 @@
+quantum-server_2012.2.nicira.2.1_all.deb net optional
+quantum-common_2012.2.nicira.2.1_all.deb net optional
+quantum-plugin-nicira_2012.2.nicira.2.1_all.deb net optional
+quantum-dhcp-agent_2012.2.nicira.2.1_all.deb net optional
+python-quantum_2012.2.nicira.2.1_all.deb python optional
