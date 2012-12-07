@@ -582,11 +582,12 @@ def update_port(network, port_id, **params):
     cluster = params["cluster"]
     lport_obj = {}
 
-    admin_state_up = params['port'].get('admin_state_up')
     device_id = params['port'].get('device_id')
     name = params["port"].get("name")
-    if admin_state_up:
-        lport_obj["admin_status_enabled"] = admin_state_up
+    if 'admin_state_up' in params['port']:
+        lport_obj["admin_status_enabled"] = (
+            params['port'].get('admin_state_up'))
+
     if name:
         lport_obj["display_name"] = name
 
