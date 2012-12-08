@@ -1940,20 +1940,24 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             # find the appropriate cluster!
             cluster = self.default_cluster
             lrouter = nvplib.get_lrouter(cluster, id)
-            router_op_status = constants.NET_STATUS_DOWN
             relations = lrouter.get('_relations')
-            if relations:
-                lrouter_status = relations.get('LogicalRouterStatus')
-            # FIXME(salvatore-orlando): Being unable to fetch the
-            # logical router status should be an exception.
-            if (lrouter_status and
-                not lrouter_status.get('fabric_status', None)):
-                router_op_status = constants.NET_STATUS_DOWN
+            lrouter_status = relations.get('LogicalRouterStatus')
+            if lrouter_status:
+                fabric_status = lrouter_status.get('fabric_status')
+                router_op_status = (constants.NET_STATUS_ACTIVE if
+                                    fabric_status else
+                                    constants.NET_STATUS_DOWN)
+            else:
+                err_desc = _("Unable to retrieve status for NVP "
+                             "logical router")
+                LOG.exception(err_desc)
+                raise nvp_exc.NvpPluginException(err_desc=err_desc)
+
             LOG.debug("Current router status:%s;"
                       "Status in Quantum DB:%s",
                       router_op_status, router.status)
             if router_op_status != router.status:
-                # update the network status
+                # update the logical router status
                 with context.session.begin(subtransactions=True):
                     router.status = router_op_status
         except NvpApiClient.NvpApiException:
