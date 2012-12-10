@@ -27,7 +27,7 @@ LOG = logging.getLogger(__name__)
 def get_network_binding(session, network_id):
     session = session or db.get_session()
     try:
-        binding = (session.query(nicira_models.NetworkBinding).
+        binding = (session.query(nicira_models.NvpNetworkBinding).
                    filter_by(network_id=network_id).
                    one())
         return binding
@@ -38,7 +38,7 @@ def get_network_binding(session, network_id):
 def get_network_binding_by_vlanid(session, vlan_id):
     session = session or db.get_session()
     try:
-        binding = (session.query(nicira_models.NetworkBinding).
+        binding = (session.query(nicira_models.NvpNetworkBinding).
                    filter_by(vlan_id=vlan_id).
                    one())
         return binding
@@ -48,7 +48,7 @@ def get_network_binding_by_vlanid(session, vlan_id):
 
 def add_network_binding(session, network_id, binding_type, tz_uuid, vlan_id):
     with session.begin(subtransactions=True):
-        binding = nicira_models.NetworkBinding(network_id, binding_type,
+        binding = nicira_models.NvpNetworkBinding(network_id, binding_type,
                                                tz_uuid, vlan_id)
         session.add(binding)
         return binding

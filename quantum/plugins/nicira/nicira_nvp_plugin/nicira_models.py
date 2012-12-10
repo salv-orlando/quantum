@@ -19,13 +19,13 @@ from sqlalchemy import Column, Enum, ForeignKey, Integer, String
 from quantum.db.models_v2 import model_base
 
 
-class NetworkBinding(model_base.BASEV2):
+class NvpNetworkBinding(model_base.BASEV2):
     """Represents a binding of a virtual network with a transport zone.
 
     This model class associates a Quantum network with a transport zone;
     optionally a vlan ID might be used if the binding type is 'bridge'
     """
-    __tablename__ = 'network_bindings'
+    __tablename__ = 'nvp_network_bindings'
 
     network_id = Column(String(36),
                         ForeignKey('networks.id', ondelete="CASCADE"),
@@ -42,10 +42,10 @@ class NetworkBinding(model_base.BASEV2):
         self.vlan_id = vlan_id
 
     def __repr__(self):
-        return "<NetworkBinding(%s,%s,%s,%s)>" % (self.network_id,
-                                                  self.binding_type,
-                                                  self.tz_uuid,
-                                                  self.vlan_id)
+        return "<NvpNetworkBinding(%s,%s,%s,%s)>" % (self.network_id,
+                                                     self.binding_type,
+                                                     self.tz_uuid,
+                                                     self.vlan_id)
 
 
 class QuantumNvpPortMapping(model_base.BASEV2):
