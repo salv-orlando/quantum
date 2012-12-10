@@ -217,11 +217,15 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self._port_drivers = {
             'create': {l3_db.DEVICE_OWNER_ROUTER_GW:
                        self._nvp_create_ext_gw_port,
+                       l3_db.DEVICE_OWNER_ROUTER_INTF:
+                       self._nvp_create_port,
                        l3_db.DEVICE_OWNER_FLOATINGIP:
                        self._nvp_create_fip_port,
                        'default': self._nvp_create_port},
             'delete': {l3_db.DEVICE_OWNER_ROUTER_GW:
                        self._nvp_delete_ext_gw_port,
+                       l3_db.DEVICE_OWNER_ROUTER_INTF:
+                       self._nvp_delete_router_port,
                        l3_db.DEVICE_OWNER_FLOATINGIP:
                        self._nvp_delete_fip_port,
                        'default': self._nvp_delete_port}
@@ -485,6 +489,30 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self._delete_port_security_group_bindings(context, port_data['id'])
         LOG.debug("_nvp_delete_port completed for port %s on network %s",
                   port_data['id'], port_data['network_id'])
+
+    def _nvp_delete_router_port(self, context, port_data):
+        # Delete logical router port
+        lrouter_id = port_data['device_id']
+        nvp_port_id = nicira_db.get_nvp_port_id(context.session,
+                                                port_data['id'])
+        if not nvp_port_id:
+            raise q_exc.PortNotFound(port_id=port_data['id'])
+
+        try:
+            nvplib.delete_peer_router_lport(self.default_cluster,
+                                            lrouter_id,
+                                            port_data['network_id'],
+                                            nvp_port_id)
+        except (NvpApiClient.NvpApiException, NvpApiClient.ResourceNotFound):
+                # Do not raise because the issue might as well be that the
+                # router has already been deleted, so there would be nothing
+                # to do here
+                LOG.exception(_("Ignoring exception as this means the peer "
+                                "for port '%s' has already been deleted."),
+                              nvp_port_id)
+
+        # Delete logical switch port
+        self._nvp_delete_port(context, port_data)
 
     def _find_router_gw_port(self, context, port_data):
         router_id = port_data['device_id']
@@ -1103,7 +1131,39 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.NetworkNotFound
         """
         external = self._network_is_external(context, id)
+        # Before deleting ports, ensure the peer of a NVP logical
+        # port with a patch attachment is removed too
+        port_filter = {'network_id': [id],
+                       'device_owner': ['network:router_interface']}
+        router_iface_ports = self.get_ports(context, filters=port_filter)
+        for port in router_iface_ports:
+            nvp_port_id = nicira_db.get_nvp_port_id(context.session,
+                                                    port['id'])
+            if nvp_port_id:
+                port['nvp_port_id'] = nvp_port_id
+            else:
+                LOG.warning(_("A nvp lport identifier was not found for "
+                              "quantum port '%s'"), port['id'])
+
         super(NvpPluginV2, self).delete_network(context, id)
+        # clean up network owned ports
+        for port in router_iface_ports:
+            try:
+                if 'nvp_port_id' in port:
+                    nvplib.delete_peer_router_lport(self.default_cluster,
+                                                    port['device_id'],
+                                                    port['network_id'],
+                                                    port['nvp_port_id'])
+            except (TypeError, KeyError,
+                    NvpApiClient.NvpApiException,
+                    NvpApiClient.ResourceNotFound):
+                # Do not raise because the issue might as well be that the
+                # router has already been deleted, so there would be nothing
+                # to do here
+                LOG.warning(_("Ignoring exception as this means the peer for "
+                              "port '%s' has already been deleted."),
+                            nvp_port_id)
+
         # Do not go to NVP for external networks
         if not external:
             # FIXME(salvatore-orlando): Failures here might lead NVP

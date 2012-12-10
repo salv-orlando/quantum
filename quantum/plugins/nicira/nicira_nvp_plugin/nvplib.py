@@ -859,6 +859,24 @@ def delete_router_lport(cluster, lrouter_uuid, lport_uuid):
               % (lport_uuid, lrouter_uuid))
 
 
+def delete_peer_router_lport(cluster, lr_uuid, ls_uuid, lp_uuid):
+    nvp_port = get_port(cluster, ls_uuid, lp_uuid,
+                        relations="LogicalPortAttachment")
+    try:
+        relations = nvp_port.get('_relations')
+        if relations:
+            att_data = relations.get('LogicalPortAttachment')
+            if att_data:
+                lrp_uuid = att_data.get('peer_port_uuid')
+                if lrp_uuid:
+                    delete_router_lport(cluster, lr_uuid, lrp_uuid)
+    except (NvpApiClient.NvpApiException, NvpApiClient.ResourceNotFound):
+        LOG.exception(_("Unable to fetch and delete peer logical "
+                        "router port for logical switch port:%s"),
+                      lp_uuid)
+        raise
+
+
 def find_router_gw_port(context, cluster, router_id):
     """ Retrieves the external gateway port for a NVP logical router """
 
