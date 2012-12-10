@@ -292,7 +292,7 @@ class FakeClient:
         with open("%s/%s" % (self.fake_files_path, response_file)) as f:
             response_template = f.read()
             res_dict = getattr(self, '_fake_%s_dict' % resource_type)
-            if parent_uuid == "*":
+            if parent_uuid == '*':
                 parent_uuid = None
 
             def _attr_match(res_uuid):
@@ -312,14 +312,20 @@ class FakeClient:
                             for x in res_dict[res_uuid]['tags']])
 
             def _lswitch_match(res_uuid):
-                if (not parent_uuid or
-                        res_dict[res_uuid].get('ls_uuid') == parent_uuid):
+                # verify that the switch exist
+                if parent_uuid and not parent_uuid in self._fake_lswitch_dict:
+                    raise Exception(_("lswitch:%s not found" % parent_uuid))
+                if (not parent_uuid
+                    or res_dict[res_uuid].get('ls_uuid') == parent_uuid):
                     return True
                 return False
 
             def _lrouter_match(res_uuid):
+                # verify that the router exist
+                if parent_uuid and not parent_uuid in self._fake_lrouter_dict:
+                    raise Exception(_("lrouter:%s not found" % parent_uuid))
                 if (not parent_uuid or
-                        res_dict[res_uuid].get('lr_uuid') == parent_uuid):
+                    res_dict[res_uuid].get('lr_uuid') == parent_uuid):
                     return True
                 return False
 
@@ -334,10 +340,18 @@ class FakeClient:
             for item in res_dict.itervalues():
                 if 'tags' in item:
                     item['tags_json'] = json.dumps(item['tags'])
-            if 'lswitch' in resource_type:
+            if resource_type in (self.LSWITCH_LPORT_RESOURCE,
+                                 self.LSWITCH_LPORT_ATT,
+                                 self.LSWITCH_LPORT_STATUS):
                 parent_func = _lswitch_match
-            else:
+            elif resource_type in (self.LROUTER_LPORT_RESOURCE,
+                                   self.LROUTER_LPORT_ATT,
+                                   self.LROUTER_NAT_RESOURCE,
+                                   self.LROUTER_LPORT_STATUS):
                 parent_func = _lrouter_match
+            else:
+                parent_func = lambda x: True
+
             items = [_build_item(res_dict[res_uuid])
                      for res_uuid in res_dict
                      if (parent_func(res_uuid) and

@@ -2201,9 +2201,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             tmp_fip['port_id'] = floatingip_db['fixed_port_id']
             _pid, internal_ip, router_id = self.get_assoc_data(
                 context, tmp_fip, floatingip_db['floating_network_id'])
-        self._retrieve_and_delete_nat_rules(floating_ip,
-                                            internal_ip,
-                                            router_id)
+        # If there's no association router_id will be None
+        if router_id:
+            self._retrieve_and_delete_nat_rules(floating_ip,
+                                                internal_ip,
+                                                router_id)
         # Re-create NAT rules only if a port id is specified
         if 'port_id' in fip and fip['port_id']:
             try:
