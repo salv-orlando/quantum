@@ -2370,28 +2370,51 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             tmp_fip['port_id'] = floatingip_db['fixed_port_id']
             _pid, internal_ip, router_id = self.get_assoc_data(
                 context, tmp_fip, floatingip_db['floating_network_id'])
+        nvp_floating_ips = []
         # If there's no association router_id will be None
         if router_id:
             self._retrieve_and_delete_nat_rules(floating_ip,
                                                 internal_ip,
                                                 router_id)
-        # Re-create NAT rules only if a port id is specified
-        if 'port_id' in fip and fip['port_id']:
-            try:
-                # Create new NAT rules
-                nvplib.create_lrouter_dnat_rule(
-                    cluster, router_id, internal_ip, internal_ip,
-                    destination_ip_addresses=floating_ip)
-                # setup snat rule such that src ip of a IP packet when using
-                # floating is the floating ip itself.
-                nvplib.create_lrouter_snat_rule(
-                    cluster, router_id, floating_ip, floating_ip,
-                    source_ip_addresses=internal_ip)
-            except NvpApiClient.NvpApiException:
-                LOG.exception("An error occurred while creating NAT rules "
-                              "on the NVP platform for floating ip:%s mapped "
-                              "to internal ip:%s", floating_ip, internal_ip)
-                raise
+            # Fetch logical port of router's external gateway
+            nvp_gw_port_id = nvplib.find_router_gw_port(
+                context, self.default_cluster, router_id)['uuid']
+            nvp_floating_ips = self._build_ip_address_list(
+                context.elevated(), external_port['fixed_ips'])
+            LOG.debug(_("Address list for NVP logical router "
+                        "port:%s"), nvp_floating_ips)
+            # Re-create NAT rules only if a port id is specified
+            if 'port_id' in fip and fip['port_id']:
+                try:
+                    # Create new NAT rules
+                    nvplib.create_lrouter_dnat_rule(
+                        cluster, router_id, internal_ip, internal_ip,
+                        destination_ip_addresses=floating_ip)
+                    # setup snat rule such that src ip of a IP packet when
+                    #  using floating is the floating ip itself.
+                    nvplib.create_lrouter_snat_rule(
+                        cluster, router_id, floating_ip, floating_ip,
+                        source_ip_addresses=internal_ip)
+                    # Add Floating IP address to router_port
+                    nvplib.update_lrouter_port_ips(cluster,
+                                                   router_id,
+                                                   nvp_gw_port_id,
+                                                   ips_to_add=nvp_floating_ips,
+                                                   ips_to_remove=[])
+                except NvpApiClient.NvpApiException:
+                    LOG.exception("An error occurred while creating NAT "
+                                  "rules on the NVP platform for floating "
+                                  "ip:%s mapped to internal ip:%s",
+                                  floating_ip, internal_ip)
+                    raise nvp_exc.NvpPluginException(err_desc=msg)
+            elif floatingip_db['fixed_port_id']:
+                # This is a disassociation.
+                # Remove floating IP address from logical router port
+                nvplib.update_lrouter_port_ips(cluster,
+                                               router_id,
+                                               nvp_gw_port_id,
+                                               ips_to_add=[],
+                                               ips_to_remove=nvp_floating_ips)
 
         floatingip_db.update({'fixed_ip_address': internal_ip,
                               'fixed_port_id': port_id,

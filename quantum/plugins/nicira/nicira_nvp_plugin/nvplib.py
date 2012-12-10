@@ -1300,3 +1300,31 @@ def check_cluster_connectivity(cluster):
         msg = "Failed to connect to cluster %s: %s" % (cluster, str(e))
         raise Exception(msg)
     return json.loads(resp)
+
+
+# NOTE(salvatore-orlando): The following FIXME applies in general to
+# each operation on list attributes.
+# FIXME(salvatore-orlando): need a lock around the list of IPs on an iface
+def update_lrouter_port_ips(cluster, lrouter_id, lport_id,
+                            ips_to_add, ips_to_remove):
+    uri = _build_uri_path(LROUTERPORT_RESOURCE, lport_id, lrouter_id)
+    try:
+        port = json.loads(do_single_request("GET", uri, cluster=cluster))
+        # TODO(salvatore-orlando): Enforce ips_to_add intersection with
+        # ips_to_remove is empty
+        ip_address_set = set(port['ip_addresses'])
+        ip_address_set = ip_address_set - set(ips_to_remove)
+        ip_address_set = ip_address_set | set(ips_to_add)
+        # Set is not JSON serializable - convert to list
+        port['ip_addresses'] = list(ip_address_set)
+        do_single_request("PUT", uri, json.dumps(port), cluster=cluster)
+    except NvpApiClient.ResourceNotFound as e:
+        msg = _(("Router Port %(lport_id)s not found on router "
+                 "%(lrouter_id)s" % locals()))
+        LOG.exception(msg)
+        raise nvp_exc.NvpPluginException(err_desc=msg)
+    except NvpApiClient.NvpApiException as e:
+        msg = _("An exception occurred while updating IP addresses on a "
+                "router logical port:%s") % str(e)
+        LOG.exception(msg)
+        raise nvp_exc.NvpPluginException(err_desc=msg)
