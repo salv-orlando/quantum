@@ -186,21 +186,29 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             # Password is guaranteed to be the same across all controllers
             # in the same NVP cluster.
             cluster = nvp_cluster.NVPCluster(c_opts['name'])
-            for controller_connection in c_opts['nvp_controller_connection']:
-                args = controller_connection.split(':')
-                try:
-                    args.extend([c_opts['default_tz_uuid'],
-                                 c_opts['nvp_cluster_uuid'],
-                                 c_opts['nova_zone_id'],
-                                 c_opts['default_l3_gw_uuid']])
-                    cluster.add_controller(*args)
-                except Exception:
-                    LOG.exception("Invalid connection parameters for "
-                                  "controller %s in cluster %s",
-                                  controller_connection,
-                                  c_opts['name'])
-                    raise nvp_exc.NvpInvalidConnection(
-                        conn_params=controller_connection)
+            try:
+                for controller_connection in c_opts['nvp_controller_connection']:
+                    args = controller_connection.split(':')
+                    try:
+                        args.extend([c_opts['default_tz_uuid'],
+                                     c_opts['nvp_cluster_uuid'],
+                                     c_opts['nova_zone_id'],
+                                     c_opts['default_l3_gw_uuid']])
+                        cluster.add_controller(*args)
+                    except Exception:
+                        LOG.exception("Invalid connection parameters for "
+                                      "controller %s in cluster %s",
+                                      controller_connection,
+                                      c_opts['name'])
+                        raise nvp_exc.NvpInvalidConnection(
+                            conn_params=controller_connection)
+            except TypeError:
+                msg = _("No controller connection specified in cluster "
+                        "configuration. Please ensure at least a value for "
+                        "'nvp_controller_connection' is specified in the "
+                        "[CLUSTER:%s] section") % c_opts['name']
+                LOG.exception(msg)
+                raise nvp_exc.NvpPluginException(err_desc=msg)
 
             api_providers = [(x['ip'], x['port'], True)
                              for x in cluster.controllers]
