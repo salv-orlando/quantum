@@ -118,6 +118,56 @@ def parse_config():
     return db_options, nvp_options, clusters_options
 
 
+def parse_clusters_opts(clusters_opts, concurrent_connections,
+                        nvp_gen_timeout, default_cluster_name):
+    # Will store the first cluster in case is needed for default
+    # cluster assignment
+    clusters = {}
+    first_cluster = None
+    for c_opts in clusters_opts:
+        # Password is guaranteed to be the same across all controllers
+        # in the same NVP cluster.
+        cluster = nvp_cluster.NVPCluster(c_opts['name'])
+        for controller_connection in c_opts['nvp_controller_connection']:
+            args = controller_connection.split(':')
+            try:
+                args.extend([c_opts['default_tz_uuid'],
+                             c_opts['nvp_cluster_uuid'],
+                             c_opts['nova_zone_id'],
+                             c_opts['default_l3_gw_uuid']])
+                cluster.add_controller(*args)
+            except Exception:
+                LOG.exception("Invalid connection parameters for "
+                              "controller %s in cluster %s",
+                              controller_connection,
+                              c_opts['name'])
+                raise nvp_exc.NvpInvalidConnection(
+                    conn_params=controller_connection)
+
+        api_providers = [(x['ip'], x['port'], True)
+                         for x in cluster.controllers]
+        cluster.api_client = NvpApiClient.NVPApiHelper(
+            api_providers, cluster.user, cluster.password,
+            request_timeout=cluster.request_timeout,
+            http_timeout=cluster.http_timeout,
+            retries=cluster.retries,
+            redirects=cluster.redirects,
+            concurrent_connections=concurrent_connections,
+            nvp_gen_timeout=nvp_gen_timeout)
+
+        # TODO(pjb): What if the cluster isn't reachable this
+        # instant?  It isn't good to fall back to invalid cluster
+        # strings.
+        if len(clusters) == 0:
+            first_cluster = cluster
+        clusters[c_opts['name']] = cluster
+
+    if default_cluster_name and default_cluster_name in clusters:
+        default_cluster = clusters[default_cluster_name]
+    else:
+        default_cluster = first_cluster
+    return (clusters, default_cluster)
+
 class NVPRpcCallbacks(dhcp_rpc_base.DhcpRpcCallbackMixin):
 
     # Set RPC API version to 1.0 by default.
@@ -177,6 +227,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                        'default': self._nvp_delete_port}
         }
 
+        self.clusters = {}
         self.db_opts, self.nvp_opts, self.clusters_opts = parse_config()
         if not self.clusters_opts:
             msg = _("No cluster specified in NVP plugin configuration. "
@@ -185,55 +236,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     "the NVP Plugin configuration file.")
             LOG.error(msg)
             raise nvp_exc.NvpPluginException(err_desc=msg)
-        self.clusters = {}
-        # Will store the first cluster in case is needed for default
-        # cluster assignment
-        first_cluster = None
-        for c_opts in self.clusters_opts:
-            # Password is guaranteed to be the same across all controllers
-            # in the same NVP cluster.
-            cluster = nvp_cluster.NVPCluster(c_opts['name'])
-            try:
-                for controller_connection in c_opts['nvp_controller_connection']:
-                    args = controller_connection.split(':')
-                    try:
-                        args.extend([c_opts['default_tz_uuid'],
-                                     c_opts['nvp_cluster_uuid'],
-                                     c_opts['nova_zone_id'],
-                                     c_opts['default_l3_gw_uuid']])
-                        cluster.add_controller(*args)
-                    except Exception:
-                        LOG.exception("Invalid connection parameters for "
-                                      "controller %s in cluster %s",
-                                      controller_connection,
-                                      c_opts['name'])
-                        raise nvp_exc.NvpInvalidConnection(
-                            conn_params=controller_connection)
-            except TypeError:
-                msg = _("No controller connection specified in cluster "
-                        "configuration. Please ensure at least a value for "
-                        "'nvp_controller_connection' is specified in the "
-                        "[CLUSTER:%s] section") % c_opts['name']
-                LOG.exception(msg)
-                raise nvp_exc.NvpPluginException(err_desc=msg)
 
-            api_providers = [(x['ip'], x['port'], True)
-                             for x in cluster.controllers]
-            cluster.api_client = NvpApiClient.NVPApiHelper(
-                api_providers, cluster.user, cluster.password,
-                request_timeout=cluster.request_timeout,
-                http_timeout=cluster.http_timeout,
-                retries=cluster.retries,
-                redirects=cluster.redirects,
-                concurrent_connections=self.nvp_opts.concurrent_connections,
-                nvp_gen_timeout=self.nvp_opts.nvp_gen_timeout)
-
-            # TODO(pjb): What if the cluster isn't reachable this
-            # instant?  It isn't good to fall back to invalid cluster
-            # strings.
-            if len(self.clusters) == 0:
-                first_cluster = cluster
-            self.clusters[c_opts['name']] = cluster
+        self.clusters, self.default_cluster = parse_clusters_opts(
+            self.clusters_opts, self.nvp_opts.concurrent_connections,
+            self.nvp_opts.nvp_gen_timeout, self.nvp_opts.default_cluster_name)
 
         # Connect and configure ovs_quantum db
         options = {
@@ -242,11 +248,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             'reconnect_interval': self.db_opts['reconnect_interval'],
             'base': models_v2.model_base.BASEV2,
         }
-        def_cluster_name = self.nvp_opts.default_cluster_name
-        if def_cluster_name and def_cluster_name in self.clusters:
-            self.default_cluster = self.clusters[def_cluster_name]
-        else:
-            self.default_cluster = first_cluster
         db.configure_db(options)
         # Extend the fault map
         self._extend_fault_map()

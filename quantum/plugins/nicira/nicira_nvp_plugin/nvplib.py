@@ -38,7 +38,7 @@ from quantum.extensions import securitygroup as ext_sg
 from quantum.plugins.nicira.nicira_nvp_plugin.common import (
     exceptions as nvp_exc)
 
-VERSION='2012.2'
+VERSION = '2012.2'
 # HTTP METHODS CONSTANTS
 HTTP_GET = "GET"
 HTTP_POST = "POST"
@@ -935,7 +935,7 @@ def create_security_profile(cluster, tenant_id, security_profile):
     path = "/ws.v1/security-profile"
     tags = set_tenant_id_tag(tenant_id)
     tags = set_ext_security_profile_id_tag(
-    security_profile.get('external_id'), tags)
+        security_profile.get('external_id'), tags)
     tags.append({'scope': 'quantum', 'tag': VERSION})
     # Allow all dhcp responses in
     dhcp = {'logical_port_egress_rules': [{'ethertype': 'IPv4',
@@ -1149,3 +1149,18 @@ def delete_lqueue(cluster, id):
     except Exception as e:
         LOG.error("Failed to delete logical queue %s" % str(e))
         raise exception.QuantumException()
+
+# -----------------------------------------------------------------------------
+# NVP Cluster API Calls
+# -----------------------------------------------------------------------------
+
+
+def check_cluster_connectivity(cluster):
+    """Make sure that we can issue a request to each of the cluster nodes"""
+    try:
+        resp = do_single_request("GET", "/ws.v1/control-cluster",
+                                 cluster=cluster)
+    except Exception as e:
+        msg = "Failed to connect to cluster %s: %s" % (cluster, str(e))
+        raise Exception(msg)
+    return json.loads(resp)

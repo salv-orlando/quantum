@@ -15,10 +15,12 @@
 #
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
-import logging
 import re
 
 from quantum.api.v2 import attributes
+from quantum.common import config as logging_config
+from quantum.openstack.common import cfg
+from quantum.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ class NVPCluster(object):
         self._name = name
         self.controllers = []
         self.api_client = None
+        logging_config.setup_logging(cfg.CONF)
 
     def __repr__(self):
         ss = ['{ "NVPCluster": [']
@@ -88,7 +91,7 @@ class NVPCluster(object):
             LOG.warning("default_l3_gw_uuid:%s is not a valid UUID in the "
                         "cluster %s. Logical router operations might not work"
                         "properly in this cluster",
-                        controller_dict.get('default_tz_uuid'),
+                        controller_dict.get('default_l3_gw_uuid'),
                         self.name)
         int_keys = [
             'port', 'request_timeout', 'http_timeout', 'retries', 'redirects']
@@ -99,6 +102,9 @@ class NVPCluster(object):
 
     def get_controller(self, idx):
         return self.controllers[idx]
+
+    def get_num_controllers(self):
+        return len(self.controllers)
 
     @property
     def name(self):
