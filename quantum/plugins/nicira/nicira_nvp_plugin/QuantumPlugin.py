@@ -178,6 +178,13 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         }
 
         self.db_opts, self.nvp_opts, self.clusters_opts = parse_config()
+        if not self.clusters_opts:
+            msg = _("No cluster specified in NVP plugin configuration. "
+                    "Unable to start. Please ensure at least a "
+                    "[CLUSTER:<cluster_name>] section is specified in "
+                    "the NVP Plugin configuration file.")
+            LOG.error(msg)
+            raise nvp_exc.NvpPluginException(err_desc=msg)
         self.clusters = {}
         # Will store the first cluster in case is needed for default
         # cluster assignment
