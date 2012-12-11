@@ -20,5 +20,5 @@ debian/quantum-server
 debian/quantum-dhcp-agent
 debian/tmp
 debian/*debhelper
-debian/*log
+debian/*.log
 debian/*substvars
