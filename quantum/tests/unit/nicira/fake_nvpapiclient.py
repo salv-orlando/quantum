@@ -96,7 +96,7 @@ class FakeClient:
 
     def _get_tag(self, resource, scope):
         tags = [tag['tag'] for tag in resource['tags']
-                if tag['scope'] == scope]
+                if tag.get('scope') == scope]
         return len(tags) > 0 and tags[0]
 
     def _get_filters(self, querystring):
@@ -295,7 +295,7 @@ class FakeClient:
             def _tag_match(res_uuid):
                 if not tag_filter:
                     return True
-                return any([x['scope'] == tag_filter['scope'] and
+                return any([x.get('scope') == tag_filter.get('scope') and
                             x['tag'] == tag_filter['tag']
                             for x in res_dict[res_uuid]['tags']])
 

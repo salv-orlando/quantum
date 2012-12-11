@@ -38,6 +38,7 @@ from quantum.extensions import securitygroup as ext_sg
 from quantum.plugins.nicira.nicira_nvp_plugin.common import (
     exceptions as nvp_exc)
 
+VERSION='2012.2'
 # HTTP METHODS CONSTANTS
 HTTP_GET = "GET"
 HTTP_POST = "POST"
@@ -219,7 +220,7 @@ def get_lswitches(cluster, quantum_net_id):
         ls = json.loads(resp_obj)
         results.append(ls)
         for tag in ls['tags']:
-            if (tag['scope'] == "quantum_multi_lswitch" and
+            if (tag.get('scope') == "quantum_multi_lswitch" and
                 tag['tag'] == "True"):
                 # Fetch extra logical switches
                 extra_lswitch_uri_path = _build_uri_path(
@@ -253,7 +254,8 @@ def create_lswitch(cluster, tenant_id, display_name,
                                                 DEF_TRANSPORT_TYPE)}
     lswitch_obj = {"display_name": display_name,
                    "transport_zones": [transport_zone_config],
-                   "tags": [{"tag": tenant_id, "scope": "os_tid"}]}
+                   "tags": [{"tag": tenant_id, "scope": "os_tid"},
+                            {"scope": "quantum", 'tag': VERSION}]}
     if transport_type == 'bridge' and vlan_id:
         transport_zone_config["binding_config"] = {"vlan_translation":
                                                    [{"transport": vlan_id}]}
@@ -307,7 +309,7 @@ def create_lrouter(cluster, tenant_id, display_name, nexthop):
         :raise NvpApiException: if there is a problem while communicating
         with the NVP controller
     """
-    tags = [{"tag": tenant_id, "scope": "os_tid"}]
+    tags = [{"tag": tenant_id, "scope": "os_tid", "tag": "quantum"}]
     lrouter_obj = {
         "display_name": display_name,
         "tags": tags,
@@ -640,7 +642,8 @@ def create_lport(cluster, lswitch_uuid, tenant_id, quantum_port_id,
         display_name=display_name,
         tags=[dict(scope='os_tid', tag=tenant_id),
               dict(scope='q_port_id', tag=quantum_port_id),
-              dict(scope='vm_id', tag=hashed_device_id)],
+              dict(scope='vm_id', tag=hashed_device_id),
+              dict(scope='quantum', tag=VERSION)]
     )
     port_data = {'id': quantum_port_id,
                  'mac_address': mac_address,
@@ -670,7 +673,8 @@ def create_router_lport(cluster, lrouter_uuid, tenant_id, quantum_port_id,
                         display_name, admin_status_enabled, ip_addresses):
     """ Creates a logical port on the assigned logical router """
     tags = [dict(scope='os_tid', tag=tenant_id),
-            dict(scope='q_port_id', tag=quantum_port_id)]
+            dict(scope='q_port_id', tag=quantum_port_id),
+            dict(scope='quantum', tag=VERSION)]
     lport_obj = dict(
         admin_status_enabled=admin_status_enabled,
         display_name=display_name,
@@ -702,7 +706,8 @@ def update_router_lport(cluster, lrouter_uuid, lrouter_port_uuid,
         admin_status_enabled=admin_status_enabled,
         display_name=display_name,
         tags=[dict(scope='os_tid', tag=tenant_id),
-              dict(scope='q_port_id', tag=quantum_port_id)],
+              dict(scope='q_port_id', tag=quantum_port_id),
+              dict(scope='quantum', tag=VERSION)],
         ip_addresses=ip_addresses,
         type="LogicalRouterPortConfig"
     )
@@ -919,7 +924,8 @@ def create_security_profile(cluster, tenant_id, security_profile):
     path = "/ws.v1/security-profile"
     tags = set_tenant_id_tag(tenant_id)
     tags = set_ext_security_profile_id_tag(
-        security_profile.get('external_id'), tags)
+    security_profile.get('external_id'), tags)
+    tags.append({'scope': 'quantum', 'tag': VERSION})
     # Allow all dhcp responses in
     dhcp = {'logical_port_egress_rules': [{'ethertype': 'IPv4',
                                            'protocol': 17,
