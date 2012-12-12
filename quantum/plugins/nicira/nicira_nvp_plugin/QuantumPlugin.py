@@ -1198,9 +1198,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         # so do not create a logical switch for an external network
         external = net_data.get(l3.EXTERNAL)
         if not attributes.is_attr_set(external):
+            nvp_binding_type = net_data.get(pnet.NETWORK_TYPE)
+            if nvp_binding_type in ('flat', 'vlan'):
+                nvp_binding_type = 'bridge'
             lswitch = nvplib.create_lswitch(
                 target_cluster, tenant_id, net_data.get('name'),
-                net_data.get(pnet.NETWORK_TYPE),
+                nvp_binding_type,
                 net_data.get(pnet.PHYSICAL_NETWORK),
                 net_data.get(pnet.SEGMENTATION_ID))
             network['network']['id'] = lswitch['uuid']
