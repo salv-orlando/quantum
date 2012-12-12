@@ -1,30 +1,7 @@
-Description: <short summary of the patch>
- TODO: Put a short summary on the line above and replace this paragraph
- with a longer explanation of this change. Complete the meta-information
- with other relevant fields (see below for details). To make it easier, the
- information below has been extracted from the changelog. Adjust it or drop
- it.
- .
- quantum (2012.2.nicira.2) UNRELEASED; urgency=low
- .
-   * None
+Description: Patch nvp settings
 Author: arosen <arosen@awesome>
-
----
-The information above should follow the Patch Tagging Guidelines, please
-checkout http://dep.debian.net/deps/dep3/ to learn about the format. Here
-are templates for supplementary fields that you might want to add:
-
-Origin: <vendor|upstream|other>, <url of original patch>
-Bug: <url in upstream bugtracker>
-Bug-Debian: http://bugs.debian.org/<bugnumber>
-Bug-Ubuntu: https://launchpad.net/bugs/<bugnumber>
-Forwarded: <no|not-needed|url proving that it has been forwarded>
-Reviewed-By: <name and email of someone who approved the patch>
-Last-Update: <YYYY-MM-DD>
-
---- quantum-2012.2.nicira.2.orig/etc/quantum.conf
-+++ quantum-2012.2.nicira.2/etc/quantum.conf
+--- quantum-2012.2.nicira.7.1.orig/etc/quantum.conf
++++ quantum-2012.2.nicira.7.1/etc/quantum.conf
 @@ -19,7 +19,7 @@ bind_port = 9696
  # api_extensions_path =
  
@@ -34,8 +11,17 @@ Last-Update: <YYYY-MM-DD>
  
  # Paste configuration file
  api_paste_config = api-paste.ini
---- quantum-2012.2.nicira.2.orig/etc/dhcp_agent.ini
-+++ quantum-2012.2.nicira.2/etc/dhcp_agent.ini
+--- quantum-2012.2.nicira.7.1.orig/etc/dhcp_agent.ini
++++ quantum-2012.2.nicira.7.1/etc/dhcp_agent.ini
+@@ -5,7 +5,7 @@
+ # Where to store dnsmasq state files.  This directory must be writable by the
+ # user executing the agent. The value below is compatible with a default
+ # devstack installation.
+-state_path = /opt/stack/data
++state_path = /var/lib/quantum
+ 
+ # The DHCP agent will resync its state with Quantum to recover from any
+ # transient notification or rpc errors. The interval is number of
 @@ -16,7 +16,7 @@ state_path = /opt/stack/data
  # matches you plugin.
  
