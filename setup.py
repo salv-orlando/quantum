@@ -124,6 +124,7 @@ setuptools.setup(
             'quantum.plugins.nec.agent.nec_quantum_agent:main',
             'quantum-server = quantum.server:main',
             'quantum-debug = quantum.debug.shell:main',
+            'check-nvp-config = quantum.plugins.nicira.nicira_nvp_plugin.check_nvp_config:main'
         ]
     },
 )

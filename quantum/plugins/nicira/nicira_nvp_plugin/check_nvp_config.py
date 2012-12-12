@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # Copyright 2012 Nicira, Inc.
 # All Rights Reserved
 #
