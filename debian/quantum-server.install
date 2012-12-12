@@ -1,1 +1,3 @@
 bin/quantum-server usr/bin
+bin/upgrade_db_from_folsom_early_access /usr/bin
+quantum/plugins/nicira/nicira_nvp_plugin/check_nvp_config /usr/bin
