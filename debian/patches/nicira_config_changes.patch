@@ -31,3 +31,9 @@ Author: arosen <arosen@awesome>
  # LinuxBridge
  #interface_driver = quantum.agent.linux.interface.BridgeInterfaceDriver
  # Ryu
+@@ -33,4 +33,4 @@ dhcp_driver = quantum.agent.linux.dhcp.D
+ # Use "sudo quantum-rootwrap /etc/quantum/rootwrap.conf" to use the real
+ # root filter facility.
+ # Change to "sudo" to skip the filtering and just run the comand directly
+-root_helper = sudo
++root_helper = sudo /usr/bin/quantum-rootwrap /etc/quantum/rootwrap.conf
