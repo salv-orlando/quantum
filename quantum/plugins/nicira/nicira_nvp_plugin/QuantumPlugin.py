@@ -2332,6 +2332,21 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             LOG.warning("An incorrect number of matching NAT rules "
                         "was found on the NVP platform")
 
+    def _remove_floatingip_address(self, context, router_id, fip_db):
+        # Remove floating IP address from logical router port
+        # Fetch logical port of router's external gateway
+        nvp_gw_port_id = nvplib.find_router_gw_port(
+            context, self.default_cluster, router_id)['uuid']
+        ext_quantum_port_db = self._get_port(context.elevated(),
+                                             fip_db.floating_port_id)
+        nvp_floating_ips = self._build_ip_address_list(
+            context.elevated(), ext_quantum_port_db['fixed_ips'])
+        nvplib.update_lrouter_port_ips(self.default_cluster,
+                                       router_id,
+                                       nvp_gw_port_id,
+                                       ips_to_add=[],
+                                       ips_to_remove=nvp_floating_ips)
+
     def _update_fip_assoc(self, context, fip, floatingip_db, external_port):
         """ Update floating IP association data.
 
@@ -2431,6 +2446,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                                 fip_db.fixed_ip_address,
                                                 router_id,
                                                 min_num_rules_expected=1)
+            # Remove floating IP address from logical router port
+            self._remove_floatingip_address(context, router_id, fip_db)
         return super(NvpPluginV2, self).delete_floatingip(context, id)
 
     def disassociate_floatingips(self, context, port_id):
@@ -2447,6 +2464,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                                 fip_db.fixed_ip_address,
                                                 router_id,
                                                 min_num_rules_expected=1)
+            # Remove floating IP address from logical router port
+            self._remove_floatingip_address(context, router_id, fip_db)
             # And finally update the database
             fip_db.update({'fixed_port_id': None,
                            'fixed_ip_address': None,
