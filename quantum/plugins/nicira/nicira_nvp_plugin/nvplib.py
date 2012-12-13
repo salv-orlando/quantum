@@ -226,7 +226,7 @@ def get_lswitches(cluster, quantum_net_id):
         ls = json.loads(resp_obj)
         results.append(ls)
         for tag in ls['tags']:
-            if (tag.get('scope') == "quantum_multi_lswitch" and
+            if (tag.get('scope') == "multi_lswitch" and
                 tag['tag'] == "True"):
                 # Fetch extra logical switches
                 extra_lswitch_uri_path = _build_uri_path(
@@ -253,16 +253,19 @@ def create_lswitch(cluster, tenant_id, display_name,
                    vlan_id=None,
                    quantum_net_id=None,
                    **kwargs):
+    nvp_binding_type = transport_type
+    if transport_type in ('flat', 'vlan'):
+        nvp_binding_type = 'bridge'
 
     transport_zone_config = {"zone_uuid": (transport_zone_uuid or
                                            cluster.default_tz_uuid),
-                             "transport_type": (transport_type or
+                             "transport_type": (nvp_binding_type or
                                                 DEF_TRANSPORT_TYPE)}
     lswitch_obj = {"display_name": display_name,
                    "transport_zones": [transport_zone_config],
                    "tags": [{"tag": tenant_id, "scope": "os_tid"},
                             {"scope": "quantum", 'tag': VERSION}]}
-    if transport_type == 'bridge' and vlan_id:
+    if nvp_binding_type == 'bridge' and vlan_id:
         transport_zone_config["binding_config"] = {"vlan_translation":
                                                    [{"transport": vlan_id}]}
     if quantum_net_id:
