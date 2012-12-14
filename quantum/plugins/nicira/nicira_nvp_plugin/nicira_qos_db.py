@@ -203,7 +203,8 @@ class NVPQoSDbMixin(ext_qos.QueuePluginBase):
         created and the queue_id is returned.
 
         Otherwise None is returned. None is also returned if the port does not
-        have a device_id or if the device_owner is network:dhcp.
+        have a device_id or if the device_owner is network:dhcp or
+        network:router_interface.
         """
 
         # TODO(arosen) store each portqueuemapping in the queue that it
@@ -214,7 +215,8 @@ class NVPQoSDbMixin(ext_qos.QueuePluginBase):
         # created on update port when the device_id is present. Also don't
         # apply QoS to dhcp ports.
         if (not port.get('device_id') or
-            port.get('device_owner') == 'network:dhcp'):
+            port.get('device_owner') == 'network:dhcp' or
+            port.get('device_owner') == 'network:router_interface'):
             return None
 
         # Check if there is a queue assocated with the network
