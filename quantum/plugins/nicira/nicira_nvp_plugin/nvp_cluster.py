@@ -57,7 +57,8 @@ class NVPCluster(object):
     def add_controller(self, ip, port, user, password, request_timeout,
                        http_timeout, retries, redirects, default_tz_uuid,
                        uuid=None, zone=None, default_l3_gw_service_uuid=None,
-                       default_l2_gw_node_uuid=None, default_iface_name=None):
+                       default_l2_gw_node_uuid=None,
+                       default_interface_name=None):
         """Add a new set of controller parameters.
 
         :param ip: IP address of controller.
@@ -74,12 +75,12 @@ class NVPCluster(object):
         :param zone: Zone of this cluster (used in MDI configs).
         :param default_l3_gw_service_uuid: Default l3 gateway service
         :param default_l2_gw_node_uuid: Default l2 gateway service
-        :param default_iface_name: Default interface name for l2 gateways
+        :param default_interface_name: Default interface name for l2 gateways
         """
 
         keys = ['ip', 'user', 'password', 'default_tz_uuid',
                 'default_l3_gw_service_uuid', 'default_l2_gw_node_uuid',
-                'default_iface_name', 'uuid', 'zone']
+                'default_interface_name', 'uuid', 'zone']
         controller_dict = dict([(k, locals()[k]) for k in keys])
         if not re.match(attributes.UUID_PATTERN,
                         controller_dict.get('default_tz_uuid')):
@@ -173,8 +174,8 @@ class NVPCluster(object):
         return self.controllers[0]['default_l2_gw_node_uuid']
 
     @property
-    def default_iface_name(self):
-        return self.controllers[0]['default_iface_name']
+    def default_interface_name(self):
+        return self.controllers[0]['default_interface_name']
 
     @property
     def zone(self):

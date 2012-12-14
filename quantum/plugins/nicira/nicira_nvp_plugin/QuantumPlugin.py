@@ -117,8 +117,8 @@ def parse_config():
              nvp_conf[cluster_name].default_l3_gw_service_uuid,
              'default_l2_gw_node_uuid':
              nvp_conf[cluster_name].default_l2_gw_node_uuid,
-             'default_iface_name':
-             nvp_conf[cluster_name].default_iface_name,
+             'default_interface_name':
+             nvp_conf[cluster_name].default_interface_name,
              },)
     LOG.debug("cluster options:%s", clusters_options)
     return db_options, nvp_options, clusters_options
@@ -143,7 +143,7 @@ def parse_clusters_opts(clusters_opts, concurrent_connections,
                                  c_opts['nova_zone_id'],
                                  c_opts['default_l3_gw_service_uuid'],
                                  c_opts['default_l2_gw_node_uuid'],
-                                 c_opts['default_iface_name']])
+                                 c_opts['default_interface_name']])
                     cluster.add_controller(*args)
                 except Exception:
                     LOG.exception("Invalid connection parameters for "
@@ -2485,11 +2485,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         devices = gw_data['devices']
         if not devices:
             devices = [{'id': cluster.default_l2_gw_node_uuid,
-                        'interface_name': cluster.default_iface_name}]
+                        'interface_name': cluster.default_interface_name}]
         # Populate default physical network where not specified
         for device in devices:
             if not device.get('interface_name'):
-                device['interface_name'] = cluster.default_iface_name
+                device['interface_name'] = cluster.default_interface_name
         # Ensure data go back to data structure to be inserted into QuantumDB
         gw_data['devices'] = devices
         nvp_res = nvplib.create_l2_gw_service(cluster, tenant_id,
