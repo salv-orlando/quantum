@@ -24,6 +24,7 @@ from webob import exc
 
 from quantum.common import config
 from quantum.common.test_lib import test_config
+from quantum.db import api as db_api
 from quantum.db import db_base_plugin_v2
 from quantum.extensions import extensions
 from quantum.extensions import networkgw
@@ -303,6 +304,20 @@ class NetworkGatewayDbTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
         with self._network_gateway(name=name, devices=devices) as gw:
             for k, v in keys:
                 self.assertEquals(gw[self.resource][k], v)
+
+    def test_delete_network_gateway(self):
+        name = 'test-gw'
+        devices = [{'id': _uuid(), 'interface_name': 'xxx'},
+                   {'id': _uuid(), 'interface_name': 'yyy'}]
+        with self._network_gateway(name=name, devices=devices):
+            # Nothing to do here - just let the gateway go
+            pass
+        # Verify nothing left on db
+        session = db_api.get_session()
+        gw_query = session.query(networkgw_db.NetworkGateway)
+        dev_query = session.query(networkgw_db.NetworkGatewayDevice)
+        self.assertEqual(0, len(gw_query.all()))
+        self.assertEqual(0, len(dev_query.all()))
 
     def test_update_network_gateway(self):
         with self._network_gateway() as gw:

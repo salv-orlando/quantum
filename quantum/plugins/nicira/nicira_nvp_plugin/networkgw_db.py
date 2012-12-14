@@ -120,7 +120,9 @@ class NetworkGateway(model_base.BASEV2, models_v2.HasId,
     """ Defines the data model for a network gateway """
     name = sa.Column(sa.String(255))
     tenant_id = sa.Column(sa.String(36), nullable=False)
-    devices = orm.relationship(NetworkGatewayDevice)
+    devices = orm.relationship(NetworkGatewayDevice,
+                               backref='networkgateways',
+                               cascade='all,delete')
     network_connections = orm.relationship(NetworkConnection)
 
 
