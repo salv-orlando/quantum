@@ -49,7 +49,7 @@ def get_network_binding_by_vlanid(session, vlan_id):
 def add_network_binding(session, network_id, binding_type, tz_uuid, vlan_id):
     with session.begin(subtransactions=True):
         binding = nicira_models.NvpNetworkBinding(network_id, binding_type,
-                                               tz_uuid, vlan_id)
+                                                  tz_uuid, vlan_id)
         session.add(binding)
         return binding
 
