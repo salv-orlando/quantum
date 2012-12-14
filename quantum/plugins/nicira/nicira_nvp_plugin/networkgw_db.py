@@ -96,9 +96,10 @@ class NetworkConnection(model_base.BASEV2, models_v2.HasTenant):
                         primary_key=True)
 
     def __init__(self, network_id, segmentation_type, port_id,
-                 segmentation_id=None):
+                 tenant_id, segmentation_id=None):
         self.network_id = network_id
         self.port_id = port_id
+        self.tenant_id = tenant_id
         self.segmentation_type = segmentation_type
         self.segmentation_id = segmentation_id
 
@@ -224,6 +225,7 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
         try:
             with context.session.begin(subtransactions=True):
                 gw_db = self._get_network_gateway(context, network_gateway_id)
+                tenant_id = self._get_tenant_id_for_create(context, gw_db)
                 # TODO(salvatore-orlando): This will give the port a fixed_ip,
                 # but we actually do not need any. Instead of wasting an IP we
                 # should have a way to say a port shall not be associated with
@@ -236,7 +238,7 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
                     # passed in the port structure to the plugin
                     port = self.create_port(context, {
                         'port':
-                        {'tenant_id': gw_db['tenant_id'],
+                        {'tenant_id': tenant_id,
                          'network_id': network_id,
                          'mac_address': attributes.ATTR_NOT_SPECIFIED,
                          'admin_state_up': True,
@@ -260,6 +262,7 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
                             % locals()))
                 # Create NetworkConnection record
                 network_mapping_info['port_id'] = port_id
+                network_mapping_info['tenant_id'] = tenant_id
                 gw_db.network_connections.append(
                     NetworkConnection(**network_mapping_info))
                 # now deallocate the ip from the port
@@ -293,7 +296,8 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
             # Uniquely identify connection, otherwise raise
             filters = {'network_gateway_id': [network_gateway_id]}
             for k, v in network_mapping_info.iteritems():
-                filters[k] = [v]
+                if v:
+                    filters[k] = [v]
             net_connections = self._get_collection(
                 context, NetworkConnection, lambda x, _1: x, filters=filters)
             if not net_connections:
