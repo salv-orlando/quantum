@@ -21,6 +21,7 @@ import mock
 import os
 import random
 import unittest2
+import sqlalchemy as sa
 import webob.exc
 
 import quantum

@@ -101,7 +101,7 @@ setuptools.setup(
     scripts=ProjectScripts,
     install_requires=requires,
     dependency_links=depend_links,
-    include_package_data=False,
+    include_package_data=True,
     setup_requires=['setuptools_git>=0.4'],
     packages=setuptools.find_packages('.'),
     cmdclass=setup.get_cmdclass(),
@@ -126,7 +126,8 @@ setuptools.setup(
             'quantum-debug = quantum.debug.shell:main',
             'quantum-ovs-cleanup = quantum.agent.ovs_cleanup_util:main',
             ('check-nvp-config = '
-             'quantum.plugins.nicira.nicira_nvp_plugin.check_nvp_config:main')
+             'quantum.plugins.nicira.nicira_nvp_plugin.check_nvp_config:main'),
+            'quantum-db-manage = quantum.db.migration.cli:main',
         ]
     },
 )
