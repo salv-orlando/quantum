@@ -60,7 +60,8 @@ class Router(model_base.BASEV2, models_v2.HasId, models_v2.HasTenant):
     status = sa.Column(sa.String(16))
     admin_state_up = sa.Column(sa.Boolean)
     gw_port_id = sa.Column(sa.String(36), sa.ForeignKey('ports.id'))
-    gw_port = orm.relationship(models_v2.Port)
+    gw_port = orm.relationship(models_v2.Port,
+                               cascade="delete,all")
 
 
 class ExternalNetwork(model_base.BASEV2):
@@ -210,7 +211,6 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
                  'device_owner': DEVICE_OWNER_ROUTER_GW,
                  'admin_state_up': True,
                  'name': ''}})
-
             if not len(gw_port['fixed_ips']):
                 self.delete_port(context.elevated(), gw_port['id'],
                                  l3_port_check=False)

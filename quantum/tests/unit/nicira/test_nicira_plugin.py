@@ -19,6 +19,7 @@ import os
 import mock
 import webob.exc
 
+from quantum.common import exceptions as q_exc
 import quantum.common.test_lib as test_lib
 from quantum import context
 from quantum.extensions import providernet as pnet
@@ -257,7 +258,45 @@ class TestNiciraPortSecurity(psec.TestPortSecurity,
 
 class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
                               NiciraPluginV2TestCase):
-    pass
+
+    def test_floatingip_with_assoc_fails(self):
+        fmt = 'json'
+        with self.subnet(cidr='200.0.0.1/24') as public_sub:
+            self._set_net_external(public_sub['subnet']['network_id'])
+            with self.port() as private_port:
+                with self.router() as r:
+                    sid = private_port['port']['fixed_ips'][0]['subnet_id']
+                    private_sub = {'subnet': {'id': sid}}
+                    self._add_external_gateway_to_router(
+                        r['router']['id'],
+                        public_sub['subnet']['network_id'])
+                    self._router_interface_action('add', r['router']['id'],
+                                                  private_sub['subnet']['id'],
+                                                  None)
+                    PLUGIN_CLASS = ('quantum.plugins.nicira.nicira_nvp_plugin.'
+                                    'QuantumPlugin.NvpPluginV2')
+                    METHOD = PLUGIN_CLASS + '._update_fip_assoc'
+                    with mock.patch(METHOD) as pl:
+                        pl.side_effect = q_exc.BadRequest(
+                            resource='floatingip',
+                            msg='fake_error')
+                        res = self._create_floatingip(
+                            fmt,
+                            public_sub['subnet']['network_id'],
+                            port_id=private_port['port']['id'])
+                        self.assertEqual(res.status_int, 400)
+
+                    for p in self._list('ports')['ports']:
+                        if p['device_owner'] == 'network:floatingip':
+                            self.fail('garbage port is not deleted')
+
+                    self._remove_external_gateway_from_router(
+                        r['router']['id'],
+                        public_sub['subnet']['network_id'])
+                    self._router_interface_action('remove',
+                                                  r['router']['id'],
+                                                  private_sub['subnet']['id'],
+                                                  None)
 
 
 class TestNiciraQoSQueue(test_nvp_qos.TestNvpQoS,

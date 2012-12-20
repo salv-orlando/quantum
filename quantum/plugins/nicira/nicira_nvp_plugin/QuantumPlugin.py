@@ -2031,11 +2031,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         except NvpApiClient.NvpApiException:
             raise nvp_exc.NvpPluginException(
                 err_desc="Unable to create logical router on NVP Platform")
-        if not has_gw_info:
-            fake_port_data = {'fake_ext_gw': True}
-            self._create_and_attach_router_port(
-                cluster, context, lrouter['uuid'], fake_port_data,
-                "L3GatewayAttachment", cluster.default_l3_gw_service_uuid)
+        # Create the port here - and update it later if we have gw_info
+        self._create_and_attach_router_port(
+            cluster, context, lrouter['uuid'], {'fake_ext_gw': True},
+            "L3GatewayAttachment", cluster.default_l3_gw_service_uuid)
 
         with context.session.begin(subtransactions=True):
             router_db = l3_db.Router(id=lrouter['uuid'],
