@@ -99,8 +99,8 @@ def main(argv):
                        controller.get('api_redirect_interval'))
                 print "\tcluster uuid: %s" % controller.get('uuid')
                 print "\tapi_mode: %s" % controller.get('api_mode')
-                print ("\tdefault_l3_gw_uuid: %s" %
-                       controller.get('default_l3_gw_uuid'))
+                print ("\tdefault_l3_gw_service_uuid: %s" %
+                       controller.get('default_l3_gw_service_uuid'))
             print ("\n-----controller %d------\n" % (i + 1))
             test_controller(cluster, controller)
             display_controller_info(controller)
