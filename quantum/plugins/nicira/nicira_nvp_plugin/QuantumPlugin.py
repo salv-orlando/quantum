@@ -2439,8 +2439,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             for fixed_ip in internal_port['fixed_ips']:
                 if fixed_ip['ip_address'] == fip_db.fixed_ip_address:
                     internal_subnet_id = fixed_ip['subnet_id']
-            router_id = self._get_router_for_internal_subnet(
-                context, internal_port, internal_subnet_id)
+            router_id = self._get_router_for_floatingip(
+                context, internal_port, internal_subnet_id,
+                fip_db.floating_network_id)
             self._retrieve_and_delete_nat_rules(fip_db.floating_ip_address,
                                                 fip_db.fixed_ip_address,
                                                 router_id,
@@ -2457,8 +2458,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             for fixed_ip in internal_port['fixed_ips']:
                 if fixed_ip['ip_address'] == fip_db.fixed_ip_address:
                     internal_subnet_id = fixed_ip['subnet_id']
-            router_id = self._get_router_for_internal_subnet(
-                context, internal_port, internal_subnet_id)
+            router_id = self._get_router_for_floatingip(
+                context, internal_port, internal_subnet_id,
+                fip_db.floating_network_id)
             self._retrieve_and_delete_nat_rules(fip_db.floating_ip_address,
                                                 fip_db.fixed_ip_address,
                                                 router_id,
