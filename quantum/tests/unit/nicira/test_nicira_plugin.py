@@ -12,7 +12,7 @@
 # implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import contextlib
 import logging
 import os
 
@@ -22,6 +22,7 @@ import webob.exc
 from quantum.common import exceptions as q_exc
 import quantum.common.test_lib as test_lib
 from quantum import context
+from quantum.extensions import nvp_qos
 from quantum.extensions import providernet as pnet
 from quantum import manager
 from quantum.openstack.common import cfg
@@ -32,7 +33,7 @@ import quantum.tests.unit.nicira.test_networkgw as test_l2_gw
 import quantum.tests.unit.test_db_plugin as test_plugin
 import quantum.tests.unit.test_extension_security_group as ext_sg
 import quantum.tests.unit.test_l3_plugin as test_l3_plugin
-import quantum.tests.unit.test_extension_nvp_qos as test_nvp_qos
+from quantum.tests.unit import test_extensions
 import quantum.tests.unit.test_extension_port_security as psec
 
 LOG = logging.getLogger(__name__)
@@ -86,30 +87,160 @@ class NiciraPluginV2TestCase(test_plugin.QuantumDbPluginV2TestCase):
         self.mock_nvpapi.stop()
 
 
-class NiciraQoSQueueTestCase(test_nvp_qos.NvpQoSTestCase):
+class NvpQoSTestExtensionManager(object):
 
-    _plugin_name = ('%s.QuantumPlugin.NvpPluginV2' % NICIRA_PKG_PATH)
+    def get_resources(self):
+        return nvp_qos.Nvp_qos.get_resources()
 
-    def setUp(self):
-        etc_path = os.path.join(os.path.dirname(__file__), 'etc')
-        test_lib.test_config['config_files'] = [os.path.join(etc_path,
-                                                             'nvp.ini.test')]
-        # mock nvp api client
-        fc = fake_nvpapiclient.FakeClient(etc_path)
-        self.mock_nvpapi = mock.patch('%s.NvpApiClient.NVPApiHelper'
-                                      % NICIRA_PKG_PATH, autospec=True)
-        instance = self.mock_nvpapi.start()
-        instance.return_value.login.return_value = "the_cookie"
+    def get_actions(self):
+        return []
 
-        def _fake_request(*args, **kwargs):
-            return fc.fake_request(*args, **kwargs)
+    def get_request_extensions(self):
+        return []
 
-        instance.return_value.request.side_effect = _fake_request
-        super(NiciraQoSQueueTestCase, self).setUp(self._plugin_name)
 
-    def tearDown(self):
-        super(NiciraQoSQueueTestCase, self).tearDown()
-        self.mock_nvpapi.stop()
+class TestNiciraQoSQueue(NiciraPluginV2TestCase):
+
+    def setUp(self, plugin=None):
+        super(TestNiciraQoSQueue, self).setUp()
+        ext_mgr = NvpQoSTestExtensionManager()
+        self.ext_api = test_extensions.setup_extensions_middleware(ext_mgr)
+
+    def _create_qos_queue(self, fmt, body):
+        qos_queue = self.new_create_request('qos-queues', body)
+        return qos_queue.get_response(self.ext_api)
+
+    @contextlib.contextmanager
+    def qos_queue(self, name='foo', min='0', max=None,
+                  qos_marking=None, dscp='0', default=None, no_delete=False):
+
+        body = {'qos_queue': {'tenant_id': 'tenant',
+                              'name': name,
+                              'min': min}}
+
+        if max:
+            body['qos_queue']['max'] = max
+        if qos_marking:
+            body['qos_queue']['qos_marking'] = qos_marking
+        if dscp:
+            body['qos_queue']['dscp'] = dscp
+        if default:
+            body['qos_queue']['default'] = default
+
+        res = self._create_qos_queue('json', body)
+        qos_queue = self.deserialize('json', res)
+        if res.status_int >= 400:
+            raise webob.exc.HTTPClientError(code=res.status_int)
+        yield qos_queue
+        if not no_delete:
+            self._delete('qos-queues',
+                         qos_queue['qos_queue']['id'])
+
+    def test_create_qos_queue(self):
+        with self.qos_queue(name='fake_lqueue', min=34, max=44,
+                            qos_marking='untrusted', default=False) as q:
+            self.assertEquals(q['qos_queue']['name'], 'fake_lqueue')
+            self.assertEquals(q['qos_queue']['min'], 34)
+            self.assertEquals(q['qos_queue']['max'], 44)
+            self.assertEquals(q['qos_queue']['qos_marking'], 'untrusted')
+            self.assertEquals(q['qos_queue']['default'], False)
+
+    def test_create_qos_queue_default(self):
+        with self.qos_queue(default=True) as q:
+            self.assertEquals(q['qos_queue']['default'], True)
+
+    def test_create_qos_queue_two_default_queues_fail(self):
+        with self.qos_queue(default=True):
+            body = {'qos_queue': {'tenant_id': 'tenant',
+                                  'name': 'second_default_queue',
+                                  'default': True}}
+            res = self._create_qos_queue('json', body)
+            self.assertEquals(res.status_int, 409)
+
+    def test_create_port_with_queue(self):
+        with self.qos_queue(default=True) as q1:
+            res = self._create_network('json', 'net1', True,
+                                       arg_list=(nvp_qos.QUEUE,),
+                                       queue_id=q1['qos_queue']['id'])
+            net1 = self.deserialize('json', res)
+            self.assertEquals(net1['network'][nvp_qos.QUEUE],
+                              q1['qos_queue']['id'])
+            device_id = "00fff4d0-e4a8-4a3a-8906-4c4cdafb59f1"
+            with self.port(device_id=device_id) as p:
+                self.assertEquals(len(p['port'][nvp_qos.QUEUE]), 36)
+
+    def test_create_shared_queue_networks(self):
+        with self.qos_queue(default=True, no_delete=True) as q1:
+            res = self._create_network('json', 'net1', True,
+                                       arg_list=(nvp_qos.QUEUE,),
+                                       queue_id=q1['qos_queue']['id'])
+            net1 = self.deserialize('json', res)
+            self.assertEquals(net1['network'][nvp_qos.QUEUE],
+                              q1['qos_queue']['id'])
+            res = self._create_network('json', 'net2', True,
+                                       arg_list=(nvp_qos.QUEUE,),
+                                       queue_id=q1['qos_queue']['id'])
+            net2 = self.deserialize('json', res)
+            self.assertEquals(net1['network'][nvp_qos.QUEUE],
+                              q1['qos_queue']['id'])
+            device_id = "00fff4d0-e4a8-4a3a-8906-4c4cdafb59f1"
+            res = self._create_port('json', net1['network']['id'],
+                                    device_id=device_id)
+            port1 = self.deserialize('json', res)
+            res = self._create_port('json', net2['network']['id'],
+                                    device_id=device_id)
+            port2 = self.deserialize('json', res)
+            self.assertEquals(port1['port'][nvp_qos.QUEUE],
+                              port2['port'][nvp_qos.QUEUE])
+
+            self._delete('ports', port1['port']['id'])
+            self._delete('ports', port2['port']['id'])
+
+    def test_remove_queue_in_use_fail(self):
+        with self.qos_queue(no_delete=True) as q1:
+            res = self._create_network('json', 'net1', True,
+                                       arg_list=(nvp_qos.QUEUE,),
+                                       queue_id=q1['qos_queue']['id'])
+            net1 = self.deserialize('json', res)
+            device_id = "00fff4d0-e4a8-4a3a-8906-4c4cdafb59f1"
+            res = self._create_port('json', net1['network']['id'],
+                                    device_id=device_id)
+            port = self.deserialize('json', res)
+            self._delete('qos-queues', port['port'][nvp_qos.QUEUE], 409)
+
+    def test_update_network_new_queue(self):
+        with self.qos_queue() as q1:
+            res = self._create_network('json', 'net1', True,
+                                       arg_list=(nvp_qos.QUEUE,),
+                                       queue_id=q1['qos_queue']['id'])
+            net1 = self.deserialize('json', res)
+            with self.qos_queue() as new_q:
+                data = {'network': {nvp_qos.QUEUE: new_q['qos_queue']['id']}}
+                req = self.new_update_request('networks', data,
+                                              net1['network']['id'])
+                res = req.get_response(self.api)
+                net1 = self.deserialize('json', res)
+                self.assertEquals(net1['network'][nvp_qos.QUEUE],
+                                  new_q['qos_queue']['id'])
+
+    def test_update_port_adding_device_id(self):
+        with self.qos_queue(no_delete=True) as q1:
+            res = self._create_network('json', 'net1', True,
+                                       arg_list=(nvp_qos.QUEUE,),
+                                       queue_id=q1['qos_queue']['id'])
+            net1 = self.deserialize('json', res)
+            device_id = "00fff4d0-e4a8-4a3a-8906-4c4cdafb59f1"
+            res = self._create_port('json', net1['network']['id'])
+            port = self.deserialize('json', res)
+            self.assertEquals(port['port'][nvp_qos.QUEUE], None)
+
+            data = {'port': {'device_id': device_id}}
+            req = self.new_update_request('ports', data,
+                                          port['port']['id'])
+
+            res = req.get_response(self.api)
+            port = self.deserialize('json', res)
+            self.assertEquals(len(port['port'][nvp_qos.QUEUE]), 36)
 
 
 class NiciraSecurityGroupsTestCase(ext_sg.SecurityGroupsTestCase):
@@ -138,30 +269,9 @@ class NiciraSecurityGroupsTestCase(ext_sg.SecurityGroupsTestCase):
         self.mock_nvpapi.stop()
 
 
-class NiciraPortSecurityTestCase(psec.PortSecurityTestCase):
-
-    _plugin_name = ('%s.QuantumPlugin.NvpPluginV2' % NICIRA_PKG_PATH)
-
-    def setUp(self):
-        etc_path = os.path.join(os.path.dirname(__file__), 'etc')
-        test_lib.test_config['config_files'] = [os.path.join(etc_path,
-                                                             'nvp.ini.test')]
-        # mock nvp api client
-        fc = fake_nvpapiclient.FakeClient(etc_path)
-        self.mock_nvpapi = mock.patch('%s.NvpApiClient.NVPApiHelper'
-                                      % NICIRA_PKG_PATH, autospec=True)
-        instance = self.mock_nvpapi.start()
-        instance.return_value.login.return_value = "the_cookie"
-
-        def _fake_request(*args, **kwargs):
-            return fc.fake_request(*args, **kwargs)
-
-        instance.return_value.request.side_effect = _fake_request
-        super(NiciraPortSecurityTestCase, self).setUp(self._plugin_name)
-
-    def tearDown(self):
-        super(NiciraPortSecurityTestCase, self).tearDown()
-        self.mock_nvpapi.stop()
+class NiciraPortSecurityTestCase(psec.PortSecurityTestCase,
+                                 NiciraPluginV2TestCase):
+    pass
 
 
 class TestNiciraBasicGet(test_plugin.TestBasicGet, NiciraPluginV2TestCase):
@@ -297,11 +407,6 @@ class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
                                                   r['router']['id'],
                                                   private_sub['subnet']['id'],
                                                   None)
-
-
-class TestNiciraQoSQueue(test_nvp_qos.TestNvpQoS,
-                         NiciraQoSQueueTestCase):
-    pass
 
 
 class TestNiciraNetworkGatewayTestCase(test_l2_gw.NetworkGatewayDbTestCase,
