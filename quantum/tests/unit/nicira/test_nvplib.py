@@ -62,6 +62,7 @@ class NvplibL2GatewayTestCase(unittest.TestCase):
 
     def tearDown(self):
         self.fc.reset_all()
+        self.mock_nvpapi.stop()
 
     def _create_gw_service(self, node_uuid, display_name):
         return nvplib.create_l2_gw_service(self.fake_cluster,
