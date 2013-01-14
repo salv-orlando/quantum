@@ -243,37 +243,6 @@ class TestNiciraQoSQueue(NiciraPluginV2TestCase):
             self.assertEquals(len(port['port'][nvp_qos.QUEUE]), 36)
 
 
-class NiciraSecurityGroupsTestCase(ext_sg.SecurityGroupsTestCase):
-
-    _plugin_name = ('%s.QuantumPlugin.NvpPluginV2' % NICIRA_PKG_PATH)
-
-    def setUp(self):
-        etc_path = os.path.join(os.path.dirname(__file__), 'etc')
-        test_lib.test_config['config_files'] = [os.path.join(etc_path,
-                                                             'nvp.ini.test')]
-        # mock nvp api client
-        fc = fake_nvpapiclient.FakeClient(etc_path)
-        self.mock_nvpapi = mock.patch('%s.NvpApiClient.NVPApiHelper'
-                                      % NICIRA_PKG_PATH, autospec=True)
-        instance = self.mock_nvpapi.start()
-        instance.return_value.login.return_value = "the_cookie"
-
-        def _fake_request(*args, **kwargs):
-            return fc.fake_request(*args, **kwargs)
-
-        instance.return_value.request.side_effect = _fake_request
-        super(NiciraSecurityGroupsTestCase, self).setUp(self._plugin_name)
-
-    def tearDown(self):
-        super(NiciraSecurityGroupsTestCase, self).tearDown()
-        self.mock_nvpapi.stop()
-
-
-class NiciraPortSecurityTestCase(psec.PortSecurityTestCase,
-                                 NiciraPluginV2TestCase):
-    pass
-
-
 class TestNiciraBasicGet(test_plugin.TestBasicGet, NiciraPluginV2TestCase):
     pass
 
@@ -356,13 +325,13 @@ class TestNiciraNetworksV2(test_plugin.TestNetworksV2,
         self.assertEquals(ctx_manager.exception.code, 409)
 
 
-class TestNiciraSecurityGroup(ext_sg.TestSecurityGroups,
-                              NiciraSecurityGroupsTestCase):
+class TestNiciraSecurityGroup(ext_sg.TestSecurityGroupsDB,
+                              NiciraPluginV2TestCase):
     pass
 
 
-class TestNiciraPortSecurity(psec.TestPortSecurity,
-                             NiciraPortSecurityTestCase):
+class TestNiciraPortSecurity(psec.TestPortSecurityDB,
+                             NiciraPluginV2TestCase):
     pass
 
 
