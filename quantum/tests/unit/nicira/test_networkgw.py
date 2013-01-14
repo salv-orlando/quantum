@@ -241,9 +241,10 @@ class NetworkGatewayDbTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
     def _network_gateway(self, name='gw1', devices=None,
                          fmt='json', tenant_id=_uuid()):
         kwargs = {}
-        if devices:
-            kwargs['arg_list'] = ('devices',)
-            kwargs['devices'] = devices
+        if not devices:
+            devices = [{'id': _uuid(), 'interface_name': 'xyz'}]
+        kwargs['arg_list'] = ('devices',)
+        kwargs['devices'] = devices
         res = self._create_network_gateway(fmt, tenant_id, name=name,
                                            **kwargs)
         network_gateway = self.deserialize(fmt, res)
@@ -473,21 +474,19 @@ class NetworkGatewayDbTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
                                             'vlan', 555)
 
     def test_delete_network_gateway_active_connections_returns_409(self):
-        fmt = 'json'
-        gw_res = self._create_network_gateway(fmt, _uuid(),
-                                              name='test-gw')
-        gw = self.deserialize(fmt, gw_res)
-
-        net_res = self._create_network(fmt,
-                                       'test-net',
-                                       True)
-        network = self.deserialize(fmt, net_res)
-        self._gateway_action('connect',
+        with self._network_gateway() as gw:
+            with self.network() as net_1:
+                self._gateway_action('connect',
+                                     gw[self.resource]['id'],
+                                     net_1['network']['id'],
+                                     'flat')
+                self._delete(networkgw.COLLECTION_NAME,
                              gw[self.resource]['id'],
-                             network['network']['id'],
-                             'flat')
-        self._delete(networkgw.COLLECTION_NAME, gw[self.resource]['id'],
-                     expected_code=exc.HTTPConflict.code)
+                             expected_code=exc.HTTPConflict.code)
+                self._gateway_action('disconnect',
+                                     gw[self.resource]['id'],
+                                     net_1['network']['id'],
+                                     'flat')
 
     def test_disconnect_non_existing_connection_returns_404(self):
         with self._network_gateway() as gw:

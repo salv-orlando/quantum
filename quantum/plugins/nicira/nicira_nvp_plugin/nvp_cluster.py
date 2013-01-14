@@ -57,7 +57,7 @@ class NVPCluster(object):
     def add_controller(self, ip, port, user, password, request_timeout,
                        http_timeout, retries, redirects, default_tz_uuid,
                        uuid=None, zone=None, default_l3_gw_service_uuid=None,
-                       default_l2_gw_node_uuid=None,
+                       default_l2_gw_service_uuid=None,
                        default_interface_name=None):
         """Add a new set of controller parameters.
 
@@ -74,12 +74,12 @@ class NVPCluster(object):
         :param uuid: UUID of this cluster (used in MDI configs).
         :param zone: Zone of this cluster (used in MDI configs).
         :param default_l3_gw_service_uuid: Default l3 gateway service
-        :param default_l2_gw_node_uuid: Default l2 gateway service
+        :param default_l2_gw_service_uuid: Default l2 gateway service
         :param default_interface_name: Default interface name for l2 gateways
         """
 
         keys = ['ip', 'user', 'password', 'default_tz_uuid',
-                'default_l3_gw_service_uuid', 'default_l2_gw_node_uuid',
+                'default_l3_gw_service_uuid', 'default_l2_gw_service_uuid',
                 'default_interface_name', 'uuid', 'zone']
         controller_dict = dict([(k, locals()[k]) for k in keys])
         if not re.match(attributes.UUID_PATTERN,
@@ -98,14 +98,14 @@ class NVPCluster(object):
                         "not work properly in this cluster",
                         controller_dict.get('default_l3_gw_service_uuid'),
                         self.name)
-        # default_l2_gw_node_uuid is an optional parameter
+        # default_l2_gw_service_uuid is an optional parameter
         # validate only if specified
-        l2_gw_uuid = controller_dict.get('default_l2_gw_node_uuid')
+        l2_gw_uuid = controller_dict.get('default_l2_gw_service_uuid')
         if l2_gw_uuid and not re.match(attributes.UUID_PATTERN, l2_gw_uuid):
-            LOG.warning("default_l2_gw_node_uuid:%s is not a valid UUID in "
+            LOG.warning("default_l2_gw_service_uuid:%s is not a valid UUID in "
                         "the cluster %s. Network gateways operations might "
                         "not work properly in this cluster",
-                        controller_dict.get('default_l2_gw_node_uuid'),
+                        controller_dict.get('default_l2_gw_service_uuid'),
                         self.name)
 
         int_keys = [
@@ -170,8 +170,8 @@ class NVPCluster(object):
         return self.controllers[0]['default_l3_gw_service_uuid']
 
     @property
-    def default_l2_gw_node_uuid(self):
-        return self.controllers[0]['default_l2_gw_node_uuid']
+    def default_l2_gw_service_uuid(self):
+        return self.controllers[0]['default_l2_gw_service_uuid']
 
     @property
     def default_interface_name(self):

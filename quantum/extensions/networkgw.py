@@ -44,7 +44,6 @@ RESOURCE_ATTRIBUTE_MAP = {
                  'is_visible': True, 'default': ''},
         'devices': {'allow_post': True, 'allow_put': False,
                     'validate': {'type:device_list': None},
-                    'default': None,
                     'is_visible': True},
         'tenant_id': {'allow_post': True, 'allow_put': False,
                       'required_by_policy': True,
@@ -55,9 +54,13 @@ RESOURCE_ATTRIBUTE_MAP = {
 
 def _validate_device_list(data, valid_values=None):
     """ Validate the list of service definitions. """
-    # None is fine
     if not data:
-        return
+        # Devices must be provided
+        msg = _("Cannot create a gateway with an empty device list")
+        LOG.error(_("%(f_name)s:%(msg)s"),
+                  {'f_name': _validate_device_list.__name__,
+                   'msg': msg})
+        return msg
     try:
         for device in data:
             try:
@@ -74,9 +77,12 @@ def _validate_device_list(data, valid_values=None):
             except TypeError:
                 LOG.exception(_("Exception while parsing device definition:%s"
                               % device))
-                return _("%s: Was expecting a dict for device definition, "
-                         "found the following: %s" %
-                         (_validate_device_list.__name__, device))
+                msg = _("Was expecting a dict for device definition, "
+                        "found the following: %s") % device
+                LOG.error(_("%(f_name)s:%(msg)s"),
+                          {'f_name': _validate_device_list.__name__,
+                           'msg': msg})
+                return msg
     except TypeError:
         return _("%s: provided data are not iterable" %
                  _validate_device_list.__name__)

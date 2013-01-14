@@ -136,7 +136,7 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
 
     def _make_network_gateway_dict(self, network_gateway, fields=None):
         device_list = []
-        for d in network_gateway.devices:
+        for d in network_gateway['devices']:
             device_list.append({'id': d['id'],
                                 'interface_name': d['interface_name']})
         res = {'id': network_gateway['id'],
@@ -180,9 +180,8 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
                 id=gw_data.get('id') or utils.str_uuid(),
                 tenant_id=tenant_id,
                 name=gw_data.get('name'))
-            # Create records for gateway devices
-            devices = gw_data.get('devices') or []
-            for device in devices:
+            # Device list is guaranteed to be a valid list
+            for device in gw_data['devices']:
                 gw_db.devices.append(
                     NetworkGatewayDevice(**device))
             context.session.add(gw_db)

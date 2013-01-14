@@ -28,14 +28,13 @@ import webob.exc
 # FIXME(salvatore-orlando): get rid of relative imports
 from common import config
 from nvp_plugin_version import PLUGIN_VERSION
-from sqlalchemy.orm import exc as sa_exc
+from sqlalchemy.orm import exc as sa_orm_exc
 
 from quantum.api.v2 import attributes
 from quantum.api.v2 import base
 from quantum.common import constants
 from quantum.common import exceptions as q_exc
 from quantum.common import topics
-from quantum.common import utils
 from quantum.db import api as db
 from quantum.db import db_base_plugin_v2
 from quantum.db import dhcp_rpc_base
@@ -115,8 +114,8 @@ def parse_config():
              nvp_conf[cluster_name].nvp_controller_connection,
              'default_l3_gw_service_uuid':
              nvp_conf[cluster_name].default_l3_gw_service_uuid,
-             'default_l2_gw_node_uuid':
-             nvp_conf[cluster_name].default_l2_gw_node_uuid,
+             'default_l2_gw_service_uuid':
+             nvp_conf[cluster_name].default_l2_gw_service_uuid,
              'default_interface_name':
              nvp_conf[cluster_name].default_interface_name,
              },)
@@ -142,7 +141,7 @@ def parse_clusters_opts(clusters_opts, concurrent_connections,
                                  c_opts['nvp_cluster_uuid'],
                                  c_opts['nova_zone_id'],
                                  c_opts['default_l3_gw_service_uuid'],
-                                 c_opts['default_l2_gw_node_uuid'],
+                                 c_opts['default_l2_gw_service_uuid'],
                                  c_opts['default_interface_name']])
                     cluster.add_controller(*args)
                 except Exception:
@@ -283,6 +282,25 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self._extend_fault_map()
         # Set up RPC interface for DHCP agent
         self.setup_rpc()
+
+    def _make_default_l2_gw_dict(self):
+        # Create a network gw dict representing the default
+        # service in NVP (no corresponding Quantum record)
+        # No need to expose device list to caller
+        return {'id': self.default_cluster.default_l2_gw_service_uuid,
+                'name': 'default L2 gateway service',
+                'devices': []}
+
+    def _get_network_gateway(self, context, gw_id):
+        """ Augments the superclass method by taking into account the
+            default gateway service which might have been specified
+            in nvp.ini
+        """
+        if gw_id == self.default_cluster.default_l2_gw_service_uuid:
+            return self._make_default_l2_gw_dict()
+
+        return super(NvpPluginV2, self)._get_network_gateway(context,
+                                                             gw_id)
 
     def _nvp_lqueue(self, queue):
         """Convert fields to nvp fields."""
@@ -2394,7 +2412,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 port_qry.filter_by(fixed_port_id=fip['port_id']).one()
                 raise l3.FloatingIPPortAlreadyAssociated(
                     port_id=fip['port_id'])
-            except sa_exc.NoResultFound:
+            except sa_orm_exc.NoResultFound:
                 pass
             port_id, internal_ip, router_id = self.get_assoc_data(
                 context,
@@ -2501,8 +2519,16 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             fip_db.update({'fixed_port_id': None,
                            'fixed_ip_address': None,
                            'router_id': None})
-        except sa_exc.NoResultFound:
+        except sa_orm_exc.NoResultFound:
             return
+
+    def get_network_gateways(self, context, filters=None, fields=None):
+        nw_gateways = super(NvpPluginV2, self).get_network_gateways(context,
+                                                                    filters,
+                                                                    fields)
+        if self.default_cluster.default_l2_gw_service_uuid:
+            nw_gateways.append(self._make_default_l2_gw_dict())
+        return nw_gateways
 
     def create_network_gateway(self, context, network_gateway):
         """ Create a layer-2 network gateway
@@ -2514,15 +2540,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         tenant_id = self._get_tenant_id_for_create(context, gw_data)
         cluster = self._find_target_cluster(gw_data)
         devices = gw_data['devices']
-        if not devices:
-            devices = [{'id': cluster.default_l2_gw_node_uuid,
-                        'interface_name': cluster.default_interface_name}]
         # Populate default physical network where not specified
         for device in devices:
             if not device.get('interface_name'):
                 device['interface_name'] = cluster.default_interface_name
-        # Ensure data go back to data structure to be inserted into QuantumDB
-        gw_data['devices'] = devices
         nvp_res = nvplib.create_l2_gw_service(cluster, tenant_id,
                                               gw_data['name'],
                                               devices)
@@ -2543,22 +2564,13 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         structures in Quantum datase
         """
         with context.session.begin(subtransactions=True):
-            super(NvpPluginV2, self).delete_network_gateway(context, id)
-            # If removal is successful in Quantum it should be so on
-            # the NVP platform too - otherwise the transaction should
-            # be automatically aborted
             try:
+                super(NvpPluginV2, self).delete_network_gateway(context, id)
                 nvplib.delete_l2_gw_service(self.default_cluster, id)
-            except NvpApiClient.ResourceNotFound:
-                raise nvp_exc.NvpPluginException(
-                    err_desc=("Network gateway service '%s' not found "
-                              "on NVP Platform" % id))
             except NvpApiClient.NvpApiException:
+                # Do not cause a 500 to be returned to the user
                 LOG.exception(_("Unable to remove gateway service from "
-                                "NVP plaform"))
-                raise nvp_exc.NvpPluginException(
-                    err_desc=_("There was an internal error while removing "
-                               "the network gateway '%s'" % id))
+                                "NVP plaform - stale gateway on NVP"))
 
     def get_plugin_version(self):
         return PLUGIN_VERSION
