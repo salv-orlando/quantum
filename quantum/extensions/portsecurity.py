@@ -50,7 +50,7 @@ class PortSecurityUpdateNotAdmin(qexception.InvalidExtenstionEnv):
 
 
 class PortSecurityBindingNotFound(qexception.NotFound):
-    message = _("Port Security binding not found for port (port_id)s")
+    message = _("Port Security binding not found for port %(port_id)s")
 
 
 class PortSecurityNotEnabled(qexception.InvalidInput):
