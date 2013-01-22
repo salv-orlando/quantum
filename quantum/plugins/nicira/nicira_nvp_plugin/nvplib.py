@@ -252,6 +252,7 @@ def create_lswitch(cluster, tenant_id, display_name,
                    transport_zone_uuid=None,
                    vlan_id=None,
                    quantum_net_id=None,
+                   shared=None,
                    **kwargs):
     nvp_binding_type = transport_type
     if transport_type in ('flat', 'vlan'):
@@ -271,6 +272,9 @@ def create_lswitch(cluster, tenant_id, display_name,
     if quantum_net_id:
         lswitch_obj["tags"].append({"tag": quantum_net_id,
                                     "scope": "quantum_net_id"})
+    if shared:
+        lswitch_obj["tags"].append({"tag": "true",
+                                    "scope": "shared"})
     if "tags" in kwargs:
         lswitch_obj["tags"].extend(kwargs["tags"])
     uri = _build_uri_path(LSWITCH_RESOURCE)
@@ -288,7 +292,7 @@ def create_lswitch(cluster, tenant_id, display_name,
 def update_lswitch(cluster, lswitch, display_name, tenant_id=None, **kwargs):
     uri = _build_uri_path(LSWITCH_RESOURCE, resource_id=lswitch)
     lswitch_obj = {"display_name": display_name}
-    tags = kwargs.get('tags', [])
+    tags = kwargs.get('tags') or []
     if tenant_id:
         tags.append({"tag": tenant_id, "scope": "os_tid"})
     if tags:

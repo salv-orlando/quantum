@@ -341,6 +341,19 @@ class TestNiciraNetworksV2(test_plugin.TestNetworksV2,
         net_del_res = req.get_response(self.api)
         self.assertEqual(net_del_res.status_int, 204)
 
+    def test_list_networks_with_shared(self):
+        with self.network(name='net1') as net1:
+            with self.network(name='net2', shared=True) as net2:
+                req = self.new_list_request('networks')
+                res = self.deserialize('json', req.get_response(self.api))
+                self.assertEqual(len(res['networks']), 2)
+                req_2 = self.new_list_request('networks')
+                req_2.environ['quantum.context'] = context.Context('',
+                                                                   'somebody')
+                res = self.deserialize('json', req_2.get_response(self.api))
+                # tenant must see a single network
+                self.assertEqual(len(res['networks']), 1)
+
 
 class TestNiciraSecurityGroup(ext_sg.TestSecurityGroupsDB,
                               NiciraPluginV2TestCase):

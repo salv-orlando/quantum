@@ -1202,7 +1202,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 target_cluster, tenant_id, net_data.get('name'),
                 net_data.get(pnet.NETWORK_TYPE),
                 net_data.get(pnet.PHYSICAL_NETWORK),
-                net_data.get(pnet.SEGMENTATION_ID))
+                net_data.get(pnet.SEGMENTATION_ID),
+                shared=net_data.get(attributes.SHARED))
             network['network']['id'] = lswitch['uuid']
 
         with context.session.begin(subtransactions=True):
@@ -1403,17 +1404,28 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 tenant_filter += "&tag=%s&tag_scope=os_tid" % tenant
         else:
             tenant_filter = "&tag=%s&tag_scope=os_tid" % context.tenant_id
-
+        # TODO(salvatore-orlando): encapsulate get_all_query_pages into
+        # a function for retrieving all lswitches for a given tenant
         lswitch_filters = "uuid,display_name,fabric_status,tags"
-        lswitch_url_path = (
+        lswitch_url_path_1 = (
             "/ws.v1/lswitch?fields=%s&relations=LogicalSwitchStatus%s"
             % (lswitch_filters, tenant_filter))
+        lswitch_url_path_2 = nvplib._build_uri_path(
+            nvplib.LSWITCH_RESOURCE,
+            fields=lswitch_filters,
+            relations='LogicalSwitchStatus',
+            filters={'tag': 'true', 'tag_scope': 'shared'})
         try:
             for c in self.clusters.itervalues():
                 res = nvplib.get_all_query_pages(
-                    lswitch_url_path, c)
-
+                    lswitch_url_path_1, c)
                 nvp_lswitches.extend(res)
+                # Issue a second query for fetching shared networks.
+                # We cannot unfortunately use just a single query because tags
+                # cannot be or-ed
+                res_shared = nvplib.get_all_query_pages(
+                    lswitch_url_path_2, c)
+                nvp_lswitches.extend(res_shared)
         except Exception:
             err_msg = "Unable to get logical switches"
             LOG.exception(err_msg)
@@ -1510,12 +1522,18 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         params["network"] = network["network"]
         pairs = self._get_lswitch_cluster_pairs(id, context.tenant_id)
 
-        #Only field to update in NVP is name
-        if network['network'].get("name"):
+        #Goto to NVP only if name or shared were updated
+        if len(set(network['network'].keys()) & set(('name', 'shared'))) > 0:
+            net_db_dict = dict(self._get_network(context, id))
+            net_db_dict.update(network['network'])
             for (cluster, switches) in pairs:
                 for switch in switches:
+                    tags = None
+                    if net_db_dict['shared']:
+                        tags = [{'tag': 'true', 'scope': 'shared'}]
                     nvplib.update_lswitch(cluster, switch,
-                                          network['network']['name'])
+                                          net_db_dict['name'],
+                                          tags=tags)
 
         LOG.debug("update_network() completed for tenant: %s" %
                   context.tenant_id)
