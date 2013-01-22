@@ -20,7 +20,7 @@
 import logging
 
 import sqlalchemy as sa
-from sqlalchemy import exceptions as sa_exc
+from sqlalchemy import exc as sa_exc
 from sqlalchemy import orm
 from webob import exc as web_exc
 

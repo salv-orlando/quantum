@@ -1611,30 +1611,36 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             # such port is not mapped to a logical switch - ie: floating ip
             if quantum_lport['device_owner'] in (l3_db.DEVICE_OWNER_FLOATINGIP,
                                                  l3_db.DEVICE_OWNER_ROUTER_GW):
-                lports.append(quantum_lport)
-                continue
-            try:
-                quantum_lport["admin_state_up"] = (
-                    nvp_lports[quantum_lport["id"]]["admin_status_enabled"])
-
-                quantum_lport["name"] = (
-                    nvp_lports[quantum_lport["id"]]["display_name"])
-
-                self._extend_port_dict_security_group(context, quantum_lport)
-                self._extend_port_dict_port_security(context, quantum_lport)
-
-                if (nvp_lports[quantum_lport["id"]]
-                        ["_relations"]
-                        ["LogicalPortStatus"]
-                        ["fabric_status_up"]):
-                    quantum_lport["status"] = constants.PORT_STATUS_ACTIVE
+                nvp_lport = nvp_lports.get(quantum_lport["id"])
+                if not nvp_lport:
+                    quantum_lport['status'] = constants.PORT_STATUS_ERROR
+                    quantum_lport['admin_state_up'] = False
                 else:
-                    quantum_lport["status"] = constants.PORT_STATUS_DOWN
+                    try:
+                        quantum_lport["admin_state_up"] = (
+                            nvp_lport["admin_status_enabled"])
+                        quantum_lport["name"] = nvp_lport["display_name"]
+                        self._extend_port_dict_security_group(context,
+                                                              quantum_lport)
+                        self._extend_port_dict_port_security(context,
+                                                             quantum_lport)
+                        if (nvp_lport["_relations"]
+                                ["LogicalPortStatus"]
+                                ["fabric_status_up"]):
+                            quantum_lport["status"] = (
+                                constants.PORT_STATUS_ACTIVE)
+                        else:
+                            quantum_lport["status"] = (
+                                constants.PORT_STATUS_DOWN)
 
-                del nvp_lports[quantum_lport["id"]]
-                lports.append(quantum_lport)
-            except KeyError:
-                pass
+                        # This won't raise a keyError for sure
+                        del nvp_lports[quantum_lport["id"]]
+                    except KeyError:
+                        # if this occurred some expected nvp attribute was not
+                        # found. Raise an error
+                        LOG.exception("Unable to fetch status from NVP lport")
+                        raise
+            lports.append(quantum_lport)
 
         # do not make the case in which ports are found in NVP
         # but not in Quantum catastrophic.
@@ -1945,8 +1951,13 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         with context.session.begin(subtransactions=True):
             if (cfg.CONF.metadata_dhcp_host_route and
                 quantum_db_port.device_owner == 'network:dhcp'):
+                try:
+                    ip_address = quantum_db_port.fixed_ips[0]
                     self._ensure_metadata_host_route(
-                        context, quantum_db_port.fixed_ips[0], is_delete=True)
+                        context, ip_address, is_delete=True)
+                except IndexError:
+                    LOG.debug(_("IP Address was already removed from DHCP "
+                                "port. No metadata host route to delete."))
             super(NvpPluginV2, self).delete_port(context, id)
 
             # Delete qos queue if possible

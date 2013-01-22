@@ -324,6 +324,23 @@ class TestNiciraNetworksV2(test_plugin.TestNetworksV2,
             self._test_create_bridge_network(vlan_id=vlan_id)
         self.assertEquals(ctx_manager.exception.code, 409)
 
+    def test_delete_network_after_removing_subet(self):
+        gateway_ip = '10.0.0.1'
+        cidr = '10.0.0.0/24'
+        fmt = 'json'
+        # Create new network
+        res = self._create_network(fmt=fmt, name='net',
+                                   admin_status_up=True)
+        network = self.deserialize(fmt, res)
+        subnet = self._make_subnet(fmt, network, gateway_ip,
+                                   cidr, ip_version=4)
+        req = self.new_delete_request('subnets', subnet['subnet']['id'])
+        sub_del_res = req.get_response(self.api)
+        self.assertEqual(sub_del_res.status_int, 204)
+        req = self.new_delete_request('networks', network['network']['id'])
+        net_del_res = req.get_response(self.api)
+        self.assertEqual(net_del_res.status_int, 204)
+
 
 class TestNiciraSecurityGroup(ext_sg.TestSecurityGroupsDB,
                               NiciraPluginV2TestCase):
