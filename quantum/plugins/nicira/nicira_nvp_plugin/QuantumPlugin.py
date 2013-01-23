@@ -2512,18 +2512,23 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         Remove the gateway service from NVP platform and corresponding data
         structures in Quantum datase
         """
-        try:
-            # TODO: Cluster-selection in multi-cluster environments
-            cluster = self.default_cluster
-            nvplib.delete_l2_gw_service(cluster, id)
-            return super(NvpPluginV2, self).delete_network_gateway(
-                context, id)
-        except NvpApiClient.NvpApiException:
-            LOG.exception(_("Unable to remove gateway service from "
-                            "NVP plaform"))
-            raise nvp_exc.NvpPluginException(
-                err_desc=_("There was an internal error while removing the "
-                           "network gateways '%s'" % id))
+        with context.session.begin(subtransactions=True):
+            super(NvpPluginV2, self).delete_network_gateway(context, id)
+            # If removal is successful in Quantum it should be so on
+            # the NVP platform too - otherwise the transaction should
+            # be automatically aborted
+            try:
+                nvplib.delete_l2_gw_service(self.default_cluster, id)
+            except NvpApiClient.ResourceNotFound:
+                raise nvp_exc.NvpPluginException(
+                    err_desc=("Network gateway service '%s' not found "
+                              "on NVP Platform" % id))
+            except NvpApiClient.NvpApiException:
+                LOG.exception(_("Unable to remove gateway service from "
+                                "NVP plaform"))
+                raise nvp_exc.NvpPluginException(
+                    err_desc=_("There was an internal error while removing "
+                               "the network gateway '%s'" % id))
 
     def get_plugin_version(self):
         return PLUGIN_VERSION
