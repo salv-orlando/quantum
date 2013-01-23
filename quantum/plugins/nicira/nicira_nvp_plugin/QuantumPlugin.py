@@ -1609,7 +1609,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         for quantum_lport in quantum_lports:
             # if a quantum port is not found in NVP, this migth be because
             # such port is not mapped to a logical switch - ie: floating ip
-            if quantum_lport['device_owner'] == l3_db.DEVICE_OWNER_FLOATINGIP:
+            if quantum_lport['device_owner'] in (l3_db.DEVICE_OWNER_FLOATINGIP,
+                                                 l3_db.DEVICE_OWNER_ROUTER_GW):
                 lports.append(quantum_lport)
                 continue
             try:
