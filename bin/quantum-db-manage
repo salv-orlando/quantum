@@ -20,7 +20,8 @@ import os
 import sys
 sys.path.insert(0, os.getcwd())
 
+from quantum.db.migration import cli
 from quantum.db.migration.cli import main
 
-
+print cli.__file__
 main()

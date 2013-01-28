@@ -30,7 +30,7 @@ Create Date: 2012-12-18 12:32:04.482477
 
 # revision identifiers, used by Alembic.
 revision = '5a875d0e5c'
-down_revision = 'folsom'
+down_revision = 'nicira-folsom'
 
 # Change to ['*'] if this migration applies to all plugins
 
