@@ -16,12 +16,12 @@
 # @author: Salvatore Orlando, VMware
 
 import json
-import logging
 import os
 import unittest2 as unittest
 
 import mock
 
+from quantum.openstack.common import log as logging
 from quantum.plugins.nicira.nicira_nvp_plugin import NvpApiClient
 from quantum.plugins.nicira.nicira_nvp_plugin import nvp_cluster
 from quantum.plugins.nicira.nicira_nvp_plugin import nvplib
@@ -43,7 +43,6 @@ class NvplibL2GatewayTestCase(unittest.TestCase):
         self.mock_nvpapi = mock.patch('%s.NvpApiClient.NVPApiHelper'
                                       % NICIRA_PKG_PATH, autospec=True)
         instance = self.mock_nvpapi.start()
-        instance.return_value.login.return_value = "the_cookie"
 
         def _fake_request(*args, **kwargs):
             return self.fc.fake_request(*args, **kwargs)
@@ -145,3 +144,34 @@ class NvplibL2GatewayTestCase(unittest.TestCase):
         self.assertIn('LogicalPortAttachment', resp_obj)
         self.assertEquals(resp_obj['LogicalPortAttachment']['type'],
                           'L2GatewayAttachment')
+
+    def _test_create_lrouter_dnat_rule(self, func):
+        tenant_id = 'pippo'
+        lrouter = nvplib.create_lrouter(self.fake_cluster,
+                                        tenant_id,
+                                        'fake_router',
+                                        '192.168.0.1')
+        nat_rule = func(self.fake_cluster, lrouter['uuid'], '10.0.0.99',
+                        match_criteria={'destination_ip_addresses':
+                                        '192.168.0.5'})
+        uri = nvplib._build_uri_path(nvplib.LROUTERNAT_RESOURCE,
+                                     nat_rule['uuid'],
+                                     lrouter['uuid'])
+        return json.loads(nvplib.do_single_request("GET", uri,
+                                                   cluster=self.fake_cluster))
+
+    def test_create_lrouter_dnat_rule_v2(self):
+        resp_obj = self._test_create_lrouter_dnat_rule(
+            nvplib.create_lrouter_dnat_rule_v2)
+        self.assertEquals('DestinationNatRule', resp_obj['type'])
+        self.assertEquals('192.168.0.5',
+                          resp_obj['match']['destination_ip_addresses'])
+
+    def test_create_lrouter_dnat_rule_v3(self):
+        resp_obj = self._test_create_lrouter_dnat_rule(
+            nvplib.create_lrouter_dnat_rule_v2)
+        # TODO(salvatore-orlando): Extend FakeNVPApiClient to deal with
+        # different versions of NVP API
+        self.assertEquals('DestinationNatRule', resp_obj['type'])
+        self.assertEquals('192.168.0.5',
+                          resp_obj['match']['destination_ip_addresses'])
