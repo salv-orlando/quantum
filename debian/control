@@ -5,7 +5,8 @@ Maintainer: Chuck Short <zulcss@ubuntu.com>
 Build-Depends: debhelper (>= 8.0.0),
                python-all (>= 2.6),
                python-all-dev (>= 2.6.6-3~)
-Build-Depends-Indep: pep8,
+Build-Depends-Indep: alembic (>= 0.4.1),
+ pep8,
  python-amqplib,
  python-anyjson,
  python-cliff,
