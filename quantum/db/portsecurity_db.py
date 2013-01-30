@@ -35,7 +35,8 @@ class PortSecurityBinding(model_base.BASEV2):
     port_id = sa.Column(sa.String(36),
                         sa.ForeignKey('ports.id', ondelete="CASCADE"),
                         primary_key=True)
-    security_type = sa.Column(sa.Enum('off', 'mac', 'mac_ip'))
+    security_type = sa.Column(sa.Enum(
+        'off', 'mac', 'mac_ip', name='portsecuritybindings_security_type'))
 
 
 class PortSecurityDbMixin(object):

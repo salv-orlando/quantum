@@ -35,7 +35,8 @@ class QoSQueue(model_base.BASEV2, models_v2.HasId, models_v2.HasTenant):
     default = sa.Column(sa.Boolean, default=False)
     min = sa.Column(sa.Integer, nullable=False)
     max = sa.Column(sa.Integer, nullable=True)
-    qos_marking = sa.Column(sa.Enum('untrusted', 'trusted'))
+    qos_marking = sa.Column(sa.Enum('untrusted', 'trusted',
+                                    name='qosqueues_qos_marking'))
     dscp = sa.Column(sa.Integer)
 
 

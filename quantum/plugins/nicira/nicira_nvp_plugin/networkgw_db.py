@@ -84,7 +84,8 @@ class NetworkConnection(model_base.BASEV2, models_v2.HasTenant):
                                                  ondelete='CASCADE'))
     network_id = sa.Column(sa.String(36),
                            sa.ForeignKey('networks.id', ondelete='CASCADE'))
-    segmentation_type = sa.Column(sa.Enum('flat', 'vlan'))
+    segmentation_type = sa.Column(sa.Enum(
+        'flat', 'vlan', name='networkconnections_segmentation_type'))
     segmentation_id = sa.Column(sa.Integer)
     __table_args__ = (sa.UniqueConstraint(network_gateway_id,
                                           segmentation_type,
