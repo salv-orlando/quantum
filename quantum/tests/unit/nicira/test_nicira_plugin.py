@@ -287,6 +287,20 @@ class TestNiciraPortsV2(test_plugin.TestPortsV2, NiciraPluginV2TestCase):
 class TestNiciraNetworksV2(test_plugin.TestNetworksV2,
                            NiciraPluginV2TestCase):
 
+    def test_create_network_name_exceeds_40_chars(self):
+        name = 'net0123456net0123456net0123456net0123456net0123456'
+        keys = [('subnets', []), ('name', name), ('admin_state_up', True),
+                ('status', 'ACTIVE'), ('shared', False)]
+        with self.network(name=name) as net:
+            for k, v in keys:
+                self.assertEquals(net['network'][k], v)
+
+    def test_create_network_name_is_none_returns_400(self):
+        with self.assertRaises(webob.exc.HTTPClientError) as ctx_manager:
+            with self.network(name=None):
+                pass
+        self.assertEquals(ctx_manager.exception.code, 400)
+
     def _test_create_bridge_network(self, vlan_id=None):
         net_type = vlan_id and 'vlan' or 'flat'
         name = 'bridge_net'

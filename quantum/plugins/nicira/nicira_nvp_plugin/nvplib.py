@@ -55,6 +55,8 @@ LQUEUE_RESOURCE = "lqueue"
 LROUTERPORT_RESOURCE = "lport/%s" % LROUTER_RESOURCE
 LROUTERNAT_RESOURCE = "nat/lrouter"
 GWSERVICE_RESOURCE = "gateway-service"
+# Other constants for NVP resource
+MAX_DISPLAY_NAME_LEN = 40
 
 # Constants for NAT rules
 MATCH_KEYS = ["destination_ip_addresses", "destination_port_max",
@@ -278,6 +280,9 @@ def create_lswitch(cluster, tenant_id, display_name,
                    shared=None,
                    **kwargs):
     nvp_binding_type = transport_type
+    if len(display_name) > MAX_DISPLAY_NAME_LEN:
+        LOG.warning(_("Specified name:'%s' exceeds maximum length."
+                      "It will be truncated on NVP"), display_name)
     if transport_type in ('flat', 'vlan'):
         nvp_binding_type = 'bridge'
 
@@ -285,7 +290,7 @@ def create_lswitch(cluster, tenant_id, display_name,
                                            cluster.default_tz_uuid),
                              "transport_type": (nvp_binding_type or
                                                 DEF_TRANSPORT_TYPE)}
-    lswitch_obj = {"display_name": display_name,
+    lswitch_obj = {"display_name": display_name[0:MAX_DISPLAY_NAME_LEN],
                    "transport_zones": [transport_zone_config],
                    "tags": [{"tag": tenant_id, "scope": "os_tid"},
                             {"scope": "quantum", 'tag': VERSION}]}
@@ -314,7 +319,10 @@ def create_lswitch(cluster, tenant_id, display_name,
 
 def update_lswitch(cluster, lswitch, display_name, tenant_id=None, **kwargs):
     uri = _build_uri_path(LSWITCH_RESOURCE, resource_id=lswitch)
-    lswitch_obj = {"display_name": display_name}
+    if len(display_name) > MAX_DISPLAY_NAME_LEN:
+        LOG.warning(_("Specified name:'%s' exceeds maximum length."
+                      "It will be truncated on NVP"), display_name)
+    lswitch_obj = {"display_name": display_name[0:MAX_DISPLAY_NAME_LEN]}
     tags = kwargs.get('tags') or []
     if tenant_id:
         tags.append({"tag": tenant_id, "scope": "os_tid"})

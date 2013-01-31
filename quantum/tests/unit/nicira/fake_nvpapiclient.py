@@ -22,6 +22,12 @@ LOG = logging.getLogger("fake_nvpapiclient")
 LOG.setLevel(logging.DEBUG)
 
 
+def _validate_lswitch(body):
+    name = body.get('display_name')
+    if name and len(name) > 40:
+        raise Exception("Logical switch name exceeds 40 characters")
+
+
 class FakeClient:
 
     LSWITCH_RESOURCE = 'lswitch'
@@ -100,6 +106,10 @@ class FakeClient:
     _fake_securityprofile_dict = {}
     _fake_lqueue_dict = {}
     _fake_gatewayservice_dict = {}
+
+    _validators = {
+        LSWITCH_RESOURCE: _validate_lswitch
+    }
 
     def __init__(self, fake_files_path):
         self.fake_files_path = fake_files_path
@@ -434,6 +444,8 @@ class FakeClient:
         with open("%s/%s" % (self.fake_files_path, response_file)) as f:
             response_template = f.read()
             add_resource = getattr(self, '_add_%s' % res_type)
+            body_json = json.loads(body)
+            self._validators.setdefault(res_type, lambda x: True)(body_json)
             args = [body]
             if len(uuids):
                 args.append(uuids[0])
@@ -454,14 +466,16 @@ class FakeClient:
                 is_attachment = True
                 res_type = res_type[:res_type.index('attachment')]
             res_dict = getattr(self, '_fake_%s_dict' % res_type)
+            body_json = json.loads(body)
+            self._validators.setdefault(res_type, lambda x: True)(body_json)
             resource = res_dict[uuids[-1]]
             if not is_attachment:
-                resource.update(json.loads(body))
+                resource.update(body_json)
             else:
                 relations = resource.get("_relations")
                 if not relations:
                     relations = {}
-                relations['LogicalPortAttachment'] = json.loads(body)
+                relations['LogicalPortAttachment'] = body_json
                 resource['_relations'] = relations
                 body_2 = json.loads(body)
                 resource['att_type'] = body_2['type']
