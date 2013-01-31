@@ -283,6 +283,18 @@ class TestNiciraPortsV2(test_plugin.TestPortsV2, NiciraPluginV2TestCase):
                                                   net['network']['id'])
                         self.assertEqual(len(ls), 2)
 
+    def test_create_port_name_exceeds_40_chars(self):
+        name = 'port0123456net0123456net0123456net0123456net0123456'
+        keys = [('admin_state_up', True), ('status', 'ACTIVE')]
+        with self.port(name=name) as port:
+            for k, v in keys:
+                self.assertEquals(port['port'][k], v)
+            self.assertTrue('mac_address' in port['port'])
+            ips = port['port']['fixed_ips']
+            self.assertEquals(len(ips), 1)
+            self.assertEquals(ips[0]['ip_address'], '10.0.0.2')
+            self.assertEquals(name, port['port']['name'])
+
 
 class TestNiciraNetworksV2(test_plugin.TestNetworksV2,
                            NiciraPluginV2TestCase):

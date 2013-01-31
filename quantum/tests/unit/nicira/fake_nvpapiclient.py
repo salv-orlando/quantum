@@ -20,12 +20,21 @@ import uuid
 
 LOG = logging.getLogger("fake_nvpapiclient")
 LOG.setLevel(logging.DEBUG)
+MAX_NAME_LEN = 40
+
+
+def _validate_name(name):
+    if name and len(name) > MAX_NAME_LEN:
+        raise Exception("Logical switch name exceeds %d characters",
+                        MAX_NAME_LEN)
 
 
 def _validate_lswitch(body):
-    name = body.get('display_name')
-    if name and len(name) > 40:
-        raise Exception("Logical switch name exceeds 40 characters")
+    _validate_name(body.get('display_name'))
+
+
+def _validate_lport(body):
+    _validate_name(body.get('display_name'))
 
 
 class FakeClient:
@@ -108,7 +117,9 @@ class FakeClient:
     _fake_gatewayservice_dict = {}
 
     _validators = {
-        LSWITCH_RESOURCE: _validate_lswitch
+        LSWITCH_RESOURCE: _validate_lswitch,
+        LSWITCH_LPORT_RESOURCE: _validate_lport,
+        LROUTER_LPORT_RESOURCE: _validate_lport,
     }
 
     def __init__(self, fake_files_path):

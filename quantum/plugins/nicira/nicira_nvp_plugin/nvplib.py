@@ -737,7 +737,10 @@ def update_port(network, port_id, **params):
             params['port'].get('admin_state_up'))
 
     if name:
-        lport_obj["display_name"] = name
+        if len(name) > MAX_DISPLAY_NAME_LEN:
+            LOG.warning(_("Specified name:'%s' exceeds maximum length."
+                          "It will be truncated on NVP"), name)
+        lport_obj["display_name"] = name[0:MAX_DISPLAY_NAME_LEN]
 
     if device_id:
         # device_id can be longer than 40 so we rehash it
@@ -786,9 +789,12 @@ def create_lport(cluster, lswitch_uuid, tenant_id, quantum_port_id,
     """ Creates a logical port on the assigned logical switch """
     # device_id can be longer than 40 so we rehash it
     hashed_device_id = hashlib.sha1(device_id).hexdigest()
+    if len(display_name) > MAX_DISPLAY_NAME_LEN:
+        LOG.warning(_("Specified name:'%s' exceeds maximum length."
+                      "It will be truncated on NVP"), display_name)
     lport_obj = dict(
         admin_status_enabled=admin_status_enabled,
-        display_name=display_name,
+        display_name=display_name[0:MAX_DISPLAY_NAME_LEN],
         tags=[dict(scope='os_tid', tag=tenant_id),
               dict(scope='q_port_id', tag=quantum_port_id),
               dict(scope='vm_id', tag=hashed_device_id),
