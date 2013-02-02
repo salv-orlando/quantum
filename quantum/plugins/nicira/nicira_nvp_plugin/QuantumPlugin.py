@@ -1645,38 +1645,37 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         lports = []
         for quantum_lport in quantum_lports:
+            nvp_lport = nvp_lports.get(quantum_lport["id"])
             # if a quantum port is not found in NVP, this migth be because
             # such port is not mapped to a logical switch - ie: floating ip
             if quantum_lport['device_owner'] in (l3_db.DEVICE_OWNER_FLOATINGIP,
                                                  l3_db.DEVICE_OWNER_ROUTER_GW):
-                nvp_lport = nvp_lports.get(quantum_lport["id"])
                 if not nvp_lport:
                     quantum_lport['status'] = constants.PORT_STATUS_ERROR
                     quantum_lport['admin_state_up'] = False
-                else:
-                    try:
-                        quantum_lport["admin_state_up"] = (
-                            nvp_lport["admin_status_enabled"])
-                        self._extend_port_dict_security_group(context,
-                                                              quantum_lport)
-                        self._extend_port_dict_port_security(context,
-                                                             quantum_lport)
-                        if (nvp_lport["_relations"]
-                                ["LogicalPortStatus"]
-                                ["fabric_status_up"]):
-                            quantum_lport["status"] = (
-                                constants.PORT_STATUS_ACTIVE)
-                        else:
-                            quantum_lport["status"] = (
-                                constants.PORT_STATUS_DOWN)
+            else:
+                try:
+                    quantum_lport["admin_state_up"] = (
+                        nvp_lport["admin_status_enabled"])
+                    self._extend_port_dict_security_group(context,
+                                                          quantum_lport)
+                    self._extend_port_dict_port_security(context,
+                                                         quantum_lport)
+                    if (nvp_lport["_relations"]["LogicalPortStatus"]
+                        ["fabric_status_up"]):
+                        quantum_lport["status"] = (
+                            constants.PORT_STATUS_ACTIVE)
+                    else:
+                        quantum_lport["status"] = (
+                            constants.PORT_STATUS_DOWN)
 
-                        # This won't raise a keyError for sure
-                        del nvp_lports[quantum_lport["id"]]
-                    except KeyError:
-                        # if this occurred some expected nvp attribute was not
-                        # found. Raise an error
-                        LOG.exception("Unable to fetch status from NVP lport")
-                        raise
+                    # This won't raise a keyError for sure
+                    del nvp_lports[quantum_lport["id"]]
+                except KeyError:
+                    # if this occurred some expected nvp attribute was not
+                    # found. Raise an error
+                    LOG.exception("Unable to fetch status from NVP lport")
+                    raise
             lports.append(quantum_lport)
 
         # do not make the case in which ports are found in NVP
