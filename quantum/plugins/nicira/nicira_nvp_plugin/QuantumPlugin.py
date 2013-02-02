@@ -1478,7 +1478,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                         quantum_lswitch["status"] = constants.NET_STATUS_ACTIVE
                     else:
                         quantum_lswitch["status"] = constants.NET_STATUS_DOWN
-                    quantum_lswitch["name"] = nvp_lswitch["display_name"]
                     nvp_lswitches.remove(nvp_lswitch)
                     Found = True
                     break
@@ -1658,7 +1657,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     try:
                         quantum_lport["admin_state_up"] = (
                             nvp_lport["admin_status_enabled"])
-                        quantum_lport["name"] = nvp_lport["display_name"]
                         self._extend_port_dict_security_group(context,
                                                               quantum_lport)
                         self._extend_port_dict_port_security(context,
