@@ -91,16 +91,9 @@ def parse_config():
         ['False', 'both', 'private', 'shared', False]):
         LOG.error("require_port_security setting invalid on server!")
         raise psec.PortSecurityInvalidConfiguration()
-    db_options = {"sql_connection": cfg.CONF.DATABASE.sql_connection}
-    db_options.update({'base': models_v2.model_base.BASEV2})
-    sql_max_retries = cfg.CONF.DATABASE.sql_max_retries
-    db_options.update({"sql_max_retries": sql_max_retries})
-    reconnect_interval = cfg.CONF.DATABASE.reconnect_interval
-    db_options.update({"reconnect_interval": reconnect_interval})
     nvp_options = cfg.CONF.NVP
     nvp_conf = config.ClusterConfigOptions(cfg.CONF)
     cluster_names = config.register_cluster_groups(nvp_conf)
-    nvp_conf.log_opt_values(LOG, logging.DEBUG)
 
     clusters_options = []
     for cluster_name in cluster_names:
@@ -122,7 +115,7 @@ def parse_config():
              nvp_conf[cluster_name].default_interface_name,
              },)
     LOG.debug("cluster options:%s", clusters_options)
-    return db_options, nvp_options, clusters_options
+    return nvp_options, clusters_options
 
 
 def parse_clusters_opts(clusters_opts, concurrent_connections,
@@ -206,7 +199,8 @@ class NVPRpcCallbacks(dhcp_rpc_base.DhcpRpcCallbackMixin):
 class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                   securitygroups_db.SecurityGroupDbMixin,
                   portsecurity_db.PortSecurityDbMixin,
-                  qos.NVPQoSDbMixin, networkgw_db.NetworkGatewayMixin,
+                  qos.NVPQoSDbMixin,
+                  networkgw_db.NetworkGatewayMixin,
                   l3_db.L3_NAT_db_mixin):
     """
     NvpPluginV2 is a Quantum plugin that provides L2 Virtual Network
@@ -259,7 +253,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         }
 
         self.clusters = {}
-        self.db_opts, self.nvp_opts, self.clusters_opts = parse_config()
+        self.nvp_opts, self.clusters_opts = parse_config()
         if not self.clusters_opts:
             msg = _("No cluster specified in NVP plugin configuration. "
                     "Unable to start. Please ensure at least a "
@@ -274,9 +268,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         # Connect and configure ovs_quantum db
         options = {
-            'sql_connection': self.db_opts['sql_connection'],
-            'sql_max_retries': self.db_opts['sql_max_retries'],
-            'reconnect_interval': self.db_opts['reconnect_interval'],
+            'sql_connection': cfg.CONF.DATABASE.sql_connection,
+            'sql_max_retries': cfg.CONF.DATABASE.sql_max_retries,
+            'reconnect_interval': cfg.CONF.DATABASE.reconnect_interval,
             'base': models_v2.model_base.BASEV2,
         }
         db.configure_db(options)

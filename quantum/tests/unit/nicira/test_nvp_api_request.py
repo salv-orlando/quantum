@@ -11,7 +11,6 @@ import logging
 import unittest
 import urllib2
 
-logging.basicConfig(level=logging.DEBUG)
 lg = logging.getLogger("test_nvp_api_request")
 
 REQUEST_TIMEOUT = 1

@@ -33,8 +33,8 @@ import quantum.tests.unit.nicira.test_networkgw as test_l2_gw
 import quantum.tests.unit.test_db_plugin as test_plugin
 import quantum.tests.unit.test_extension_security_group as ext_sg
 import quantum.tests.unit.test_l3_plugin as test_l3_plugin
-from quantum.tests.unit import test_extensions
 import quantum.tests.unit.test_extension_port_security as psec
+from quantum.tests.unit import test_extensions
 
 LOG = logging.getLogger(__name__)
 NICIRA_PKG_PATH = nvp_plugin.__name__
@@ -86,6 +86,7 @@ class NiciraPluginV2TestCase(test_plugin.QuantumDbPluginV2TestCase):
         self.fc.reset_all()
         super(NiciraPluginV2TestCase, self).tearDown()
         self.mock_nvpapi.stop()
+        del test_lib.test_config['config_files']
 
 
 class NvpQoSTestExtensionManager(object):
@@ -103,9 +104,9 @@ class NvpQoSTestExtensionManager(object):
 class TestNiciraQoSQueue(NiciraPluginV2TestCase):
 
     def setUp(self, plugin=None):
-        super(TestNiciraQoSQueue, self).setUp()
         ext_mgr = NvpQoSTestExtensionManager()
-        self.ext_api = test_extensions.setup_extensions_middleware(ext_mgr)
+        test_lib.test_config['extension_manager'] = ext_mgr
+        super(TestNiciraQoSQueue, self).setUp()
 
     def _create_qos_queue(self, fmt, body):
         qos_queue = self.new_create_request('qos-queues', body)

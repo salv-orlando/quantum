@@ -520,10 +520,7 @@ class JSONV2TestCase(APIv2TestBase):
         full_input = {'port': {'admin_state_up': True,
                                'mac_address': attributes.ATTR_NOT_SPECIFIED,
                                'fixed_ips': attributes.ATTR_NOT_SPECIFIED,
-                               'device_owner': '',
-                               ext_sg.SECURITYGROUP: None,
-                               psec.PORTSECURITY: (
-                                   attributes.ATTR_NOT_SPECIFIED)}}
+                               'device_owner': ''}}
         full_input['port'].update(initial_input['port'])
         return_value = {'id': _uuid(), 'status': 'ACTIVE',
                         'admin_state_up': True,

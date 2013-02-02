@@ -18,13 +18,17 @@
 #
 # @author: Aaron Rosen, VMware
 
-
 import sys
 
 from quantum.common import config
+from quantum.openstack.common import cfg
+from quantum.openstack.common import log as logging
+from quantum.plugins.nicira.nicira_nvp_plugin.common import config as nvp_config
 import quantum.plugins.nicira.nicira_nvp_plugin.NvpApiClient as NvpApiClient
 import quantum.plugins.nicira.nicira_nvp_plugin.nvplib as nvplib
 from quantum.plugins.nicira.nicira_nvp_plugin import QuantumPlugin
+
+config.setup_logging(cfg.CONF)
 
 
 def help():
@@ -62,11 +66,11 @@ def main(argv):
     args = ['--config-file']
     args.append(sys.argv[1])
     config.parse(args)
-    db_opts, nvp_opts, clusters_opts = QuantumPlugin.parse_config()
+    nvp_opts, clusters_opts = QuantumPlugin.parse_config()
     print "-----------Database Options--------------------"
-    print "sql_connection: %s" % db_opts.get('sql_connection')
-    print "reconnect_interval: %d" % db_opts.get('reconnect_interval')
-    print "sql_max_retries: %d" % db_opts.get('sql_max_retries')
+    print "sql_connection: %s" % cfg.CONF.DATABASE.sql_connection
+    print "reconnect_interval: %d" % cfg.CONF.DATABASE.reconnect_interval
+    print "sql_max_retries: %d" % cfg.CONF.DATABASE.sql_max_retries
     print "-----------NVP Options--------------------"
     print ("Number of concurrents allow to each controller %d" %
            nvp_opts.concurrent_connections)

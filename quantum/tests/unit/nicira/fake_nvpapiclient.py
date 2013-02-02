@@ -14,12 +14,9 @@
 #
 
 import json
-import logging
 import urlparse
 import uuid
 
-LOG = logging.getLogger("fake_nvpapiclient")
-LOG.setLevel(logging.DEBUG)
 MAX_NAME_LEN = 40
 
 
@@ -435,7 +432,6 @@ class FakeClient:
                                   query=parsedurl.query, relations=relations)
         elif ('lswitch' in res_type or 'lrouter' in res_type or
               'gatewayservice' in res_type):
-            LOG.debug("UUIDS:%s", uuids)
             if len(uuids) > 0:
                 return self._show(res_type, response_file, uuids[0],
                                   relations=relations)
@@ -551,3 +547,5 @@ class FakeClient:
         self._fake_lrouter_lportstatus_dict.clear()
         self._fake_securityprofile_dict.clear()
         self._fake_gatewayservice_dict.clear()
+        self._fake_lqueue_dict.clear()
+        self._fake_lrouter_nat_dict.clear()

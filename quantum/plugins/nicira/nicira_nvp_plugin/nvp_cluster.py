@@ -18,7 +18,6 @@
 import re
 
 from quantum.api.v2 import attributes
-from quantum.common import config as logging_config
 from quantum.openstack.common import cfg
 from quantum.openstack.common import log as logging
 
@@ -42,7 +41,6 @@ class NVPCluster(object):
         self._name = name
         self.controllers = []
         self.api_client = None
-        logging_config.setup_logging(cfg.CONF)
 
     def __repr__(self):
         ss = ['{ "NVPCluster": [']

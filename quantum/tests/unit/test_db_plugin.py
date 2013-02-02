@@ -122,11 +122,16 @@ class QuantumDbPluginV2TestCase(unittest2.TestCase):
         self.ext_api = None
         # NOTE(jkoelker) for a 'pluggable' framework, Quantum sure
         #                doesn't like when the plugin changes ;)
+        db.clear_db()
         db._ENGINE = None
         db._MAKER = None
         cfg.CONF.reset()
         # Restore the original attribute map
         attributes.RESOURCE_ATTRIBUTE_MAP = self._attribute_map_bk
+        # Remove plugin from test configuration in order to avoid
+        # other test case load by mistake the same plugin
+        if 'plugin_name_v2' in test_config:
+            del test_config['plugin_name_v2']
 
     def _req(self, method, resource, data=None, fmt='json',
              id=None, params=None, action=None):

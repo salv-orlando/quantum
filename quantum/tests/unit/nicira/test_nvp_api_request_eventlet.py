@@ -29,7 +29,6 @@ from quantum.plugins.nicira.nicira_nvp_plugin.api_client import (
 )
 
 
-logging.basicConfig(level=logging.DEBUG)
 LOG = logging.getLogger("test_nvp_api_request_eventlet")
 
 

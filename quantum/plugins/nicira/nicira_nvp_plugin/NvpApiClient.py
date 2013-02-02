@@ -19,11 +19,11 @@
 
 import httplib  # basic HTTP library for HTTPS connections
 import logging
+
 from quantum.plugins.nicira.nicira_nvp_plugin.api_client import (
     client_eventlet, request_eventlet)
 
-LOG = logging.getLogger("NVPApiHelper")
-LOG.setLevel(logging.INFO)
+LOG = logging.getLogger(__name__)
 
 
 def _find_nvp_version_in_headers(headers):

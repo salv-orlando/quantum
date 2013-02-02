@@ -24,9 +24,9 @@
 # growing as we add more features :)
 
 from copy import copy
+import hashlib
 import inspect
 import json
-import hashlib
 import logging
 
 import NvpApiClient
@@ -69,20 +69,7 @@ SNAT_KEYS = ["to_src_port_min", "to_src_port_max", "to_src_ip_min",
 DNAT_KEYS = ["to_dst_port", "to_dst_ip_min", "to_dst_ip_max"]
 
 
-LOCAL_LOGGING = False
-if LOCAL_LOGGING:
-    from logging.handlers import SysLogHandler
-    FORMAT = ("|%(levelname)s|%(filename)s|%(funcName)s|%(lineno)s"
-              "|%(message)s")
-    LOG = logging.getLogger(__name__)
-    formatter = logging.Formatter(FORMAT)
-    syslog = SysLogHandler(address="/dev/log")
-    syslog.setFormatter(formatter)
-    LOG.addHandler(syslog)
-    LOG.setLevel(logging.DEBUG)
-else:
-    LOG = logging.getLogger("nvplib")
-    LOG.setLevel(logging.DEBUG)
+LOG = logging.getLogger(__name__)
 
 # TODO(bgh): it would be more efficient to use a bitmap
 taken_context_ids = []
