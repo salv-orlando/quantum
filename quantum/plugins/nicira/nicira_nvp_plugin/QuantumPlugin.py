@@ -33,6 +33,7 @@ from sqlalchemy.orm import exc as sa_orm_exc
 from quantum.api.v2 import attributes
 from quantum.api.v2 import base
 from quantum.common import constants
+from quantum import context as q_context
 from quantum.common import exceptions as q_exc
 from quantum.common import topics
 from quantum.db import api as db
@@ -265,7 +266,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self.clusters, self.default_cluster = parse_clusters_opts(
             self.clusters_opts, self.nvp_opts.concurrent_connections,
             self.nvp_opts.nvp_gen_timeout, self.nvp_opts.default_cluster_name)
-
         # Connect and configure ovs_quantum db
         options = {
             'sql_connection': cfg.CONF.DATABASE.sql_connection,
@@ -278,25 +278,38 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self._extend_fault_map()
         # Set up RPC interface for DHCP agent
         self.setup_rpc()
+        # TODO(salvatore-orlando): Handle default gateways in multiple clusters
+        self._ensure_default_network_gateway()
 
-    def _make_default_l2_gw_dict(self):
-        # Create a network gw dict representing the default
-        # service in NVP (no corresponding Quantum record)
-        # No need to expose device list to caller
-        return {'id': self.default_cluster.default_l2_gw_service_uuid,
-                'name': 'default L2 gateway service',
-                'devices': []}
-
-    def _get_network_gateway(self, context, gw_id):
-        """ Augments the superclass method by taking into account the
-            default gateway service which might have been specified
-            in nvp.ini
-        """
-        if gw_id == self.default_cluster.default_l2_gw_service_uuid:
-            return self._make_default_l2_gw_dict()
-
-        return super(NvpPluginV2, self)._get_network_gateway(context,
-                                                             gw_id)
+    def _ensure_default_network_gateway(self):
+        # Add the gw in the db as default, and unset any previous default
+        def_l2_gw_uuid = self.default_cluster.default_l2_gw_service_uuid
+        try:
+            ctx = q_context.get_admin_context()
+            nicira_db.unset_default_network_gateways(ctx.session)
+            if def_l2_gw_uuid:
+                try:
+                    def_network_gw = self._get_network_gateway(ctx,
+                                                               def_l2_gw_uuid)
+                except sa_orm_exc.NoResultFound:
+                    # Create in DB only - don't go on NVP
+                    # Make it shared so each tenant can access it
+                    def_gw_data = {'id': def_l2_gw_uuid,
+                                   'name': 'default L2 gateway service',
+                                   'shared': True,
+                                   'devices': []}
+                    gw_res_name = networkgw.RESOURCE_NAME.replace('-', '_')
+                    def_network_gw = super(
+                        NvpPluginV2, self).create_network_gateway(
+                            ctx, {gw_res_name: def_gw_data})
+                # In any case make it default
+                nicira_db.set_default_network_gateway(ctx.session,
+                                                      def_network_gw['id'])
+        except Exception:
+            # This is fatal - abort startup
+            LOG.exception(_("Unable to process default l2 gw service:%s"),
+                          def_l2_gw_uuid)
+            raise
 
     def _nvp_lqueue(self, queue):
         """Convert fields to nvp fields."""
@@ -2522,21 +2535,17 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         except sa_orm_exc.NoResultFound:
             return
 
-    def get_network_gateways(self, context, filters=None, fields=None):
-        nw_gateways = super(NvpPluginV2, self).get_network_gateways(context,
-                                                                    filters,
-                                                                    fields)
-        if self.default_cluster.default_l2_gw_service_uuid:
-            nw_gateways.append(self._make_default_l2_gw_dict())
-        return nw_gateways
-
     def create_network_gateway(self, context, network_gateway):
         """ Create a layer-2 network gateway
 
         Create the gateway service on NVP platform and corresponding data
         structures in Quantum datase
         """
+        # Need to re-do authZ checks here in order to avoid creation on NVP
         gw_data = network_gateway[networkgw.RESOURCE_NAME.replace('-', '_')]
+        if gw_data.get('shared'):
+            policy.enforce(context, "extension:networkgw:create_shared",
+                           gw_data)
         tenant_id = self._get_tenant_id_for_create(context, gw_data)
         cluster = self._find_target_cluster(gw_data)
         devices = gw_data['devices']
@@ -2571,6 +2580,26 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 # Do not cause a 500 to be returned to the user
                 LOG.exception(_("Unable to remove gateway service from "
                                 "NVP plaform - stale gateway on NVP"))
+
+    def _ensure_tenant_on_net_gateway(self, context, net_gateway):
+        # If there's no tenant let him believe he owns the gateway
+        if not net_gateway['tenant_id']:
+            net_gateway['tenant_id'] = context.tenant_id
+        return net_gateway
+
+    def get_network_gateway(self, context, id, fields=None):
+        return self._ensure_tenant_on_net_gateway(
+            context, super(NvpPluginV2, self).get_network_gateway(
+                context, id, fields))
+
+    def get_network_gateways(self, context, filters=None, fields=None):
+        net_gateways = super(NvpPluginV2,
+                             self).get_network_gateways(context,
+                                                        filters,
+                                                        fields)
+        for net_gateway in net_gateways:
+            self._ensure_tenant_on_net_gateway(context, net_gateway)
+        return net_gateways
 
     def get_plugin_version(self):
         return PLUGIN_VERSION

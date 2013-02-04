@@ -42,6 +42,18 @@ RESOURCE_ATTRIBUTE_MAP = {
                'is_visible': True},
         'name': {'allow_post': True, 'allow_put': True,
                  'is_visible': True, 'default': ''},
+        # NOTE(salvatore-orlando): PUT is disable to avoid complexity
+        # with un-sharing a gateway (when multiple tenants use it)
+        'shared': {'allow_post': True,
+                   'allow_put': False,
+                   'default': False,
+                   'convert_to': attributes.convert_to_boolean,
+                   'validate': {'type:boolean': None},
+                   'is_visible': True,
+                   'required_by_policy': True,
+                   'enforce_policy': True},
+        'default': {'allow_post': False, 'allow_put': False,
+                    'is_visible': True},
         'devices': {'allow_post': True, 'allow_put': False,
                     'validate': {'type:device_list': None},
                     'is_visible': True},

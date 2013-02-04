@@ -24,6 +24,7 @@ from webob import exc
 
 from quantum.common import config
 from quantum.common.test_lib import test_config
+from quantum import context
 from quantum.db import api as db_api
 from quantum.db import db_base_plugin_v2
 from quantum.extensions import extensions
@@ -94,6 +95,7 @@ class NetworkGatewayExtensionTestCase(unittest.TestCase):
         nw_gw_id = _uuid()
         data = {self._resource: {'name': 'nw-gw',
                                  'tenant_id': _uuid(),
+                                 'shared': False,
                                  'devices': [{'id': _uuid(),
                                               'interface_name': 'xxx'}]}}
         return_value = data[self._resource].copy()
@@ -235,19 +237,25 @@ class NetworkGatewayDbTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
                 data[self.resource][arg] = kwargs[arg]
         nw_gw_req = self.new_create_request(networkgw.COLLECTION_NAME,
                                             data, fmt)
+        if (kwargs.get('set_context') and tenant_id):
+            # create a specific auth context for this request
+            nw_gw_req.environ['quantum.context'] = context.Context(
+                '', tenant_id)
         return nw_gw_req.get_response(self.ext_api)
 
     @contextlib.contextmanager
     def _network_gateway(self, name='gw1', devices=None,
-                         fmt='json', tenant_id=_uuid()):
-        kwargs = {}
+                         fmt='json', tenant_id=_uuid(),
+                         **kwargs):
         if not devices:
             devices = [{'id': _uuid(), 'interface_name': 'xyz'}]
-        kwargs['arg_list'] = ('devices',)
+        kwargs['arg_list'] = ('devices', 'shared')
         kwargs['devices'] = devices
         res = self._create_network_gateway(fmt, tenant_id, name=name,
                                            **kwargs)
         network_gateway = self.deserialize(fmt, res)
+        if res.status_int >= 400:
+            raise exc.HTTPClientError(code=res.status_int)
         yield network_gateway
         self._delete(networkgw.COLLECTION_NAME,
                      network_gateway[self.resource]['id'])
@@ -306,7 +314,27 @@ class NetworkGatewayDbTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
             for k, v in keys:
                 self.assertEquals(gw[self.resource][k], v)
 
-    def test_delete_network_gateway(self):
+    def test_create_shared_gateway(self):
+        name = 'public_gw'
+        devices = [{'id': _uuid(), 'interface_name': 'xxx'},
+                   {'id': _uuid(), 'interface_name': 'yyy'}]
+        keys = [('devices', devices), ('name', name), ('shared', True)]
+        with self._network_gateway(name=name, devices=devices,
+                                   shared=True) as gw:
+            for k, v in keys:
+                self.assertEquals(gw[self.resource][k], v)
+
+    def test_create_shared_network_no_admin_tenant(self):
+        name = 'public_gw'
+        with self.assertRaises(exc.HTTPClientError) as ctx_manager:
+            with self._network_gateway(name=name,
+                                       shared=True,
+                                       tenant_id="another_tenant",
+                                       set_context=True):
+                pass
+        self.assertEquals(ctx_manager.exception.code, 403)
+
+    def _test_delete_network_gateway(self, exp_gw_count=0):
         name = 'test-gw'
         devices = [{'id': _uuid(), 'interface_name': 'xxx'},
                    {'id': _uuid(), 'interface_name': 'yyy'}]
@@ -317,8 +345,11 @@ class NetworkGatewayDbTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
         session = db_api.get_session()
         gw_query = session.query(networkgw_db.NetworkGateway)
         dev_query = session.query(networkgw_db.NetworkGatewayDevice)
-        self.assertEqual(0, len(gw_query.all()))
+        self.assertEqual(exp_gw_count, len(gw_query.all()))
         self.assertEqual(0, len(dev_query.all()))
+
+    def test_delete_network_gateway(self):
+        self._test_delete_network_gateway()
 
     def test_update_network_gateway(self):
         with self._network_gateway() as gw:

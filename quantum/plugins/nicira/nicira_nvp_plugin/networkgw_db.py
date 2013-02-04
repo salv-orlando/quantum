@@ -20,7 +20,6 @@
 import logging
 
 import sqlalchemy as sa
-from sqlalchemy import exc as sa_exc
 from sqlalchemy import orm
 from webob import exc as web_exc
 
@@ -32,13 +31,17 @@ from quantum.db import db_base_plugin_v2
 from quantum.db import model_base
 from quantum.db import models_v2
 from quantum.extensions import networkgw
+from quantum import policy
 
 
 LOG = logging.getLogger(__name__)
 DEVICE_OWNER_NET_GW_INTF = 'network:gateway-interface'
-ALLOWED_CONNECTION_ATTRIBUTES = set(('network_id',
-                                     'segmentation_type',
-                                     'segmentation_id'))
+NETWORK_ID = 'network_id'
+SEGMENTATION_TYPE = 'segmentation_type'
+SEGMENTATION_ID = 'segmentation_id'
+ALLOWED_CONNECTION_ATTRIBUTES = set((NETWORK_ID,
+                                     SEGMENTATION_TYPE,
+                                     SEGMENTATION_ID))
 
 
 class GatewayInUse(exceptions.InUse):
@@ -65,6 +68,10 @@ class GatewayConnectionNotFound(exceptions.NotFound):
     message = _("The connection %(network_mapping_info)s was not found on the "
                 "network gateway '%(network_gateway_id)s'")
 
+
+class DefaultGatewayUnchangeable(exceptions.InUse):
+    message = _("The Default gateway %(gateway_id)s "
+                "cannot be updated or deleted")
 
 # Add exceptions to HTTP Faults mappings
 base.FAULT_MAP.update({GatewayInUse: web_exc.HTTPConflict,
@@ -121,7 +128,10 @@ class NetworkGateway(model_base.BASEV2, models_v2.HasId,
                      models_v2.HasTenant):
     """ Defines the data model for a network gateway """
     name = sa.Column(sa.String(255))
-    tenant_id = sa.Column(sa.String(36), nullable=False)
+    # Tenant id is nullable for this resource
+    tenant_id = sa.Column(sa.String(36))
+    shared = sa.Column(sa.Boolean())
+    default = sa.Column(sa.Boolean())
     devices = orm.relationship(NetworkGatewayDevice,
                                backref='networkgateways',
                                cascade='all,delete')
@@ -142,13 +152,15 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
                                 'interface_name': d['interface_name']})
         res = {'id': network_gateway['id'],
                'name': network_gateway['name'],
+               'default': network_gateway['default'],
+               'shared': network_gateway['shared'],
                'devices': device_list,
                'tenant_id': network_gateway['tenant_id']}
         # NOTE(salvatore-orlando):perhaps return list of connected networks
         return self._fields(res, fields)
 
     def _validate_network_mapping_info(self, network_mapping_info):
-        network_id = network_mapping_info.get('network_id')
+        network_id = network_mapping_info.get(NETWORK_ID)
         if not network_id:
             raise exceptions.InvalidInput(
                 error_message=_("A network identifier must be specified "
@@ -160,7 +172,25 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
                 error_message=_("Invalid keys found among the ones provided "
                                 "in the request body: %(connection_attrs)s."
                                 % locals()))
+        seg_type = network_mapping_info.get(SEGMENTATION_TYPE)
+        seg_id = network_mapping_info.get(SEGMENTATION_ID)
+        if (seg_type and seg_type.lower() == 'flat' and seg_id):
+            raise exceptions.InvalidInput(
+                error_message=_("Cannot specify a segmentation id when "
+                                "the segmentation type is flat"))
+        if (not seg_type and seg_id):
+            raise exceptions.InvalidInput(
+                error_message=_("In order to specify a segmentation id the "
+                                "segmentation type must be specified as well"))
         return network_id
+
+    def _retrieve_gateway_connections(self, context, gateway_id, mapping_info):
+        filters = {'network_gateway_id': [gateway_id]}
+        for k, v in mapping_info.iteritems():
+            if v and k != NETWORK_ID:
+                filters[k] = [v]
+        return self._get_collection(context, NetworkConnection,
+                                    lambda x, _1: x, filters=filters)
 
     def prevent_network_gateway_port_deletion(self, context, port_id):
         """ Pre-deletion check.
@@ -175,12 +205,16 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
 
     def create_network_gateway(self, context, network_gateway):
         gw_data = network_gateway[self.resource]
+        if gw_data.get('shared'):
+            policy.enforce(context, "extension:networkgw:create_shared",
+                           gw_data)
         tenant_id = self._get_tenant_id_for_create(context, gw_data)
         with context.session.begin(subtransactions=True):
             gw_db = NetworkGateway(
                 id=gw_data.get('id') or utils.str_uuid(),
                 tenant_id=tenant_id,
-                name=gw_data.get('name'))
+                name=gw_data.get('name'),
+                shared=gw_data.get('shared', False))
             # Device list is guaranteed to be a valid list
             for device in gw_data['devices']:
                 gw_db.devices.append(
@@ -193,6 +227,11 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
         gw_data = network_gateway[self.resource]
         with context.session.begin(subtransactions=True):
             gw_db = self._get_network_gateway(context, id)
+            if gw_db.get('shared'):
+                policy.enforce(context, "extension:networkgw:delete_shared",
+                               dict(gw_db))
+            if gw_db.default:
+                raise DefaultGatewayUnchangeable(gateway_id=id)
             # Ensure there is something to update before doing it
             db_values_set = set([v for (k, v) in gw_db.iteritems()])
             if not set(gw_data.values()).issubset(db_values_set):
@@ -207,8 +246,13 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
     def delete_network_gateway(self, context, id):
         with context.session.begin(subtransactions=True):
             gw_db = self._get_network_gateway(context, id)
+            if gw_db.get('shared'):
+                policy.enforce(context, "extension:networkgw:delete_shared",
+                               dict(gw_db))
             if gw_db.network_connections:
                 raise GatewayInUse(gateway_id=id)
+            if gw_db.default:
+                raise DefaultGatewayUnchangeable(gateway_id=id)
             context.session.delete(gw_db)
         LOG.debug(_("Network gateway '%s' was destroyed." % id))
 
@@ -222,70 +266,67 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
         network_id = self._validate_network_mapping_info(network_mapping_info)
         LOG.debug(_("Connecting network '%(network_id)s' to gateway "
                     "'%(network_gateway_id)s'" % locals()))
-        try:
-            with context.session.begin(subtransactions=True):
-                gw_db = self._get_network_gateway(context, network_gateway_id)
-                tenant_id = self._get_tenant_id_for_create(context, gw_db)
-                # TODO(salvatore-orlando): This will give the port a fixed_ip,
-                # but we actually do not need any. Instead of wasting an IP we
-                # should have a way to say a port shall not be associated with
-                # any subnet
-                try:
-                    # We pass the segmenetation type and id too - the plugin
-                    # might find them useful as the network connection object
-                    # does not exist yet.
-                    # NOTE: they're not extended attributes, just extra data
-                    # passed in the port structure to the plugin
-                    port = self.create_port(context, {
-                        'port':
-                        {'tenant_id': tenant_id,
-                         'network_id': network_id,
-                         'mac_address': attributes.ATTR_NOT_SPECIFIED,
-                         'admin_state_up': True,
-                         'fixed_ips': attributes.ATTR_NOT_SPECIFIED,
-                         'device_id': network_gateway_id,
-                         'device_owner': DEVICE_OWNER_NET_GW_INTF,
-                         'name': '',
-                         'gw:segmentation_type':
-                         network_mapping_info.get('segmentation_type'),
-                         'gw:segmentation_id':
-                         network_mapping_info.get('segmentation_id')}})
-                except exceptions.NetworkNotFound:
-                    err_msg = _("Requested network '%(network_id)s' not found."
-                                "Unable to create network connection on "
-                                "gateway '%(network_gateway_id)s" % locals())
-                    LOG.error(err_msg)
-                    raise exceptions.InvalidInput(error_message=err_msg)
-                port_id = port['id']
-                LOG.debug(_("Gateway port for '%(network_gateway_id)s' "
-                            "created on network '%(network_id)s':%(port_id)s"
-                            % locals()))
-                # Create NetworkConnection record
-                network_mapping_info['port_id'] = port_id
-                network_mapping_info['tenant_id'] = tenant_id
-                gw_db.network_connections.append(
-                    NetworkConnection(**network_mapping_info))
-                # now deallocate the ip from the port
-                for fixed_ip in port.get('fixed_ips', []):
-                    db_base_plugin_v2.QuantumDbPluginV2._delete_ip_allocation(
-                        context, network_id,
-                        fixed_ip['subnet_id'],
-                        fixed_ip['ip_address'])
-                LOG.debug(_("Ensured no Ip addresses are configured on port "
-                            "'%(port_id)s'" % locals()))
-                return {'connection_info':
-                        {'network_gateway_id': network_gateway_id,
-                         'network_id': network_id,
-                         'port_id': port_id}}
-        except sa_exc.IntegrityError as e:
-            # Verify if it is an error we might expect
-            # TODO(salvatore-orlando): come one, you can do better than this!
-            if 'columns' in str(e.orig) and 'not unique' in str(e.orig):
-                LOG.error(_("Attempted to map network '%(network_id)s' with "
-                            "parameters already in use"))
+        with context.session.begin(subtransactions=True):
+            gw_db = self._get_network_gateway(context, network_gateway_id)
+            tenant_id = self._get_tenant_id_for_create(context, gw_db)
+            # TODO(salvatore-orlando): Leverage unique constraint instead
+            # of performing another query!
+            if self._retrieve_gateway_connections(context,
+                                                  network_gateway_id,
+                                                  network_mapping_info):
                 raise GatewayConnectionInUse(gateway_id=network_gateway_id)
-            # Else re-raise
-            raise
+            # TODO(salvatore-orlando): This will give the port a fixed_ip,
+            # but we actually do not need any. Instead of wasting an IP we
+            # should have a way to say a port shall not be associated with
+            # any subnet
+            try:
+                # We pass the segmenetation type and id too - the plugin
+                # might find them useful as the network connection object
+                # does not exist yet.
+                # NOTE: they're not extended attributes, just extra data
+                # passed in the port structure to the plugin
+                port = self.create_port(context, {
+                    'port':
+                    {'tenant_id': tenant_id,
+                     'network_id': network_id,
+                     'mac_address': attributes.ATTR_NOT_SPECIFIED,
+                     'admin_state_up': True,
+                     'fixed_ips': attributes.ATTR_NOT_SPECIFIED,
+                     'device_id': network_gateway_id,
+                     'device_owner': DEVICE_OWNER_NET_GW_INTF,
+                     'name': '',
+                     'gw:segmentation_type':
+                     network_mapping_info.get('segmentation_type'),
+                     'gw:segmentation_id':
+                     network_mapping_info.get('segmentation_id')}})
+            except exceptions.NetworkNotFound:
+                err_msg = _("Requested network '%(network_id)s' not found."
+                            "Unable to create network connection on "
+                            "gateway '%(network_gateway_id)s" % locals())
+                LOG.error(err_msg)
+                raise exceptions.InvalidInput(error_message=err_msg)
+            port_id = port['id']
+            LOG.debug(_("Gateway port for '%(network_gateway_id)s' "
+                        "created on network '%(network_id)s':%(port_id)s"
+                        % locals()))
+            # Create NetworkConnection record
+            network_mapping_info['port_id'] = port_id
+            network_mapping_info['tenant_id'] = tenant_id
+            gw_db.network_connections.append(
+                NetworkConnection(**network_mapping_info))
+            port_id = port['id']
+            # now deallocate the ip from the port
+            for fixed_ip in port.get('fixed_ips', []):
+                db_base_plugin_v2.QuantumDbPluginV2._delete_ip_allocation(
+                    context, network_id,
+                    fixed_ip['subnet_id'],
+                    fixed_ip['ip_address'])
+            LOG.debug(_("Ensured no Ip addresses are configured on port "
+                        "'%(port_id)s'" % locals()))
+            return {'connection_info':
+                    {'network_gateway_id': network_gateway_id,
+                     'network_id': network_id,
+                     'port_id': port_id}}
 
     def disconnect_network(self, context, network_gateway_id,
                            network_mapping_info):
@@ -294,12 +335,8 @@ class NetworkGatewayMixin(networkgw.NetworkGatewayPluginBase):
                     "'%(network_gateway_id)s'" % locals()))
         with context.session.begin(subtransactions=True):
             # Uniquely identify connection, otherwise raise
-            filters = {'network_gateway_id': [network_gateway_id]}
-            for k, v in network_mapping_info.iteritems():
-                if v:
-                    filters[k] = [v]
-            net_connections = self._get_collection(
-                context, NetworkConnection, lambda x, _1: x, filters=filters)
+            net_connections = self._retrieve_gateway_connections(
+                context, network_gateway_id, network_mapping_info)
             if not net_connections:
                 raise GatewayConnectionNotFound(
                     network_mapping_info=network_mapping_info,

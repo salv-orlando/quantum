@@ -14,6 +14,10 @@
     "extension:router:set": [["rule:admin_only"]],
     "extension:router:add_router_interface": [["rule:admin_or_owner"]],
     "extension:router:remove_router_interface": [["rule:admin_or_owner"]],
+    "extension:networkgw:view": [["rule:admin_or_owner"], ["rule:shared"]],
+    "extension:networkgw:create_shared": [["rule:admin_only"]],
+    "extension:networkgw:update_shared": [["rule:admin_only"]],
+    "extension:networkgw:delete_shared": [["rule:admin_only"]],
 
     "subnets:private:read": [["rule:admin_or_owner"]],
     "subnets:private:write": [["rule:admin_or_owner"]],

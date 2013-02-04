@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
-# Copyright 2012 New Dream Network, LLC (DreamHost)
+# Copyright 2013 OpenStack LLC
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -14,33 +14,27 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 #
-# @author: Mark McClain, DreamHost
 
-"""ryu
+"""nw_gw_default
 
-This retroactively provides migration support for
-https://review.openstack.org/#/c/11204/
-
-Revision ID: 5a875d0e5c
-Revises: nicira-folsom-update1
-Create Date: 2012-12-18 12:32:04.482477
+Revision ID: nicira-folsom-update1
+Revises: nicira-folsom
+Create Date: 2013-02-04 07:28:31.810001
 
 """
 
-
 # revision identifiers, used by Alembic.
-revision = '5a875d0e5c'
-down_revision = 'nicira-folsom-update1'
+revision = 'nicira-folsom-update1'
+down_revision = 'nicira-folsom'
 
 # Change to ['*'] if this migration applies to all plugins
 
 migration_for_plugins = [
-    'quantum.plugins.ryu.ryu_quantum_plugin.RyuQuantumPluginV2'
+    'quantum.plugins.nicira.nicira_nvp_plugin.QuantumPlugin.NvpPluginV2'
 ]
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import mysql
 
 from quantum.db import migration
 
@@ -49,27 +43,21 @@ def upgrade(active_plugin=None, options=None):
     if not migration.should_run(active_plugin, migration_for_plugins):
         return
 
-    op.create_table(
-        'tunnelkeys',
-        sa.Column('network_id', sa.String(length=36), nullable=False),
-        sa.Column('last_key', sa.Integer(), autoincrement=False,
-                  nullable=False),
-        sa.ForeignKeyConstraint(['network_id'], ['networks.id'],
-                                ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('last_key')
-    )
-
-    op.create_table(
-        'tunnelkeylasts',
-        sa.Column('last_key', sa.Integer(), autoincrement=False,
-                  nullable=False),
-        sa.PrimaryKeyConstraint('last_key')
-    )
+    op.add_column('networkgateways', sa.Column('default', sa.Boolean(),
+                                               nullable=True))
+    op.add_column('networkgateways', sa.Column('shared', sa.Boolean(),
+                                               nullable=True))
+    op.alter_column('networkgateways', u'tenant_id',
+                    existing_type=sa.String(length=36),
+                    nullable=True)
 
 
 def downgrade(active_plugin=None, options=None):
     if not migration.should_run(active_plugin, migration_for_plugins):
         return
 
-    op.drop_table('tunnelkeylasts')
-    op.drop_table('tunnelkeys')
+    op.alter_column('networkgateways', u'tenant_id',
+                    existing_type=sa.String(length=36),
+                    nullable=False)
+    op.drop_column('networkgateways', 'default')
+    op.drop_column('networkgateways', 'shared')

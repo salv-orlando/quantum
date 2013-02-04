@@ -22,6 +22,7 @@ import webob.exc
 from quantum.common import exceptions as q_exc
 import quantum.common.test_lib as test_lib
 from quantum import context
+from quantum.extensions import networkgw
 from quantum.extensions import nvp_qos
 from quantum.extensions import providernet as pnet
 from quantum import manager
@@ -438,4 +439,21 @@ class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
 
 class TestNiciraNetworkGatewayTestCase(test_l2_gw.NetworkGatewayDbTestCase,
                                        NiciraPluginV2TestCase):
-    pass
+
+    def test_list_network_gateways(self):
+        with self._network_gateway(name='test-gw-1') as gw1:
+            with self._network_gateway(name='test_gw_2') as gw2:
+                req = self.new_list_request(networkgw.COLLECTION_NAME)
+                res = self.deserialize('json', req.get_response(self.ext_api))
+                # We expect the default gateway too
+                self.assertEquals(len(res['%ss' % self.resource]), 3)
+                self.assertEquals(res['%ss' % self.resource][0]['default'],
+                                  True)
+                self.assertEquals(res['%ss' % self.resource][1]['name'],
+                                  gw1[self.resource]['name'])
+                self.assertEquals(res['%ss' % self.resource][2]['name'],
+                                  gw2[self.resource]['name'])
+
+    def test_delete_network_gateway(self):
+        # The default gateway must still be there
+        self._test_delete_network_gateway(1)

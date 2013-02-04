@@ -19,6 +19,7 @@ import logging
 from sqlalchemy.orm import exc
 
 import quantum.db.api as db
+from quantum.plugins.nicira.nicira_nvp_plugin import networkgw_db
 from quantum.plugins.nicira.nicira_nvp_plugin import nicira_models
 
 LOG = logging.getLogger(__name__)
@@ -69,3 +70,16 @@ def get_nvp_port_id(session, quantum_id):
         return mapping['nvp_id']
     except exc.NoResultFound:
         return
+
+
+def unset_default_network_gateways(session):
+    with session.begin(subtransactions=True):
+        session.query(networkgw_db.NetworkGateway).update(
+            {networkgw_db.NetworkGateway.default: False})
+
+
+def set_default_network_gateway(session, gw_id):
+    with session.begin(subtransactions=True):
+        gw = (session.query(networkgw_db.NetworkGateway).
+              filter_by(id=gw_id).one())
+        gw['default'] = True
