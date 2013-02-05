@@ -2229,6 +2229,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 else:
                     router.status = constants.NET_STATUS_DOWN
                 nvp_lrouters.remove(nvp_lrouter)
+            else:
+                # Bring the router in error if not found in NVP
+                router.status = constants.NET_STATUS_ERROR
+                router.admin_state_up = False
 
         # do not make the case in which switches are found in NVP
         # but not in Quantum catastrophic.
