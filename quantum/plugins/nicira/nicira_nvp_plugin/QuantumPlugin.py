@@ -1212,7 +1212,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         # An external network is a Quantum with no equivalent in NVP
         # so do not create a logical switch for an external network
         external = net_data.get(l3.EXTERNAL)
-        if not attributes.is_attr_set(external):
+        if ((attributes.is_attr_set(external) and not external) or
+            not attributes.is_attr_set(external)):
             lswitch = nvplib.create_lswitch(
                 target_cluster, tenant_id, net_data.get('name'),
                 net_data.get(pnet.NETWORK_TYPE),
@@ -1477,7 +1478,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     break
 
             if not Found:
-                raise nvp_exc.NvpOutOfSyncException()
+                LOG.warning("network %s not found in NVP",
+                            quantum_lswitch['id'])
+                quantum_lswitch["status"] = constants.NET_STATUS_ERROR
         # do not make the case in which switches are found in NVP
         # but not in Quantum catastrophic.
         if len(nvp_lswitches):
@@ -1642,12 +1645,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             nvp_lport = nvp_lports.get(quantum_lport["id"])
             # if a quantum port is not found in NVP, this migth be because
             # such port is not mapped to a logical switch - ie: floating ip
-            if quantum_lport['device_owner'] in (l3_db.DEVICE_OWNER_FLOATINGIP,
-                                                 l3_db.DEVICE_OWNER_ROUTER_GW):
-                if not nvp_lport:
-                    quantum_lport['status'] = constants.PORT_STATUS_ERROR
-                    quantum_lport['admin_state_up'] = False
-            else:
+            if quantum_lport['device_owner'] not in (
+                    l3_db.DEVICE_OWNER_FLOATINGIP,
+                    l3_db.DEVICE_OWNER_ROUTER_GW):
                 try:
                     quantum_lport["admin_state_up"] = (
                         nvp_lport["admin_status_enabled"])
@@ -1665,11 +1665,13 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
                     # This won't raise a keyError for sure
                     del nvp_lports[quantum_lport["id"]]
-                except KeyError:
+                except:
                     # if this occurred some expected nvp attribute was not
                     # found. Raise an error
-                    LOG.exception("Unable to fetch status from NVP lport")
-                    raise
+                    LOG.warning("Port not found in NVP %s",
+                                quantum_lport["id"])
+                    quantum_lport['admin_state_up'] = False
+                    quantum_lport["status"] = constants.PORT_STATUS_ERROR
             lports.append(quantum_lport)
 
         # do not make the case in which ports are found in NVP
