@@ -234,7 +234,7 @@ security_group_quota_opts = [
 cfg.CONF.register_opts(security_group_quota_opts, 'QUOTAS')
 
 security_group_opts = [
-    cfg.StrOpt('proxy_mode', default=False)
+    cfg.BoolOpt('proxy_mode', default=False)
 ]
 cfg.CONF.register_opts(security_group_opts, 'SECURITYGROUP')
 
