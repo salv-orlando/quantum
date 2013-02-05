@@ -1390,6 +1390,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         # to add provider networks fields
         net_result = self._make_network_dict(network, None)
         self._extend_network_dict_provider(context, net_result)
+        self._extend_network_dict_l3(context, net_result)
+        self._extend_network_qos_queue(context, net_result)
         return self._fields(net_result, fields)
 
     def get_networks(self, context, filters=None, fields=None):
@@ -1550,23 +1552,25 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         params = {}
         params["network"] = network["network"]
-        pairs = self._get_lswitch_cluster_pairs(id, context.tenant_id)
 
-        #Goto to NVP only if name or shared were updated
-        if len(set(network['network'].keys()) & set(('name', 'shared'))) > 0:
+        # Goto to NVP only if name or shared were updated
+        # And if the network is not external external!
+        if len(set(network['network'].keys()) & set(('name',
+                                                     'shared'))) > 0:
             net_db_dict = dict(self._get_network(context, id))
             net_db_dict.update(network['network'])
-            for (cluster, switches) in pairs:
-                for switch in switches:
-                    tags = None
-                    if net_db_dict['shared']:
-                        tags = [{'tag': 'true', 'scope': 'shared'}]
-                    nvplib.update_lswitch(cluster, switch,
-                                          net_db_dict['name'],
-                                          tags=tags)
+            if not self._network_is_external(context, id):
+                pairs = self._get_lswitch_cluster_pairs(id,
+                                                        context.tenant_id)
+                for (cluster, switches) in pairs:
+                    for switch in switches:
+                        tags = None
+                        if net_db_dict['shared']:
+                            tags = [{'tag': 'true', 'scope': 'shared'}]
+                        nvplib.update_lswitch(cluster, switch,
+                                              net_db_dict['name'],
+                                              tags=tags)
 
-        LOG.debug("update_network() completed for tenant: %s" %
-                  context.tenant_id)
         with context.session.begin(subtransactions=True):
             net = super(NvpPluginV2, self).update_network(context, id, network)
 
@@ -1579,6 +1583,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self._process_l3_update(context, network['network'], id)
             self._extend_network_dict_provider(context, net)
             self._extend_network_dict_l3(context, net)
+
+        LOG.debug(_("update_network completed for network: %s"), id)
         return net
 
     def get_ports(self, context, filters=None, fields=None):
