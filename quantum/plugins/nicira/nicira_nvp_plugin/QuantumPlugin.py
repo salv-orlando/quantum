@@ -1929,6 +1929,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             security_groups = (
                 super(NvpPluginV2, self)._get_port_security_group_bindings(
                     context, filters))
+            security_groups = [security_group['security_group_id']
+                               for security_group in security_groups]
             ret_port[ext_sg.SECURITYGROUP] = security_groups
         # delete security group on port
         else:
@@ -1954,6 +1956,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         except:
             super(NvpPluginV2, self).update_port(context, id,
                                                  {'port': rollback_port})
+            raise
 
         # TODO have some kind of roll back for this
         if (update_security_groups is not False):
