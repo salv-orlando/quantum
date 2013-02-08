@@ -295,7 +295,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     # Create in DB only - don't go on NVP
                     # Make it shared so each tenant can access it
                     def_gw_data = {'id': def_l2_gw_uuid,
-                                   'name': 'default L2 gateway service',
+                                   'name': 'default_gw',
                                    'shared': True,
                                    'devices': []}
                     gw_res_name = networkgw.RESOURCE_NAME.replace('-', '_')
