@@ -223,11 +223,11 @@ EXTENDED_ATTRIBUTES_2_0 = {
                               'default': None}}}
 security_group_quota_opts = [
     cfg.IntOpt('quota_security_group',
-               default=10,
+               default=-1,
                help='number of security groups allowed per tenant,'
                     '-1 for unlimited'),
     cfg.IntOpt('quota_security_group_rule',
-               default=100,
+               default=-1,
                help='number of security rules allowed per tenant, '
                     '-1 for unlimited'),
 ]
