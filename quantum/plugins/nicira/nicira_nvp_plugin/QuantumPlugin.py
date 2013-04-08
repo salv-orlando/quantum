@@ -543,13 +543,16 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         # TODO(bgh): if this is a bridged network and the lswitch we just got
         # back will have zero ports after the delete we should garbage collect
         # the lswitch.
-        nvplib.delete_port(self.default_cluster,
-                           port_data['network_id'],
-                           port)
+        try:
+            nvplib.delete_port(self.default_cluster,
+                               port_data['network_id'],
+                               port)
 
+            LOG.debug("_nvp_delete_port completed for port %s on network %s",
+                      port_data['id'], port_data['network_id'])
+        except q_exc.NotFound:
+            LOG.warning(_("port %s not found in NVP"), port_data['id'])
         self._delete_port_security_group_bindings(context, port_data['id'])
-        LOG.debug("_nvp_delete_port completed for port %s on network %s",
-                  port_data['id'], port_data['network_id'])
 
     def _nvp_delete_router_port(self, context, port_data):
         # Delete logical router port
@@ -1303,14 +1306,17 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         # Do not go to NVP for external networks
         if not external:
-            # FIXME(salvatore-orlando): Failures here might lead NVP
-            # and quantum state to diverge
-            pairs = self._get_lswitch_cluster_pairs(id, context.tenant_id)
-            for (cluster, switches) in pairs:
-                nvplib.delete_networks(cluster, id, switches)
+            try:
+                # FIXME(salvatore-orlando): Failures here might lead NVP
+                # and quantum state to diverge
+                pairs = self._get_lswitch_cluster_pairs(id, context.tenant_id)
+                for (cluster, switches) in pairs:
+                    nvplib.delete_networks(cluster, id, switches)
 
-        LOG.debug("delete_network() completed for tenant: %s" %
-                  context.tenant_id)
+                LOG.debug("delete_network() completed for tenant: %s" %
+                          context.tenant_id)
+            except q_exc.NotFound:
+                LOG.warning(_("Did not find lswitch %s in NVP"), id)
 
     def _get_lswitch_cluster_pairs(self, netw_id, tenant_id):
         """Figure out the set of lswitches on each cluster that maps to this
@@ -1383,6 +1389,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     # update the network status
                     with context.session.begin(subtransactions=True):
                         network.status = net_op_status
+            except q_exc.NotFound:
+                network.status = constants.NET_STATUS_ERROR
             except Exception:
                 err_msg = "Unable to get logical switches"
                 LOG.exception(err_msg)
@@ -1649,7 +1657,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     "&relations=LogicalPortStatus" %
                     (lswitch, lport_fields_str, vm_filter, tenant_filter))
 
-                ports = nvplib.get_all_query_pages(lport_query_path, c)
+                try:
+                    ports = nvplib.get_all_query_pages(lport_query_path, c)
+                except q_exc.NotFound:
+                    LOG.warn(_("Lswitch %s not found in NVP"), lswitch)
+                    ports = None
                 if ports:
                     for port in ports:
                         for tag in port["tags"]:
@@ -2035,27 +2047,33 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         :raises: exception.PortNotFound
         :raises: exception.NetworkNotFound
         """
+        with context.session.begin(subtransactions=True):
+            quantum_db_port = super(NvpPluginV2, self).get_port(context,
+                                                                id, fields)
+            self._extend_port_dict_security_group(context, quantum_db_port)
+            self._extend_port_dict_port_security(context, quantum_db_port)
+            self._extend_port_qos_queue(context, quantum_db_port)
+            if self._network_is_external(context,
+                                         quantum_db_port['network_id']):
+                return quantum_db_port
 
-        quantum_db_port = super(NvpPluginV2, self).get_port(context,
-                                                            id, fields)
-        self._extend_port_dict_security_group(context, quantum_db_port)
-        self._extend_port_dict_port_security(context, quantum_db_port)
-        self._extend_port_qos_queue(context, quantum_db_port)
-        if self._network_is_external(context, quantum_db_port['network_id']):
-            return quantum_db_port
+            nvp_id = nicira_db.get_nvp_port_id(context.session, id)
+            #TODO: pass the appropriate cluster here
+            try:
+                port = nvplib.get_logical_port_status(
+                    self.default_cluster, quantum_db_port['network_id'],
+                    nvp_id)
+                quantum_db_port["admin_state_up"] = (
+                    port["admin_status_enabled"])
+                if port["fabric_status_up"]:
+                    quantum_db_port["status"] = constants.PORT_STATUS_ACTIVE
+                else:
+                    quantum_db_port["status"] = constants.PORT_STATUS_DOWN
 
-        nvp_id = nicira_db.get_nvp_port_id(context.session, id)
-        #TODO: pass the appropriate cluster here
-        port = nvplib.get_logical_port_status(
-            self.default_cluster, quantum_db_port['network_id'], nvp_id)
-        quantum_db_port["admin_state_up"] = port["admin_status_enabled"]
-        if port["fabric_status_up"]:
-            quantum_db_port["status"] = constants.PORT_STATUS_ACTIVE
-        else:
-            quantum_db_port["status"] = constants.PORT_STATUS_DOWN
-
-        LOG.debug("Port details for tenant %s: %s" %
-                  (context.tenant_id, quantum_db_port))
+            except q_exc.NotFound:
+                quantum_db_port["status"] = constants.PORT_STATUS_ERROR
+            LOG.debug("Port details for tenant %s: %s" %
+                      (context.tenant_id, quantum_db_port))
         return quantum_db_port
 
     def create_router(self, context, router):
@@ -2157,13 +2175,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             # together with the resource
             try:
                 nvplib.delete_lrouter(self.default_cluster, id)
-            except NvpApiClient.ResourceNotFound:
-                raise nvp_exc.NvpPluginException(
-                    err_desc=("Logical router %s not found "
-                              "on NVP Platform" % id))
+            except q_exc.NotFound:
+                LOG.warning(_("Logical router '%s' not found "
+                              "on NVP Platform") % id)
             except NvpApiClient.NvpApiException:
                 raise nvp_exc.NvpPluginException(
-                    err_desc=("Unable to update logical router"
+                    err_desc=("Unable to delete logical router"
                               "on NVP Platform"))
 
     def get_router(self, context, id, fields=None):
@@ -2172,31 +2189,32 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             # FIXME(salvatore-orlando): We need to
             # find the appropriate cluster!
             cluster = self.default_cluster
-            lrouter = nvplib.get_lrouter(cluster, id)
+            try:
+                lrouter = nvplib.get_lrouter(cluster, id)
+            except q_exc.NotFound:
+                lrouter = {}
+                router_op_status = constants.NET_STATUS_ERROR
             relations = lrouter.get('_relations')
-            lrouter_status = relations.get('LogicalRouterStatus')
-            if lrouter_status:
-                fabric_status = lrouter_status.get('fabric_status')
-                router_op_status = (constants.NET_STATUS_ACTIVE if
-                                    fabric_status else
-                                    constants.NET_STATUS_DOWN)
-            else:
-                err_desc = _("Unable to retrieve status for NVP "
-                             "logical router")
-                LOG.exception(err_desc)
-                raise nvp_exc.NvpPluginException(err_desc=err_desc)
-
-            LOG.debug("Current router status:%s;"
-                      "Status in Quantum DB:%s",
-                      router_op_status, router.status)
+            if relations:
+                lrouter_status = relations.get('LogicalRouterStatus')
+                # FIXME(salvatore-orlando): Being unable to fetch the
+                # logical router status should be an exception.
+                if lrouter_status:
+                    router_op_status = (lrouter_status.get('fabric_status')
+                                        and constants.NET_STATUS_ACTIVE or
+                                        constants.NET_STATUS_DOWN)
             if router_op_status != router.status:
-                # update the logical router status
+                LOG.debug(_("Current router status:%(router_status)s;"
+                            "Status in Quantum DB:%(db_router_status)s"),
+                          {'router_status': router_op_status,
+                           'db_router_status': router.status})
+                 # update the router status
                 with context.session.begin(subtransactions=True):
                     router.status = router_op_status
         except NvpApiClient.NvpApiException:
-            err_msg = "Unable to get logical router"
+            err_msg = _("Unable to get logical router")
             LOG.exception(err_msg)
-            raise nvp_exc.NvpPluginException(err_desc=err_msg)
+            raise nvp_exc.NvpPluginException(err_msg=err_msg)
         return self._make_router_dict(router, fields)
 
     def get_routers(self, context, filters=None, fields=None):

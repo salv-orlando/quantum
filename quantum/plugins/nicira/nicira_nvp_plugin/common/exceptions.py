@@ -44,10 +44,6 @@ class NvpNoMorePortsException(NvpPluginException):
                 "Maximum number of ports reached")
 
 
-class NvpOutOfSyncException(NvpPluginException):
-    message = _("Quantum and NVP Databases are out of Sync!")
-
-
 class NvpResourceNotFound(NvpPluginException):
     message = _("The NVP %(nvp_resource_type)s corresponding to the Quantum "
                 "%(quantum_resource_type)s:%(quantum_id)s does not exist on "
