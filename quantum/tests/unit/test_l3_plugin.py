@@ -317,7 +317,8 @@ class L3NatDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
     def _make_router(self, fmt, tenant_id, name=None,
                      admin_state_up=None, set_context=False):
         res = self._create_router(fmt, tenant_id, name,
-                                  admin_state_up, set_context)
+                                  admin_state_up=admin_state_up,
+                                  set_context=set_context)
         return self.deserialize(fmt, res)
 
     def _add_external_gateway_to_router(self, router_id, network_id,
