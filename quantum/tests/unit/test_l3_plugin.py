@@ -270,7 +270,15 @@ class TestL3NatPlugin(db_base_plugin_v2.QuantumDbPluginV2,
         return super(TestL3NatPlugin, self).delete_port(context, id)
 
 
-class L3NatDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
+class L3NatTestCaseBase(test_db_plugin.QuantumDbPluginV2TestCase):
+    def setUp(self):
+        test_config['plugin_name_v2'] = (
+            'quantum.tests.unit.test_l3_plugin.TestL3NatPlugin')
+        # for these tests we need to enable overlapping ips
+        cfg.CONF.set_default('allow_overlapping_ips', True)
+        ext_mgr = L3TestExtensionManager()
+        test_config['extension_manager'] = ext_mgr
+        super(L3NatTestCaseBase, self).setUp()
 
     def _create_network(self, fmt, name, admin_status_up, **kwargs):
         """ Override the routine for allowing the router:external attribute """
@@ -280,20 +288,8 @@ class L3NatDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
                                            kwargs),
                                        kwargs.values()))
         arg_list = (l3.EXTERNAL,)
-        return super(L3NatDBTestCase, self)._create_network(fmt,
-                                                            name,
-                                                            admin_status_up,
-                                                            arg_list=arg_list,
-                                                            **new_args)
-
-    def setUp(self):
-        test_config['plugin_name_v2'] = (
-            'quantum.tests.unit.test_l3_plugin.TestL3NatPlugin')
-        # for these tests we need to enable overlapping ips
-        cfg.CONF.set_default('allow_overlapping_ips', True)
-        ext_mgr = L3TestExtensionManager()
-        test_config['extension_manager'] = ext_mgr
-        super(L3NatDBTestCase, self).setUp()
+        return super(L3NatTestCaseBase, self)._create_network(
+            fmt, name, admin_status_up, arg_list=arg_list, **new_args)
 
     def _create_router(self, fmt, tenant_id, name=None, arg_list=None,
                        admin_state_up=None, set_context=False, **kwargs):
@@ -360,6 +356,91 @@ class L3NatDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
             yield router
         finally:
             self._delete('routers', router['router']['id'])
+
+    def _set_net_external(self, net_id):
+        self._update('networks', net_id,
+                     {'network': {l3.EXTERNAL: True}})
+
+    def _create_floatingip(self, fmt, network_id, port_id=None,
+                           fixed_ip=None):
+        data = {'floatingip': {'floating_network_id': network_id,
+                               'tenant_id': self._tenant_id}}
+        if port_id:
+            data['floatingip']['port_id'] = port_id
+            if fixed_ip:
+                data['floatingip']['fixed_ip_address'] = fixed_ip
+        floatingip_req = self.new_create_request('floatingips', data, fmt)
+        return floatingip_req.get_response(self.ext_api)
+
+    def _validate_floating_ip(self, fip):
+        body = self._list('floatingips')
+        self.assertEquals(len(body['floatingips']), 1)
+        self.assertEquals(body['floatingips'][0]['id'],
+                          fip['floatingip']['id'])
+
+        body = self._show('floatingips', fip['floatingip']['id'])
+        self.assertEquals(body['floatingip']['id'],
+                          fip['floatingip']['id'])
+
+    @contextlib.contextmanager
+    def floatingip_with_assoc(self, port_id=None, fmt='json'):
+        with self.subnet(cidr='11.0.0.0/24') as public_sub:
+            self._set_net_external(public_sub['subnet']['network_id'])
+            with self.port() as private_port:
+                with self.router() as r:
+                    sid = private_port['port']['fixed_ips'][0]['subnet_id']
+                    private_sub = {'subnet': {'id': sid}}
+                    self._add_external_gateway_to_router(
+                        r['router']['id'],
+                        public_sub['subnet']['network_id'])
+                    self._router_interface_action('add', r['router']['id'],
+                                                  private_sub['subnet']['id'],
+                                                  None)
+
+                    res = self._create_floatingip(
+                        fmt,
+                        public_sub['subnet']['network_id'],
+                        port_id=private_port['port']['id'])
+                    self.assertEqual(res.status_int, exc.HTTPCreated.code)
+                    floatingip = self.deserialize(fmt, res)
+                    yield floatingip
+                    self._delete('floatingips', floatingip['floatingip']['id'])
+                    self._remove_external_gateway_from_router(
+                        r['router']['id'],
+                        public_sub['subnet']['network_id'])
+                    self._router_interface_action('remove',
+                                                  r['router']['id'],
+                                                  private_sub['subnet']['id'],
+                                                  None)
+
+    @contextlib.contextmanager
+    def floatingip_no_assoc(self, private_sub, fmt='json'):
+        with self.subnet(cidr='12.0.0.0/24') as public_sub:
+            self._set_net_external(public_sub['subnet']['network_id'])
+            with self.router() as r:
+                self._add_external_gateway_to_router(
+                    r['router']['id'],
+                    public_sub['subnet']['network_id'])
+                self._router_interface_action('add', r['router']['id'],
+                                              private_sub['subnet']['id'],
+                                              None)
+
+                res = self._create_floatingip(
+                    fmt,
+                    public_sub['subnet']['network_id'])
+                self.assertEqual(res.status_int, exc.HTTPCreated.code)
+                floatingip = self.deserialize(fmt, res)
+                yield floatingip
+                self._delete('floatingips', floatingip['floatingip']['id'])
+                self._remove_external_gateway_from_router(
+                    r['router']['id'],
+                    public_sub['subnet']['network_id'])
+                self._router_interface_action('remove', r['router']['id'],
+                                              private_sub['subnet']['id'],
+                                              None)
+
+
+class L3NatDBTestCase(L3NatTestCaseBase):
 
     def test_router_crd_ops(self):
         with self.router() as r:
@@ -871,104 +952,6 @@ class L3NatDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
                                                   p['port']['id'])
                     # remove extra port created
                     self._delete('ports', p2['port']['id'])
-
-    def _set_net_external(self, net_id):
-        self._update('networks', net_id,
-                     {'network': {l3.EXTERNAL: True}})
-
-    def _create_floatingip(self, fmt, network_id, port_id=None,
-                           fixed_ip=None, set_context=False):
-        data = {'floatingip': {'floating_network_id': network_id,
-                               'tenant_id': self._tenant_id}}
-        if port_id:
-            data['floatingip']['port_id'] = port_id
-            if fixed_ip:
-                data['floatingip']['fixed_ip_address'] = fixed_ip
-        floatingip_req = self.new_create_request('floatingips', data, fmt)
-        if set_context and self._tenant_id:
-            # create a specific auth context for this request
-            floatingip_req.environ['quantum.context'] = context.Context(
-                '', self._tenant_id)
-        return floatingip_req.get_response(self.ext_api)
-
-    def _make_floatingip(self, fmt, network_id, port_id=None,
-                         fixed_ip=None, set_context=False):
-        res = self._create_floatingip(fmt, network_id, port_id,
-                                      fixed_ip, set_context)
-        self.assertEqual(res.status_int, exc.HTTPCreated.code)
-        return self.deserialize(fmt, res)
-
-    def _validate_floating_ip(self, fip):
-        body = self._list('floatingips')
-        self.assertEquals(len(body['floatingips']), 1)
-        self.assertEquals(body['floatingips'][0]['id'],
-                          fip['floatingip']['id'])
-
-        body = self._show('floatingips', fip['floatingip']['id'])
-        self.assertEquals(body['floatingip']['id'],
-                          fip['floatingip']['id'])
-
-    @contextlib.contextmanager
-    def floatingip_with_assoc(self, port_id=None, fmt='json',
-                              set_context=False):
-        with self.subnet(cidr='11.0.0.0/24') as public_sub:
-            self._set_net_external(public_sub['subnet']['network_id'])
-            with self.port() as private_port:
-                with self.router() as r:
-                    sid = private_port['port']['fixed_ips'][0]['subnet_id']
-                    private_sub = {'subnet': {'id': sid}}
-                    floatingip = None
-                    try:
-                        self._add_external_gateway_to_router(
-                            r['router']['id'],
-                            public_sub['subnet']['network_id'])
-                        self._router_interface_action(
-                            'add', r['router']['id'],
-                            private_sub['subnet']['id'], None)
-
-                        floatingip = self._make_floatingip(
-                            fmt,
-                            public_sub['subnet']['network_id'],
-                            port_id=private_port['port']['id'],
-                            set_context=False)
-                        yield floatingip
-                    finally:
-                        if floatingip:
-                            self._delete('floatingips',
-                                         floatingip['floatingip']['id'])
-                        self._router_interface_action(
-                            'remove', r['router']['id'],
-                            private_sub['subnet']['id'], None)
-                        self._remove_external_gateway_from_router(
-                            r['router']['id'],
-                            public_sub['subnet']['network_id'])
-
-    @contextlib.contextmanager
-    def floatingip_no_assoc(self, private_sub, fmt='json', set_context=False):
-        with self.subnet(cidr='12.0.0.0/24') as public_sub:
-            self._set_net_external(public_sub['subnet']['network_id'])
-            with self.router() as r:
-                self._add_external_gateway_to_router(
-                    r['router']['id'],
-                    public_sub['subnet']['network_id'])
-                self._router_interface_action('add', r['router']['id'],
-                                              private_sub['subnet']['id'],
-                                              None)
-
-                res = self._create_floatingip(
-                    fmt,
-                    public_sub['subnet']['network_id'],
-                    set_context=set_context)
-                self.assertEqual(res.status_int, exc.HTTPCreated.code)
-                floatingip = self.deserialize(fmt, res)
-                yield floatingip
-                self._delete('floatingips', floatingip['floatingip']['id'])
-                self._remove_external_gateway_from_router(
-                    r['router']['id'],
-                    public_sub['subnet']['network_id'])
-                self._router_interface_action('remove', r['router']['id'],
-                                              private_sub['subnet']['id'],
-                                              None)
 
     def test_floatingip_crd_ops(self):
         with self.floatingip_with_assoc() as fip:
