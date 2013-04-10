@@ -382,7 +382,8 @@ def create_lrouter(cluster, tenant_id, display_name, nexthop):
         :raise NvpApiException: if there is a problem while communicating
         with the NVP controller
     """
-    tags = [{"tag": tenant_id, "scope": "os_tid", "tag": "quantum"}]
+    tags = [{"tag": tenant_id, "scope": "os_tid"},
+            {"tag": VERSION, "scope": "quantum"}]
     lrouter_obj = {
         "display_name": display_name,
         "tags": tags,
