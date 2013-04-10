@@ -1506,12 +1506,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 LOG.warning("network %s not found in NVP",
                             quantum_lswitch['id'])
                 quantum_lswitch["status"] = constants.NET_STATUS_ERROR
-        # do not make the case in which switches are found in NVP
-        # but not in Quantum catastrophic.
-        if len(nvp_lswitches):
-            LOG.warning("Found %s logical switches not bound "
-                        "to Quantum networks. Quantum and NVP are "
-                        "potentially out of sync", len(nvp_lswitches))
 
         LOG.debug("get_networks() completed for tenant %s" % context.tenant_id)
 
@@ -1706,13 +1700,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     quantum_lport['admin_state_up'] = False
                     quantum_lport["status"] = constants.PORT_STATUS_ERROR
             lports.append(quantum_lport)
-
-        # do not make the case in which ports are found in NVP
-        # but not in Quantum catastrophic.
-        if len(nvp_lports):
-            LOG.warning("Found %s logical ports not bound "
-                        "to Quantum ports. Quantum and NVP are "
-                        "potentially out of sync", len(nvp_lports))
 
         if fields:
             ret_fields = []
@@ -2255,13 +2242,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 # Bring the router in error if not found in NVP
                 router.status = constants.NET_STATUS_ERROR
                 router.admin_state_up = False
-
-        # do not make the case in which switches are found in NVP
-        # but not in Quantum catastrophic.
-        if len(nvp_lrouters):
-            LOG.warning("Found %s logical routers not bound "
-                        "to Quantum routers. Quantum and NVP are "
-                        "potentially out of sync", len(nvp_lrouters))
 
         LOG.debug("get_routers() completed for tenant %s" % context.tenant_id)
 
