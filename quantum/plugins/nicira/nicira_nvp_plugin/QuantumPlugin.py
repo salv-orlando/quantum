@@ -396,7 +396,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 cluster, router_id, port_data.get('tenant_id', 'fake'),
                 port_data.get('id', 'fake'), port_data.get('name', 'fake'),
                 port_data.get('admin_state_up', True), ip_addresses)
-            LOG.debug("Created NVP router port:%s", lrouter_port['uuid'])
+            LOG.info("Created NVP router port:%s", lrouter_port['uuid'])
         except NvpApiClient.NvpApiException:
             LOG.exception("Unable to create port on NVP logical router %s",
                           router_id)
@@ -413,8 +413,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                                lrouter_port['uuid'],
                                                attachment,
                                                attachment_type)
-            LOG.debug("Attached %s to NVP router port %s",
-                      attachment, lrouter_port['uuid'])
+            LOG.info("Attached %s to NVP router port %s",
+                     attachment, lrouter_port['uuid'])
         except NvpApiClient.NvpApiException:
             # Must remove NVP logical port
             nvplib.delete_router_lport(cluster, router_id,
@@ -514,12 +514,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             nvplib.plug_interface(cluster, selected_lswitch['uuid'],
                                   lport['uuid'], "VifAttachment",
                                   port_data['id'])
-            LOG.debug("_nvp_create_port completed for port %s on network %s. "
-                      "The new port id is %s. NVP port id is %s",
-                      port_data['name'],
-                      port_data['network_id'],
-                      port_data['id'],
-                      lport['uuid'])
+            LOG.info("_nvp_create_port completed for port %s on network %s. "
+                     "The new port id is %s. NVP port id is %s",
+                     port_data['name'],
+                     port_data['network_id'],
+                     port_data['id'],
+                     lport['uuid'])
         except Exception:
             # failed to create port in NVP delete port from quantum_db
             LOG.exception("An exception occured while plugging the interface")
@@ -548,8 +548,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                port_data['network_id'],
                                port)
 
-            LOG.debug("_nvp_delete_port completed for port %s on network %s",
-                      port_data['id'], port_data['network_id'])
+            LOG.info("_nvp_delete_port completed for port %s on network %s",
+                     port_data['id'], port_data['network_id'])
         except q_exc.NotFound:
             LOG.warning(_("port %s not found in NVP"), port_data['id'])
         self._delete_port_security_group_bindings(context, port_data['id'])
@@ -597,12 +597,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                                  False)
             nicira_db.add_quantum_nvp_port_mapping(
                 context.session, port_data['id'], lport['uuid'])
-            LOG.debug("_nvp_create_port completed for port %s on network %s. "
-                      "The new port id is %s. NVP port id is %s",
-                      port_data['name'],
-                      port_data['network_id'],
-                      port_data['id'],
-                      lport['uuid'])
+            LOG.info("_nvp_create_port completed for port %s on network %s. "
+                     "The new port id is %s. NVP port id is %s",
+                     port_data['name'],
+                     port_data['network_id'],
+                     port_data['id'],
+                     lport['uuid'])
         except Exception:
             # failed to create port in NVP delete port from quantum_db
             LOG.exception("An exception occured while plugging the interface")
@@ -657,11 +657,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 order=NVP_EXTGW_NAT_RULES_ORDER - cidr_prefix,
                 match_criteria={'source_ip_addresses': cidr})
 
-        LOG.debug("_nvp_create_ext_gw_port completed on external network %s, "
-                  "attached to router:%s. NVP port id is %s",
-                  port_data['network_id'],
-                  router_id,
-                  lr_port['uuid'])
+        LOG.info("_nvp_create_ext_gw_port completed on external network %s, "
+                 "attached to router:%s. NVP port id is %s",
+                 port_data['network_id'],
+                 router_id,
+                 lr_port['uuid'])
 
     def _nvp_delete_ext_gw_port(self, context, port_data):
         lr_port = self._find_router_gw_port(context, port_data)
@@ -693,10 +693,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             raise nvp_exc.NvpPluginException(
                 err_desc=("Unable to update logical router"
                           "on NVP Platform"))
-        LOG.debug("_nvp_delete_ext_gw_port completed on external network %s, "
-                  "attached to router:%s",
-                  port_data['network_id'],
-                  router_id)
+        LOG.info("_nvp_delete_ext_gw_port completed on external network %s, "
+                 "attached to router:%s",
+                 port_data['network_id'],
+                 router_id)
 
     def _nvp_create_l2_gw_port(self, context, port_data):
         """ Create a switch port, and attach it to a L2 gateway attachment """
@@ -726,12 +726,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                       port_data['device_id'],
                                       int(port_data.get('gw:segmentation_id')
                                           or 0))
-            LOG.debug("_nvp_create_port completed for port %s on network %s. "
-                      "The new port id is %s. NVP port id is %s",
-                      port_data['name'],
-                      port_data['network_id'],
-                      port_data['id'],
-                      lport['uuid'])
+            LOG.info("_nvp_create_port completed for port %s on network %s. "
+                     "The new port id is %s. NVP port id is %s",
+                     port_data['name'],
+                     port_data['network_id'],
+                     port_data['id'],
+                     lport['uuid'])
         except Exception:
             # failed to create port in NVP delete port from quantum_db
             LOG.exception("An exception occured while plugging the interface")
@@ -1179,7 +1179,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         networks = []
         for c in self.clusters:
             networks.extend(nvplib.get_all_networks(c, tenant_id, networks))
-        LOG.debug("get_all_networks() completed for tenant %s: %s" % (
+        LOG.info("get_all_networks() completed for tenant %s: %s" % (
             tenant_id, networks))
         return networks
 
@@ -1313,8 +1313,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 for (cluster, switches) in pairs:
                     nvplib.delete_networks(cluster, id, switches)
 
-                LOG.debug("delete_network() completed for tenant: %s" %
-                          context.tenant_id)
+                LOG.info("delete_network() completed for tenant: %s" %
+                         context.tenant_id)
             except q_exc.NotFound:
                 LOG.warning(_("Did not find lswitch %s in NVP"), id)
 
@@ -1332,7 +1332,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             pairs.append((c, lswitches))
         if len(pairs) == 0:
             raise q_exc.NetworkNotFound(net_id=netw_id)
-        LOG.debug("Returning pairs for network: %s" % (pairs))
+        LOG.info("Returning pairs for network: %s" % (pairs))
         return pairs
 
     def get_network(self, context, id, fields=None):
@@ -1507,7 +1507,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                             quantum_lswitch['id'])
                 quantum_lswitch["status"] = constants.NET_STATUS_ERROR
 
-        LOG.debug("get_networks() completed for tenant %s" % context.tenant_id)
+        LOG.info("get_networks() completed for tenant %s" % context.tenant_id)
 
         if fields:
             ret_fields = []
@@ -1588,7 +1588,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self._extend_network_dict_provider(context, net)
             self._extend_network_dict_l3(context, net)
 
-        LOG.debug(_("update_network completed for network: %s"), id)
+        LOG.info(_("update_network completed for network: %s"), id)
         return net
 
     def get_ports(self, context, filters=None, fields=None):
@@ -1817,9 +1817,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self._extend_port_dict_port_security(context, port)
         self._extend_port_qos_queue(context, port)
 
-        LOG.debug("create_port completed for tenant %s, on network %s."
-                  "New port id:%s" % (tenant_id, port_data['network_id'],
-                                      port_data['id']))
+        LOG.info("create_port completed for tenant %s, on network %s."
+                 "New port id:%s" % (tenant_id, port_data['network_id'],
+                                     port_data['id']))
         return port
 
     def update_port(self, context, id, port):
@@ -1950,8 +1950,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             params['do_port_security'] = do_port_security
             nvplib.update_port(ret_port["network_id"],
                                nvp_id, **params)
-            LOG.debug("update_port() completed for tenant: %s" %
-                      context.tenant_id)
+            LOG.info("update_port() completed for tenant: %s" %
+                     context.tenant_id)
 
         except:
             super(NvpPluginV2, self).update_port(context, id,
@@ -2059,8 +2059,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
             except q_exc.NotFound:
                 quantum_db_port["status"] = constants.PORT_STATUS_ERROR
-            LOG.debug("Port details for tenant %s: %s" %
-                      (context.tenant_id, quantum_db_port))
+            LOG.info("Port details for tenant %s: %s" %
+                     (context.tenant_id, quantum_db_port))
         return quantum_db_port
 
     def create_router(self, context, router):
@@ -2243,7 +2243,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 router.status = constants.NET_STATUS_ERROR
                 router.admin_state_up = False
 
-        LOG.debug("get_routers() completed for tenant %s" % context.tenant_id)
+        LOG.info("get_routers() completed for tenant %s" % context.tenant_id)
 
         return [self._make_router_dict(router, fields)
                 for router in routers]
@@ -2297,8 +2297,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     order=NVP_EXTGW_NAT_RULES_ORDER - cidr_prefix,
                     match_criteria={'source_ip_addresses': subnet['cidr']})
 
-        LOG.debug("add_router_interface completed for subnet:%s and router:%s",
-                  subnet_id, router_id)
+        LOG.info("add_router_interface completed for subnet:%s and router:%s",
+                 subnet_id, router_id)
         return router_iface_info
 
     def remove_router_interface(self, context, router_id, interface_info):
