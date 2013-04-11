@@ -33,6 +33,7 @@ from quantum.agent.linux import ip_lib
 from quantum.api.v2 import attributes
 from quantum.common import exceptions
 from quantum.common import topics
+from quantum.common import utils
 from quantum.openstack.common import cfg
 from quantum.openstack.common import context
 from quantum.openstack.common import importutils
@@ -51,7 +52,10 @@ class DhcpAgent(object):
                    default='quantum.agent.linux.dhcp.Dnsmasq',
                    help="The driver used to manage the DHCP server."),
         cfg.BoolOpt('use_namespaces', default=True,
-                    help="Allow overlapping IP.")
+                    help="Allow overlapping IP."),
+        cfg.IntOpt('num_sync_threads', default=20,
+                   help="Number of threads to use to parallelize "
+                        " inital sync.")
     ]
 
     def __init__(self, conf):
@@ -105,19 +109,23 @@ class DhcpAgent(object):
 
     def sync_state(self):
         """Sync the local DHCP state with Quantum."""
-        LOG.info(_('Synchronizing state'))
+        LOG.info(_('Starting Synchronizing state'))
         known_networks = set(self.cache.get_network_ids())
-
+        pool = utils.ThreadPool(cfg.CONF.num_sync_threads)
         try:
             active_networks = set(self.plugin_rpc.get_active_networks())
             for deleted_id in known_networks - active_networks:
-                self.disable_dhcp_helper(deleted_id)
+                pool.add_task(self.disable_dhcp_helper, deleted_id)
+            pool.wait_completion()
 
             for network_id in active_networks:
-                self.refresh_dhcp_helper(network_id)
+                pool.add_task(self.refresh_dhcp_helper, network_id)
+            pool.wait_completion()
+
         except:
             self.needs_resync = True
             LOG.exception(_('Unable to sync network state.'))
+        LOG.info(_('Finished Synchronizing state'))
 
     def _periodic_resync_helper(self):
         """Resync the dhcp state at the configured interval."""
