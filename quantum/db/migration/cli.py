@@ -44,7 +44,7 @@ _db_opts = [
 
 CONF = cfg.ConfigOpts()
 CONF.register_opts(_core_opts)
-CONF.register_opts(_db_opts, 'DATABASE')
+CONF.register_opts(_db_opts, 'database')
 CONF.register_opts(_quota_opts, 'QUOTAS')
 
 
