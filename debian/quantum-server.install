@@ -1,0 +1,4 @@
+bin/quantum-server usr/bin
+bin/quantum-debug usr/bin
+bin/quantum-ns-metadata-proxy usr/bin
+bin/quantum-metadata-agent usr/bin
