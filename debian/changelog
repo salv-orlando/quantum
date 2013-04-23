@@ -1,3 +1,9 @@
+quantum (2013.1) precise-grizzly; urgency=low
+
+  * None
+
+ -- Nicira <support@nicira.com>  Wed, 23 Apr 2013 12:34:31 -0600
+
 quantum (2013.1~g2-0ubuntu1~cloud0) precise-grizzly; urgency=low
 
   * New upstream release for the Ubuntu Cloud Archive.
