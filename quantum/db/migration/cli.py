@@ -42,6 +42,9 @@ _db_opts = [
     cfg.StrOpt('sql_connection',
                default='',
                help=_('URL to database')),
+    cfg.StrOpt('alembic_environment',
+               default='quantum.db.migration:nicira_alembic_migrations',
+               help=_('Location of alembic environment'))
 ]
 
 CONF = cfg.ConfigOpts()
@@ -129,7 +132,7 @@ def main():
         os.path.join(os.path.dirname(__file__), 'alembic.ini')
     )
     config.set_main_option('script_location',
-                           'quantum.db.migration:alembic_migrations')
+                           CONF.DATABASE.alembic_environment)
     # attach the Quantum conf to the Alembic conf
     config.quantum_config = CONF
 
