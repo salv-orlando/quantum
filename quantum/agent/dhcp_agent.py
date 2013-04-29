@@ -739,5 +739,5 @@ def main():
         binary='quantum-dhcp-agent',
         topic=topics.DHCP_AGENT,
         report_interval=cfg.CONF.AGENT.report_interval,
-        manager='quantum.agent.dhcp_agent.DhcpAgentWithStateReport')
+        manager='quantum.agent.dhcp_agent.DhcpAgent')
     service.launch(server).wait()
