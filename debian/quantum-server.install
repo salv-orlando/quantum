@@ -1,6 +1,1 @@
 bin/quantum-server usr/bin
-bin/quantum-debug usr/bin
-bin/quantum-ns-metadata-proxy usr/bin
-bin/quantum-metadata-agent usr/bin
-bin/quantum-db-manage /usr/bin
-quantum/plugins/nicira/nicira_nvp_plugin/check_nvp_config.py /usr/bin
