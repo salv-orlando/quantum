@@ -9,11 +9,6 @@
 override_dh_install:
 	dh_install --fail-missing -X/usr/etc -X/usr/bin
 
-override_dh_installinit:
-	dh_installinit -pquantum-l3-agent --name=quantum-l3-agent
-	dh_installinit -pquantum-l3-agent --name=quantum-metadata-agent
-	dh_installinit
-
 get-orig-source:
 	uscan --verbose --force-download --rename --destdir=../build-area
 

@@ -1,14 +1,92 @@
 quantum (2013.1.nicira) precise-grizzly; urgency=low
+quantum (1:2013.1-0ubuntu2) raring; urgency=low
 
-  * None
+  * Fix invalid multi-line cron jobs (LP: #1170312):
+    - d/cron.d/*: Consolidate jobs into a single command line, set syntax
+      highlighting to type 'crontab'. 
 
- -- Nicira <support@nicira.com>  Wed, 23 Apr 2013 12:34:31 -0600
+ -- James Page <james.page@ubuntu.com>  Mon, 22 Apr 2013 15:58:12 +0100
 
-quantum (2013.1~g2-0ubuntu1~cloud0) precise-grizzly; urgency=low
+quantum (1:2013.1-0ubuntu1) raring; urgency=low
 
-  * New upstream release for the Ubuntu Cloud Archive.
+  * New upstream release.
 
- -- Chuck Short <zulcss@ubuntu.com>  Wed, 23 Jan 2013 12:34:31 -0600
+ -- Chuck Short <zulcss@ubuntu.com>  Thu, 04 Apr 2013 14:03:41 -0500
+
+quantum (1:2013.1~rc2-0ubuntu1) raring; urgency=low
+
+  * New upstream release. 
+
+ -- Chuck Short <zulcss@ubuntu.com>  Tue, 26 Mar 2013 08:33:56 -0500
+
+quantum (1:2013.1~rc1-0ubuntu1) raring; urgency=low
+
+  [ Chuck Short ]
+  * debian/patches/fix-quantum-configuration.patch: Refreshed
+  * debian/control: Add python-testtools and python-fixtures a build-dep.
+  * debian/control: Drop python-gflags no longer needed.
+  * debian/control: Drop python-unittest2 no longer needed.
+
+  [ James Page ]
+  * New upstream release candidate.
+  * d/watch: Update uversionmangle to deal with upstream versioning
+    changes, remove tarballs.openstack.org.
+  * d/rules: Disable PEP-8 tests until fixed upstream.
+  * d/control,quantum-plugin-midonet.install: Added plugin package for
+    Midonet. 
+  * d/control,quantum-lbaas-*: Added Load Balancing as-a Service agent
+    package. 
+  * d/control: Bumped Standards-Version, no changes.
+  * d/p/fix-quantum-configuration.patch: Added midonet sqlite path to
+    patch, fixed up linuxbridge path. 
+  * d/p/fix-ubuntu-tests.patch: Re-added skipTest for linuxbridge tests
+    that attempt to setup udev monitors.
+  * d/quantum-metadata-agent.*: Refactor metadata-agent into separate
+    package and add Depends from quantum-l3-agent and quantum-dhcp-agent.
+  * d/quantum-plugin-nicira.install: Add quantum-check-nvp-config binary.
+  * d/control: Add iputils-arping to quantum-l3-agent Depends (LP: #1153066).
+  * d/control: python-oslo-config -> python-oslo.config.
+  * d/control: Bump python-quantumclient >= 1:2.2.0 inline with upstream.
+
+ -- James Page <james.page@ubuntu.com>  Fri, 15 Mar 2013 09:37:28 +0000
+
+quantum (2013.1.g3-0ubuntu1) raring; urgency=low
+
+  [ Adam Gandelman ]
+  * debian/patches/fix-quantum-configuration.patch: Refreshed and update to
+    reflect new global root_wrap configuration defined only in
+    /etc/quantum/quantum.conf.
+  * debian/patches/fix-ubuntu-tests.patch: Refreshed, added skipTests for
+    linuxbridge tests that attempt to setup udev monitors.
+  * debian/{control, quantum-server.install}: Drop quantum-ns-metadata-proxy,
+    quantum-metadata-agent, quantum-debug from quantum-server package and set a
+    Break/Replaces on the last quantum-server package that shipped them.
+    (LP: #1112203)
+  * debian/{control, quantum-plugin-nec.install}:  Drop rootwrap filters,
+    only install /w the agent.
+  * debian/control: Add Breaks/Replaces between quantum-plugin-nec and new
+    quantum-plugin-nec-agent.
+
+  [ Yolanda Robla ]
+  * debian/patches: refreshed patches
+
+  [ James Page ]
+  * d/p/fix-quantum-configuration.patch: Add root_wrap helper to AGENT
+    section of /etc/quantum/quantum.conf to support new global configuration.
+  * d/control,quantum-plugin-{bigswitch,brocade,plumgrid}.install: Add new
+    plugin packages for BigSwitch, Brocade, Hyper-V and PLUMgrid.
+  * d/p/fix-quantum-configuration.patch: Set sqlite location for new plugins.
+  * d/control,quantum-plugin-nec-agent.*: Add new plugin agent package for NEC.
+  * d/quantum-common.install: Added new binaries and common rootwrap.d config.
+  * d/control: Removed VCS fields, updated maintainer.
+  * Wrapped and sorted debian/*.
+  * d/control: Add BD on python-oslo-config.
+  * d/control: Add BD on python-netifaces to fix RYU unit tests.
+
+  [ Chuck Short ]
+  * New upstream release.
+
+ -- Chuck Short <zulcss@ubuntu.com>  Fri, 22 Feb 2013 09:54:36 -0600
 
 quantum (2013.1~g2-0ubuntu1) raring; urgency=low
 
@@ -25,6 +103,8 @@ quantum (2013.1~g2-0ubuntu1) raring; urgency=low
     configuration in metadata_agent.ini file.
   * debian/changelog: Updated package version
   * d/p/fix-quantum-configuration.patch: refresh patches
+  * debian/patches/fix-ubuntu-tests.patch: Refreshed.
+  * debian/control: added python-novaclient dependency
 
   [ James Page ]
   * d/*.install: Install entry points from bin directory instead
@@ -48,13 +128,7 @@ quantum (2013.1~g2-0ubuntu1) raring; urgency=low
   * debian/control: Remove unnecessary openvswitch-vswitch dependency
     from quantum-plugin-openvswitch (LP: #1076747).
 
- -- Chuck Short <zulcss@ubuntu.com>  Fri, 11 Jan 2013 09:14:35 -0600
-
-quantum (2013.1~g1-0ubuntu1~cloud0) precise-grizzly; urgency=low
-
-  * New upstream release for the Ubuntu Cloud Archive.
-
- -- Chuck Short <zulcss@ubuntu.com>  Mon, 26 Nov 2012 13:51:05 -0600
+ -- Yolanda Robla <yolanda.robla@canonical.com>  Tue, 22 Jan 2013 11:40:00 +0100
 
 quantum (2013.1~g1-0ubuntu1) raring; urgency=low
 
@@ -68,12 +142,6 @@ quantum (2013.1~g1-0ubuntu1) raring; urgency=low
 
  -- Chuck Short <zulcss@ubuntu.com>  Fri, 23 Nov 2012 09:43:14 -0600
 
-quantum (2012.2-0ubuntu1~cloud0) precise-folsom; urgency=low
-
-  * New release candidate for the Ubuntu Cloud Archive.
-
- -- Chuck Short <zulcss@ubuntu.com>  Thu, 27 Sep 2012 15:53:04 -0500
-
 quantum (2012.2-0ubuntu1) quantal; urgency=low
 
   [ Chuck Short ]
@@ -86,23 +154,11 @@ quantum (2012.2-0ubuntu1) quantal; urgency=low
 
  -- Chuck Short <zulcss@ubuntu.com>  Thu, 27 Sep 2012 13:19:33 -0500
 
-quantum (2012.2~rc3-0ubuntu1~cloud0) precise-folsom; urgency=low
-
-  * New release candidate for the Ubuntu Cloud Archive.
-
- -- Chuck Short <zulcss@ubuntu.com>  Thu, 27 Sep 2012 14:51:56 -0500
-
 quantum (2012.2~rc3-0ubuntu1) quantal; urgency=low
 
   * New upstream release.
 
  -- Chuck Short <zulcss@ubuntu.com>  Wed, 26 Sep 2012 15:14:31 -0500
-
-quantum (2012.2~rc2-0ubuntu1~cloud0) precise-folsom; urgency=low
-
-  * New release candidate for the Ubuntu Cloud Archive.
-
- -- Chuck Short <zulcss@ubuntu.com>  Tue, 25 Sep 2012 11:31:43 -0500
 
 quantum (2012.2~rc2-0ubuntu1) quantal; urgency=low
 
@@ -120,13 +176,6 @@ quantum (2012.2~rc2-0ubuntu1) quantal; urgency=low
   * debian/patches/fix-ubuntu-tests.patch: Refreshed.
 
  -- Chuck Short <zulcss@ubuntu.com>  Fri, 21 Sep 2012 13:01:18 -0500
-
-quantum (2012.2~rc1-0ubuntu1~cloud0) precise-folsom; urgency=low
-
-  * Backport for the Ubuntu Cloud Archive:
-    - New release candidate for the Ubuntu Cloud Archive.
-
- -- Chuck Short <zulcss@ubuntu.com>  Tue, 18 Sep 2012 09:00:03 -0500
 
 quantum (2012.2~rc1-0ubuntu1) quantal; urgency=low
 
@@ -165,7 +214,7 @@ quantum (2012.2~rc1-0ubuntu1) quantal; urgency=low
   [ Chuck Short ]
   * New usptream release.
 
- -- Chuck Short <zulcss@ubuntu.com>  Fri, 12 Sep 2012 13:41:20 -0500
+ -- Chuck Short <zulcss@ubuntu.com>  Wed, 12 Sep 2012 13:41:20 -0500
 
 quantum (2012.2~rc1~20120907.1154-0ubuntu1) quantal; urgency=low
 

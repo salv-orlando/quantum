@@ -1,3 +1,1 @@
 etc/quantum/plugins/nec/* etc/quantum/plugins/nec
-bin/quantum-nec-agent usr/bin
-etc/quantum/rootwrap.d/nec-plugin.filters etc/quantum/rootwrap.d
