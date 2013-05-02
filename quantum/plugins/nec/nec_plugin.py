@@ -130,9 +130,6 @@ class NECPluginV2(nec_plugin_base.NECPluginV2Base,
         # Consume from all consumers in a thread
         self.conn.consume_in_thread()
 
-    def _check_view_auth(self, context, resource, action):
-        return policy.check(context, action, resource)
-
     def _update_resource_status(self, context, resource, id, status):
         """Update status of specified resource."""
         request = {}
@@ -365,11 +362,10 @@ class NECPluginV2(nec_plugin_base.NECPluginV2Base,
         return [self._fields(net, fields) for net in nets]
 
     def _extend_port_dict_binding(self, context, port):
-        if self._check_view_auth(context, port, self.binding_view):
-            port[portbindings.VIF_TYPE] = portbindings.VIF_TYPE_OVS
-            port[portbindings.CAPABILITIES] = {
-                portbindings.CAP_PORT_FILTER:
-                'security-group' in self.supported_extension_aliases}
+        port[portbindings.VIF_TYPE] = portbindings.VIF_TYPE_OVS
+        port[portbindings.CAPABILITIES] = {
+            portbindings.CAP_PORT_FILTER:
+            'security-group' in self.supported_extension_aliases}
         return port
 
     def create_port(self, context, port):

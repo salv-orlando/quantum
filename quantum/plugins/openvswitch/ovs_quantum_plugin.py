@@ -251,11 +251,6 @@ class OVSQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self._aliases = aliases
         return self._aliases
 
-    network_view = "extension:provider_network:view"
-    network_set = "extension:provider_network:set"
-    binding_view = "extension:port_binding:view"
-    binding_set = "extension:port_binding:set"
-
     def __init__(self, configfile=None):
         ovs_db_v2.initialize()
         self._parse_network_vlan_ranges()
@@ -338,29 +333,22 @@ class OVSQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 sys.exit(1)
         LOG.info(_("Tunnel ID ranges: %s"), self.tunnel_id_ranges)
 
-    # TODO(rkukura) Use core mechanism for attribute authorization
-    # when available.
-
-    def _check_view_auth(self, context, resource, action):
-        return policy.check(context, action, resource)
-
     def _extend_network_dict_provider(self, context, network):
-        if self._check_view_auth(context, network, self.network_view):
-            binding = ovs_db_v2.get_network_binding(context.session,
-                                                    network['id'])
-            network[provider.NETWORK_TYPE] = binding.network_type
-            if binding.network_type == constants.TYPE_GRE:
-                network[provider.PHYSICAL_NETWORK] = None
-                network[provider.SEGMENTATION_ID] = binding.segmentation_id
-            elif binding.network_type == constants.TYPE_FLAT:
-                network[provider.PHYSICAL_NETWORK] = binding.physical_network
-                network[provider.SEGMENTATION_ID] = None
-            elif binding.network_type == constants.TYPE_VLAN:
-                network[provider.PHYSICAL_NETWORK] = binding.physical_network
-                network[provider.SEGMENTATION_ID] = binding.segmentation_id
-            elif binding.network_type == constants.TYPE_LOCAL:
-                network[provider.PHYSICAL_NETWORK] = None
-                network[provider.SEGMENTATION_ID] = None
+        binding = ovs_db_v2.get_network_binding(context.session,
+                                                network['id'])
+        network[provider.NETWORK_TYPE] = binding.network_type
+        if binding.network_type == constants.TYPE_GRE:
+            network[provider.PHYSICAL_NETWORK] = None
+            network[provider.SEGMENTATION_ID] = binding.segmentation_id
+        elif binding.network_type == constants.TYPE_FLAT:
+            network[provider.PHYSICAL_NETWORK] = binding.physical_network
+            network[provider.SEGMENTATION_ID] = None
+        elif binding.network_type == constants.TYPE_VLAN:
+            network[provider.PHYSICAL_NETWORK] = binding.physical_network
+            network[provider.SEGMENTATION_ID] = binding.segmentation_id
+        elif binding.network_type == constants.TYPE_LOCAL:
+            network[provider.PHYSICAL_NETWORK] = None
+            network[provider.SEGMENTATION_ID] = None
 
     def _process_provider_create(self, context, attrs):
         network_type = attrs.get(provider.NETWORK_TYPE)
@@ -548,11 +536,10 @@ class OVSQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         return [self._fields(net, fields) for net in nets]
 
     def _extend_port_dict_binding(self, context, port):
-        if self._check_view_auth(context, port, self.binding_view):
-            port[portbindings.VIF_TYPE] = portbindings.VIF_TYPE_OVS
-            port[portbindings.CAPABILITIES] = {
-                portbindings.CAP_PORT_FILTER:
-                'security-group' in self.supported_extension_aliases}
+        port[portbindings.VIF_TYPE] = portbindings.VIF_TYPE_OVS
+        port[portbindings.CAPABILITIES] = {
+            portbindings.CAP_PORT_FILTER:
+            'security-group' in self.supported_extension_aliases}
         return port
 
     def create_port(self, context, port):

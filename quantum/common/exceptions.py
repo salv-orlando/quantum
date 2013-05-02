@@ -83,6 +83,10 @@ class PolicyNotFound(NotFound):
     message = _("Policy configuration policy.json could not be found")
 
 
+class PolicyRuleNotFound(NotFound):
+    message = _("Requested rule:(rule)s cannot be found")
+
+
 class StateInvalid(BadRequest):
     message = _("Unsupported port state: %(port_state)s")
 

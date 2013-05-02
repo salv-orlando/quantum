@@ -192,9 +192,6 @@ class HyperVQuantumPlugin(db_base_plugin_v2.QuantumDbPluginV2,
         # Consume from all consumers in a thread
         self.conn.consume_in_thread()
 
-    def _check_view_auth(self, context, resource, action):
-        return policy.check(context, action, resource)
-
     def _parse_network_vlan_ranges(self):
         self._network_vlan_ranges = {}
         for entry in cfg.CONF.HYPERV.network_vlan_ranges:
@@ -278,12 +275,11 @@ class HyperVQuantumPlugin(db_base_plugin_v2.QuantumDbPluginV2,
             return net
 
     def _extend_network_dict_provider(self, context, network):
-        if self._check_view_auth(context, network, self.network_view):
-            binding = self._db.get_network_binding(
-                context.session, network['id'])
-            network[provider.NETWORK_TYPE] = binding.network_type
-            p = self._network_providers_map[binding.network_type]
-            p.extend_network_dict(network, binding)
+        binding = self._db.get_network_binding(
+            context.session, network['id'])
+        network[provider.NETWORK_TYPE] = binding.network_type
+        p = self._network_providers_map[binding.network_type]
+        p.extend_network_dict(network, binding)
 
     def _check_provider_update(self, context, attrs):
         network_type = attrs.get(provider.NETWORK_TYPE)
@@ -341,8 +337,7 @@ class HyperVQuantumPlugin(db_base_plugin_v2.QuantumDbPluginV2,
         return [self._fields(net, fields) for net in nets]
 
     def _extend_port_dict_binding(self, context, port):
-        if self._check_view_auth(context, port, self.binding_view):
-            port[portbindings.VIF_TYPE] = portbindings.VIF_TYPE_HYPERV
+        port[portbindings.VIF_TYPE] = portbindings.VIF_TYPE_HYPERV
         return port
 
     def create_port(self, context, port):

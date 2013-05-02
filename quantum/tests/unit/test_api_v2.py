@@ -1209,7 +1209,7 @@ class V2Views(base.BaseTestCase):
         data['fake'] = 'value'
         attr_info = attributes.RESOURCE_ATTRIBUTE_MAP[collection]
         controller = v2_base.Controller(None, collection, resource, attr_info)
-        res = controller._view(data)
+        res = controller._view(context.get_admin_context(), data)
         self.assertTrue('fake' not in res)
         for key in keys:
             self.assertTrue(key in res)

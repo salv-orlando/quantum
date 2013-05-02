@@ -57,13 +57,6 @@ class PortBindingsTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
             ctx = context.get_admin_context()
             port = plugin.get_port(ctx, port_id)
             self._check_response_portbindings(port)
-            # By default user is admin - now test non admin user
-            ctx = context.Context(user_id=None,
-                                  tenant_id=self._tenant_id,
-                                  is_admin=False,
-                                  read_deleted="no")
-            non_admin_port = plugin.get_port(ctx, port_id)
-            self._check_response_no_portbindings(non_admin_port)
 
     def test_ports_vif_details(self):
         plugin = QuantumManager.get_plugin()
@@ -74,12 +67,3 @@ class PortBindingsTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
             self.assertEqual(len(ports), 2)
             for port in ports:
                 self._check_response_portbindings(port)
-            # By default user is admin - now test non admin user
-            ctx = context.Context(user_id=None,
-                                  tenant_id=self._tenant_id,
-                                  is_admin=False,
-                                  read_deleted="no")
-            ports = plugin.get_ports(ctx)
-            self.assertEqual(len(ports), 2)
-            for non_admin_port in ports:
-                self._check_response_no_portbindings(non_admin_port)

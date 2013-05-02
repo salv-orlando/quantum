@@ -211,11 +211,6 @@ class LinuxBridgePluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self._aliases = aliases
         return self._aliases
 
-    network_view = "extension:provider_network:view"
-    network_set = "extension:provider_network:set"
-    binding_view = "extension:port_binding:view"
-    binding_set = "extension:port_binding:set"
-
     def __init__(self):
         db.initialize()
         self._parse_network_vlan_ranges()
@@ -268,9 +263,6 @@ class LinuxBridgePluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 self._add_network(entry)
         LOG.debug(_("Network VLAN ranges: %s"), self.network_vlan_ranges)
 
-    def _check_view_auth(self, context, resource, action):
-        return policy.check(context, action, resource)
-
     def _add_network_vlan_range(self, physical_network, vlan_min, vlan_max):
         self._add_network(physical_network)
         self.network_vlan_ranges[physical_network].append((vlan_min, vlan_max))
@@ -283,20 +275,19 @@ class LinuxBridgePluginV2(db_base_plugin_v2.QuantumDbPluginV2,
     # when available.
 
     def _extend_network_dict_provider(self, context, network):
-        if self._check_view_auth(context, network, self.network_view):
-            binding = db.get_network_binding(context.session, network['id'])
-            if binding.vlan_id == constants.FLAT_VLAN_ID:
-                network[provider.NETWORK_TYPE] = constants.TYPE_FLAT
-                network[provider.PHYSICAL_NETWORK] = binding.physical_network
-                network[provider.SEGMENTATION_ID] = None
-            elif binding.vlan_id == constants.LOCAL_VLAN_ID:
-                network[provider.NETWORK_TYPE] = constants.TYPE_LOCAL
-                network[provider.PHYSICAL_NETWORK] = None
-                network[provider.SEGMENTATION_ID] = None
-            else:
-                network[provider.NETWORK_TYPE] = constants.TYPE_VLAN
-                network[provider.PHYSICAL_NETWORK] = binding.physical_network
-                network[provider.SEGMENTATION_ID] = binding.vlan_id
+        binding = db.get_network_binding(context.session, network['id'])
+        if binding.vlan_id == constants.FLAT_VLAN_ID:
+            network[provider.NETWORK_TYPE] = constants.TYPE_FLAT
+            network[provider.PHYSICAL_NETWORK] = binding.physical_network
+            network[provider.SEGMENTATION_ID] = None
+        elif binding.vlan_id == constants.LOCAL_VLAN_ID:
+            network[provider.NETWORK_TYPE] = constants.TYPE_LOCAL
+            network[provider.PHYSICAL_NETWORK] = None
+            network[provider.SEGMENTATION_ID] = None
+        else:
+            network[provider.NETWORK_TYPE] = constants.TYPE_VLAN
+            network[provider.PHYSICAL_NETWORK] = binding.physical_network
+            network[provider.SEGMENTATION_ID] = binding.vlan_id
 
     def _process_provider_create(self, context, attrs):
         network_type = attrs.get(provider.NETWORK_TYPE)
@@ -459,11 +450,10 @@ class LinuxBridgePluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         return [self._fields(net, fields) for net in nets]
 
     def _extend_port_dict_binding(self, context, port):
-        if self._check_view_auth(context, port, self.binding_view):
-            port[portbindings.VIF_TYPE] = portbindings.VIF_TYPE_BRIDGE
-            port[portbindings.CAPABILITIES] = {
-                portbindings.CAP_PORT_FILTER:
-                'security-group' in self.supported_extension_aliases}
+        port[portbindings.VIF_TYPE] = portbindings.VIF_TYPE_BRIDGE
+        port[portbindings.CAPABILITIES] = {
+            portbindings.CAP_PORT_FILTER:
+            'security-group' in self.supported_extension_aliases}
         return port
 
     def get_port(self, context, id, fields=None):

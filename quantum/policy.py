@@ -110,6 +110,7 @@ def _build_match_rule(action, target):
 
     match_rule = policy.RuleCheck('rule', action)
     resource, is_write = get_resource_and_action(action)
+    # Attribute-based checks shall not be enforced on GETs
     if is_write:
         # assigning to variable with short name for improving readability
         res_map = attributes.RESOURCE_ATTRIBUTE_MAP
@@ -160,6 +161,20 @@ class FieldCheck(policy.Check):
         return target_value == self.value
 
 
+def _prepare_check(context, action, target, plugin=None):
+    """Prepare rule, target, and credentials for the policy engine."""
+    init()
+    # Compare with None to distinguish case in which target is {}
+    if target is None:
+        target = {}
+    # Update target only if plugin is provided
+    if plugin:
+        target = _build_target(action, target, plugin, context)
+    match_rule = _build_match_rule(action, target)
+    credentials = context.to_dict()
+    return match_rule, target, credentials
+
+
 def check(context, action, target, plugin=None):
     """Verifies that the action is valid on the target in this context.
 
@@ -174,14 +189,20 @@ def check(context, action, target, plugin=None):
 
     :return: Returns True if access is permitted else False.
     """
-    init()
-    # Compare with None to distinguish case in which target is {}
-    if target is None:
-        target = {}
-    real_target = _build_target(action, target, plugin, context)
-    match_rule = _build_match_rule(action, real_target)
-    credentials = context.to_dict()
-    return policy.check(match_rule, real_target, credentials)
+    return policy.check(*(_prepare_check(context, action, target, plugin)))
+
+
+def check_if_exists(context, action, target):
+    # TODO(salvatore-orlando): Consider modifying oslo policy engine in
+    # order to allow to raise distinct exception when check fails and
+    # when policy is missing
+    real_rule, real_target, credentials = _prepare_check(
+        context, action, target)
+    # NOTE: This won't work if real_rule is a policy tree. However in
+    # this case it does not happen as we do not build a tree for GETs
+    if not policy._rules or action not in policy._rules:
+        raise exceptions.PolicyRuleNotFound(rule=real_rule)
+    return policy.check(real_rule, real_target, credentials)
 
 
 def enforce(context, action, target, plugin=None):
