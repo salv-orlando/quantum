@@ -122,7 +122,7 @@ def upgrade(active_plugin=None, options=None):
     # and set port_security_enabled to false as ip address pairs were not
     # configured in NVP originally.
     op.execute("INSERT INTO networksecuritybindings SELECT id as "
-               "network_id, False as port_security_enabled from networks")
+               "network_id, True as port_security_enabled from networks")
     # Convert mac or mac_ip into True for portsecurity bindings
     op.execute("UPDATE portsecuritybindings SET port_security_enabled=True "
                "WHERE security_type in ('mac', 'mac_ip')")
