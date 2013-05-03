@@ -93,6 +93,10 @@ def upgrade(active_plugin=None, options=None):
                     name='phy_uuid',
                     existing_type=sa.String(length=36),
                     existing_nullable=True)
+    op.alter_column('nvp_network_bindings', 'binding_type',
+                    type_=sa.Enum('flat', 'vlan', 'stt', 'gre', 'l3_ext',
+                                  name='nvp_network_bindings_binding_type'),
+                    existing_nullable=True)
     #Note: We do not drop security_type for simplifying downgrade
     op.add_column('portsecuritybindings',
                   sa.Column('port_security_enabled',
@@ -151,10 +155,14 @@ def downgrade(active_plugin=None, options=None):
                     existing_type=sa.String(length=255),
                     existing_nullable=True)
     op.drop_column('portsecuritybindings', 'port_security_enabled')
-    op.add_column('nvp_network_bindings',
-                  sa.Column(u'tz_uuid', sa.String(length=36),
-                  nullable=True))
-    op.drop_column('nvp_network_bindings', 'phy_uuid')
+    op.alter_column('nvp_network_bindings', 'phy_uuid',
+                    name='tz_uuid',
+                    existing_type=sa.String(length=36),
+                    existing_nullable=True)
+    op.alter_column('nvp_network_bindings', 'binding_type',
+                    type_=sa.Enum('flat', 'vlan', 'stt', 'gre',
+                                  name='nvp_network_bindings_binding_type'),
+                    existing_nullable=True)
     op.add_column('networkgateways',
                   sa.Column('shared', sa.Boolean(),
                             nullable=True))
