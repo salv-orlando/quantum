@@ -75,27 +75,6 @@ def _is_attribute_explicitly_set(attribute_name, resource, target):
             target[attribute_name] != resource[attribute_name]['default'])
 
 
-def _build_target(action, original_target, plugin, context):
-    """Augment dictionary of target attributes for policy engine.
-
-    This routine adds to the dictionary attributes belonging to the
-    "parent" resource of the targeted one.
-    """
-    target = original_target.copy()
-    resource, _a = get_resource_and_action(action)
-    hierarchy_info = attributes.RESOURCE_HIERARCHY_MAP.get(resource, None)
-    if hierarchy_info and plugin:
-        # use the 'singular' version of the resource name
-        parent_resource = hierarchy_info['parent'][:-1]
-        parent_id = hierarchy_info['identified_by']
-        f = getattr(plugin, 'get_%s' % parent_resource)
-        # f *must* exist, if not found it is better to let quantum explode
-        # Note: we do not use admin context
-        data = f(context, target[parent_id], fields=['tenant_id'])
-        target['%s_tenant_id' % parent_resource] = data['tenant_id']
-    return target
-
-
 def _build_match_rule(action, target):
     """Create the rule to match for a given action.
 
@@ -174,10 +153,9 @@ def check(context, action, target, plugin=None):
     :return: Returns True if access is permitted else False.
     """
     init()
-    real_target = _build_target(action, target, plugin, context)
-    match_rule = _build_match_rule(action, real_target)
+    match_rule = _build_match_rule(action, target)
     credentials = context.to_dict()
-    return policy.check(match_rule, real_target, credentials)
+    return policy.check(match_rule, target, credentials)
 
 
 def enforce(context, action, target, plugin=None):
@@ -196,8 +174,7 @@ def enforce(context, action, target, plugin=None):
     """
 
     init()
-    real_target = _build_target(action, target, plugin, context)
-    match_rule = _build_match_rule(action, real_target)
+    match_rule = _build_match_rule(action, target)
     credentials = context.to_dict()
-    return policy.check(match_rule, real_target, credentials,
+    return policy.check(match_rule, target, credentials,
                         exceptions.PolicyNotAuthorized, action=action)
