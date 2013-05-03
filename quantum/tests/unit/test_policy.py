@@ -292,14 +292,3 @@ class QuantumPolicyTestCase(base.BaseTestCase):
         target = {'shared': True, 'tenant_id': 'somebody_else'}
         result = policy.enforce(self.context, action, target, None)
         self.assertTrue(result)
-
-    def test_enforce_parentresource_owner(self):
-
-        def fakegetnetwork(*args, **kwargs):
-            return {'tenant_id': 'fake'}
-
-        action = "create_port:mac"
-        with mock.patch.object(self.plugin, 'get_network', new=fakegetnetwork):
-            target = {'network_id': 'whatever'}
-            result = policy.enforce(self.context, action, target, self.plugin)
-            self.assertTrue(result)

@@ -157,6 +157,7 @@ class TestLoadBalancerCallbacks(TestLoadBalancerPluginBase):
                     subnet = self.plugin_instance._core_plugin.get_subnet(
                         ctx, vip['vip']['subnet_id']
                     )
+                    port.pop('network_tenant_id', None)
                     port['fixed_ips'][0]['subnet'] = subnet
 
                     # reload pool to add members and vip
@@ -179,7 +180,6 @@ class TestLoadBalancerCallbacks(TestLoadBalancerPluginBase):
                     logical_config = self.callbacks.get_logical_device(
                         ctx, pool['id'], activate=True
                     )
-
                     self.assertEqual(logical_config, expected)
 
     def _update_port_test_helper(self, expected, func, **kwargs):

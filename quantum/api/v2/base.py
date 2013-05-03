@@ -313,8 +313,12 @@ class Controller(object):
             items = [body]
             bulk = False
         for item in items:
-            self._validate_network_tenant_ownership(request,
-                                                    item[self._resource])
+            network = self._validate_network_tenant_ownership(
+                request, item[self._resource])
+            # Augment item with network's owner tenant_id
+            if network:
+                item[self._resource]['network_tenant_id'] = (
+                    network['tenant_id'])
             policy.enforce(request.context,
                            action,
                            item[self._resource],
@@ -574,7 +578,7 @@ class Controller(object):
             resource_item['network_id'])
         # do not perform the check on shared networks
         if network.get('shared'):
-            return
+            return network
 
         network_owner = network['tenant_id']
 
@@ -585,6 +589,7 @@ class Controller(object):
                 "tenant_id": resource_item['tenant_id'],
                 "resource": self._resource,
             })
+        return network
 
 
 def create_resource(collection, resource, plugin, params, allow_bulk=False,
