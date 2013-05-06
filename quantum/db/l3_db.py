@@ -916,7 +916,9 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
         if not gw_port_ids:
             return []
         filters = {'id': gw_port_ids}
-        gw_ports = self.get_ports(context, filters)
+        gw_ports = [self._make_port_dict(port)
+                    for port in self._get_ports_query(
+                        context, filters=filters)]
         if gw_ports:
             self._populate_subnet_for_ports(context, gw_ports)
         return gw_ports
@@ -928,7 +930,10 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
             return []
         filters = {'device_id': router_ids,
                    'device_owner': [device_owner]}
-        interfaces = self.get_ports(context, filters)
+        # Retrieve ports without going to plugin
+        interfaces = [self._make_port_dict(port)
+                      for port in self._get_ports_query(
+                          context, filters=filters)]
         if interfaces:
             self._populate_subnet_for_ports(context, interfaces)
         return interfaces
