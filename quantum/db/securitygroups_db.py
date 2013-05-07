@@ -44,6 +44,11 @@ class SecurityGroupPortBinding(model_base.BASEV2):
                                   sa.ForeignKey("securitygroups.id"),
                                   primary_key=True)
 
+    ports = orm.relationship(
+        models_v2.Port,
+        backref=orm.backref("securitygroupportbindings",
+                            lazy='joined', cascade='delete'))
+
 
 class SecurityGroupRule(model_base.BASEV2, models_v2.HasId,
                         models_v2.HasTenant):
