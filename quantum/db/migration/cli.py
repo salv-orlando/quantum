@@ -131,10 +131,10 @@ def main():
     config = alembic_config.Config(
         os.path.join(os.path.dirname(__file__), 'alembic.ini')
     )
+    CONF()
     config.set_main_option('script_location',
                            CONF.DATABASE.alembic_environment)
     # attach the Quantum conf to the Alembic conf
     config.quantum_config = CONF
 
-    CONF()
     CONF.command.func(config, CONF.command.name)
