@@ -17,7 +17,6 @@
 
 from oslo.config import cfg
 import sqlalchemy as sa
-from sqlalchemy import exc as sa_exc
 from sqlalchemy import orm
 from sqlalchemy.orm import exc
 from sqlalchemy.sql import expression as expr
@@ -31,6 +30,7 @@ from quantum.db import models_v2
 from quantum.extensions import loadbalancer
 from quantum.extensions.loadbalancer import LoadBalancerPluginBase
 from quantum import manager
+from quantum.openstack.common.db import exception
 from quantum.openstack.common import log as logging
 from quantum.openstack.common import uuidutils
 from quantum.plugins.common import constants
@@ -394,7 +394,7 @@ class LoadBalancerPluginDb(LoadBalancerPluginBase):
             try:
                 context.session.add(vip_db)
                 context.session.flush()
-            except sa_exc.IntegrityError:
+            except exception.DBDuplicateEntry:
                 raise loadbalancer.VipExists(pool_id=v['pool_id'])
 
             # create a port to reserve address for IPAM
@@ -455,7 +455,7 @@ class LoadBalancerPluginDb(LoadBalancerPluginBase):
                             old_pool['vip_id'] = None
 
                         new_pool['vip_id'] = vip_db['id']
-                except sa_exc.IntegrityError:
+                except exception.DBDuplicateEntry:
                     raise loadbalancer.VipExists(pool_id=v['pool_id'])
 
         return self._make_vip_dict(vip_db)
