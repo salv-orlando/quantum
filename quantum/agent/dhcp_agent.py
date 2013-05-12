@@ -64,8 +64,10 @@ class DhcpAgent(manager.Manager):
                     help=_("Support Metadata requests on isolated networks.")),
         cfg.BoolOpt('enable_metadata_network', default=False,
                     help=_("Allows for serving metadata requests from a "
-                           "dedicate network. Requires "
-                           "enable isolated_metadata = True ")),
+                           "dedicated network. Requires "
+                           "enable_isolated_metadata = True")),
+        cfg.IntOpt('num_sync_threads', default=4,
+                   help=_('Number of threads to use during sync process.')),
     ]
 
     def __init__(self, host=None):
@@ -151,9 +153,8 @@ class DhcpAgent(manager.Manager):
             for deleted_id in known_networks - active_networks:
                 self.disable_dhcp_helper(deleted_id)
 
-            for network_id in active_networks:
-                self.refresh_dhcp_helper(network_id)
-        except:
+            self.bulk_enable_dhcp_helper()
+        except Exception:
             self.needs_resync = True
             LOG.exception(_('Unable to sync network state.'))
 
@@ -169,6 +170,12 @@ class DhcpAgent(manager.Manager):
         """Spawn a thread to periodically resync the dhcp state."""
         eventlet.spawn(self._periodic_resync_helper)
 
+    def bulk_enable_dhcp_helper(self):
+        networks = self.plugin_rpc.get_all_network_info()
+        pool = eventlet.GreenPool(cfg.CONF.num_sync_threads)
+        for network in networks:
+            pool.spawn_n(self.configure_dhcp_for_network, network)
+
     def enable_dhcp_helper(self, network_id):
         """Enable DHCP for a network that meets enabling criteria."""
         try:
@@ -177,7 +184,9 @@ class DhcpAgent(manager.Manager):
             self.needs_resync = True
             LOG.exception(_('Network %s RPC info call failed.'), network_id)
             return
+        self.configure_dhcp_for_network(network)
 
+    def configure_dhcp_for_network(self, network):
         if not network.admin_state_up:
             return
 
@@ -359,6 +368,15 @@ class DhcpPluginApi(proxy.RpcProxy):
                          self.make_msg('get_active_networks', host=self.host),
                          topic=self.topic)
 
+    def get_all_network_info(self):
+        """Make a remote process call to retrieve all network info."""
+        networks = self.call(self.context,
+                             self.make_msg('get_all_network_info',
+                                           host=self.host),
+                             topic=self.topic)
+
+        return [DictModel(n) for n in networks]
+
     def get_network_info(self, network_id):
         """Make a remote process call to retrieve network info."""
         return DictModel(self.call(self.context,
@@ -367,12 +385,20 @@ class DhcpPluginApi(proxy.RpcProxy):
                                                  host=self.host),
                                    topic=self.topic))
 
-    def get_dhcp_port(self, network_id, device_id):
+    def create_dhcp_port(self, port):
         """Make a remote process call to create the dhcp port."""
         return DictModel(self.call(self.context,
-                                   self.make_msg('get_dhcp_port',
-                                                 network_id=network_id,
-                                                 device_id=device_id,
+                                   self.make_msg('create_dhcp_port',
+                                                 port=port,
+                                                 host=self.host),
+                                   topic=self.topic))
+
+    def update_dhcp_port(self, port_id, port):
+        """Make a remote process call to update the dhcp port."""
+        return DictModel(self.call(self.context,
+                                   self.make_msg('update_dhcp_port',
+                                                 port_id=port_id,
+                                                 port=port,
                                                  host=self.host),
                                    topic=self.topic))
 
@@ -507,11 +533,8 @@ class DeviceManager(object):
                     "'%s'") % conf.interface_driver
             raise SystemExit(msg)
 
-    def get_interface_name(self, network, port=None):
+    def get_interface_name(self, network, port):
         """Return interface(device) name for use by the DHCP process."""
-        if not port:
-            device_id = self.get_device_id(network)
-            port = self.plugin.get_dhcp_port(network.id, device_id)
         return self.driver.get_device_name(port)
 
     def get_device_id(self, network):
@@ -522,11 +545,81 @@ class DeviceManager(object):
         host_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, socket.gethostname())
         return 'dhcp%s-%s' % (host_uuid, network.id)
 
+    def create_dhcp_port(self, network):
+        """Create/update DHCP port for the host if needed and return port."""
+
+        device_id = self.get_device_id(network)
+        subnets = {}
+        dhcp_enabled_subnet_ids = []
+        for subnet in network.subnets:
+            if subnet.enable_dhcp:
+                dhcp_enabled_subnet_ids.append(subnet.id)
+            subnets[subnet.id] = dict(
+                allocation_pools=subnet.allocation_pools,
+                cidr=subnet.cidr,
+                dns_nameservers=subnet.dns_nameservers,
+                enable_dhcp=subnet.enable_dhcp,
+                gateway_ip=subnet.gateway_ip,
+                host_routes=subnet.host_routes,
+                id=subnet.id,
+                ip_version=subnet.ip_version,
+                name=subnet.name,
+                network_id=subnet.network_id,
+                tenant_id=subnet.tenant_id)
+
+        retval = None
+        for port in network.ports:
+            port_device_id = getattr(port, 'device_id', None)
+            if port_device_id and port_device_id == device_id:
+                port_fixed_ips = []
+                for fixed_ip in port.fixed_ips:
+                    port_fixed_ips.append({'subnet_id': fixed_ip.subnet_id,
+                                           'ip_address': fixed_ip.ip_address})
+                    if fixed_ip.subnet_id in dhcp_enabled_subnet_ids:
+                        dhcp_enabled_subnet_ids.remove(fixed_ip.subnet_id)
+
+                # If there are dhcp_enabled_subnet_ids here that means that
+                # we need to add those to the port and call update.
+                if dhcp_enabled_subnet_ids:
+                    port_fixed_ips.extend(
+                        [dict(subnet_id=s) for s in dhcp_enabled_subnet_ids])
+                    retval = self.plugin.update_dhcp_port(
+                        port.id, {'port': {'fixed_ips': port_fixed_ips}})
+                else:
+                    retval = port
+                # break since we found port that matches device_id
+                break
+
+        # DHCP port has not yet been created.
+        if retval is None:
+            LOG.debug(_('DHCP port %(device_id)s on network %(network_id)s'
+                        'does not yet exist.'), {'device_id': device_id,
+                                                 'network_id': network.id})
+            port_dict = dict(
+                name='',
+                admin_state_up=True,
+                device_id=device_id,
+                network_id=network.id,
+                tenant_id=network.tenant_id,
+                device_owner='network:dhcp',
+                fixed_ips=[dict(subnet_id=s) for s in dhcp_enabled_subnet_ids])
+            retval = self.plugin.create_dhcp_port({'port': port_dict})
+
+        # Convert subnet_id to subnet dict
+        fixed_ips = [dict(subnet_id=fixed_ip.subnet_id,
+                          ip_address=fixed_ip.ip_address,
+                          subnet=subnets[fixed_ip.subnet_id])
+                     for fixed_ip in retval.fixed_ips]
+
+        ips = [DictModel(item) if isinstance(item, dict) else item
+               for item in fixed_ips]
+        retval.fixed_ips = ips
+
+        return retval
+
     def setup(self, network, reuse_existing=False):
         """Create and initialize a device for network's DHCP on this host."""
-        device_id = self.get_device_id(network)
-        port = self.plugin.get_dhcp_port(network.id, device_id)
-
+        port = self.create_dhcp_port(network)
         interface_name = self.get_interface_name(network, port)
 
         if self.conf.use_namespaces:

@@ -1215,6 +1215,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         return net
 
     def get_ports(self, context, filters=None, fields=None):
+        if filters is None:
+            filters = {}
         with context.session.begin(subtransactions=True):
             quantum_lports = super(NvpPluginV2, self).get_ports(
                 context, filters)
