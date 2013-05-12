@@ -60,27 +60,29 @@ class RouterServiceInsertionTestPlugin(
         with context.session.begin(subtransactions=True):
             r = super(RouterServiceInsertionTestPlugin, self).create_router(
                 context, router)
-            service_type_id = router['router'].get(rst.SERVICE_TYPE_ID)
-            if service_type_id is not None:
-                r[rst.SERVICE_TYPE_ID] = service_type_id
-                self._process_create_router_service_type_id(
+
+            service_provider_id = router['router'].get(rst.SERVICE_PROVIDER_ID)
+            if service_provider_id is not None:
+                r[rst.SERVICE_PROVIDER_ID] = service_provider_id
+                self._process_create_router_service_provider_id(
                     context, r)
+
         return r
 
     def get_router(self, context, id, fields=None):
         with context.session.begin(subtransactions=True):
             r = super(RouterServiceInsertionTestPlugin, self).get_router(
                 context, id, fields)
-            rsbind = self._get_router_service_type_id_binding(context, id)
+            rsbind = self._get_router_service_provider_id_binding(context, id)
             if rsbind:
-                r[rst.SERVICE_TYPE_ID] = rsbind['service_type_id']
+                r[rst.SERVICE_PROVIDER_ID] = rsbind['service_provider_id']
         return r
 
     def delete_router(self, context, id):
         with context.session.begin(subtransactions=True):
             super(RouterServiceInsertionTestPlugin, self).delete_router(
                 context, id)
-        rsbind = self._get_router_service_type_id_binding(context, id)
+        rsbind = self._get_router_service_provider_id_binding(context, id)
         if rsbind:
             raise Exception('Router service-type binding is not deleted')
 
@@ -169,7 +171,13 @@ class RouterServiceInsertionTestCase(base.BaseTestCase):
         #just stubbing core plugin with LoadBalancer plugin
         cfg.CONF.set_override('core_plugin', plugin)
         cfg.CONF.set_override('service_plugins', [])
+
         cfg.CONF.set_override('quota_router', -1, group='QUOTAS')
+        cfg.CONF.set_override('service_provider',
+                              [constants.LOADBALANCER +
+                               ':lbaas:driver_path:L2'],
+                              'service_providers')
+
         self.addCleanup(cfg.CONF.reset)
 
         # Ensure 'stale' patched copies of the plugin are never returned
@@ -189,8 +197,8 @@ class RouterServiceInsertionTestCase(base.BaseTestCase):
 
         self._tenant_id = "8c70909f-b081-452d-872b-df48e6c355d1"
 
-        res = self._do_request('GET', _get_path('service-types'))
-        self._service_type_id = res['service_types'][0]['id']
+        res = self._do_request('GET', _get_path('service-providers'))
+        self._service_provider_id = res['service_providers'][0]['id']
 
         self._setup_core_resources()
 
@@ -255,36 +263,37 @@ class RouterServiceInsertionTestCase(base.BaseTestCase):
         if res.status_code != webexc.HTTPNoContent.code:
             return res.json
 
-    def _router_create(self, service_type_id=None):
+    def _router_create(self, service_provider_id=None):
         data = {
             "router": {
                 "tenant_id": self._tenant_id,
                 "name": "test",
                 "admin_state_up": True,
-                "service_type_id": service_type_id,
+                "service_provider_id": service_provider_id,
             }
         }
 
         res = self._do_request('POST', _get_path('routers'), data)
         return res['router']
 
-    def test_router_create_no_service_type_id(self):
+    def test_router_create_no_service_provider_id(self):
         router = self._router_create()
-        self.assertEqual(router.get('service_type_id'), None)
+        self.assertEqual(router.get('service_provider_id'), None)
 
-    def test_router_create_with_service_type_id(self):
-        router = self._router_create(self._service_type_id)
-        self.assertEqual(router['service_type_id'], self._service_type_id)
+    def test_router_create_with_service_provider_id(self):
+        router = self._router_create(self._service_provider_id)
+        self.assertEqual(router['service_provider_id'],
+                         self._service_provider_id)
 
     def test_router_get(self):
-        router = self._router_create(self._service_type_id)
+        router = self._router_create(self._service_provider_id)
         res = self._do_request('GET',
                                _get_path('routers/{0}'.format(router['id'])))
-        self.assertEqual(res['router']['service_type_id'],
-                         self._service_type_id)
+        self.assertEqual(res['router']['service_provider_id'],
+                         self._service_provider_id)
 
-    def _test_router_update(self, update_service_type_id):
-        router = self._router_create(self._service_type_id)
+    def _test_router_update(self, update_service_provider_id):
+        router = self._router_create(self._service_provider_id)
         router_id = router['id']
         new_name = _uuid()
         data = {
@@ -293,8 +302,8 @@ class RouterServiceInsertionTestCase(base.BaseTestCase):
                 "admin_state_up": router['admin_state_up'],
             }
         }
-        if update_service_type_id:
-            data["router"]["service_type_id"] = _uuid()
+        if update_service_provider_id:
+            data["router"]["service_provider_id"] = _uuid()
             with testlib_api.ExpectedException(
                     webexc.HTTPClientError) as ctx_manager:
                 res = self._do_request(
@@ -307,19 +316,19 @@ class RouterServiceInsertionTestCase(base.BaseTestCase):
                 'GET', _get_path('routers/{0}'.format(router['id'])))
             self.assertEqual(res['router']['name'], new_name)
 
-    def test_router_update_with_service_type_id(self):
+    def test_router_update_with_service_provider_id(self):
         self._test_router_update(True)
 
-    def test_router_update_without_service_type_id(self):
+    def test_router_update_without_service_provider_id(self):
         self._test_router_update(False)
 
     def test_router_delete(self):
-        router = self._router_create(self._service_type_id)
+        router = self._router_create(self._service_provider_id)
         self._do_request(
             'DELETE', _get_path('routers/{0}'.format(router['id'])))
 
     def _test_lb_setup(self):
-        router = self._router_create(self._service_type_id)
+        router = self._router_create(self._service_provider_id)
         self._router_id = router['id']
 
     def _test_pool_setup(self):

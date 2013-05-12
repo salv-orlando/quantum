@@ -17,12 +17,12 @@
 # @author: Kaiwei Fan, VMware, Inc
 
 
-SERVICE_TYPE_ID = 'service_type_id'
+SERVICE_PROVIDER_ID = 'service_provider_id'
 EXTENDED_ATTRIBUTES_2_0 = {
     'routers': {
-        SERVICE_TYPE_ID: {'allow_post': True, 'allow_put': False,
-                          'validate': {'type:uuid_or_none': None},
-                          'default': None, 'is_visible': True},
+        SERVICE_PROVIDER_ID: {'allow_post': True, 'allow_put': False,
+                              'validate': {'type:uuid_or_none': None},
+                              'default': None, 'is_visible': True},
     }
 }
 

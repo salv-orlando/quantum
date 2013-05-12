@@ -19,102 +19,82 @@
 
 from oslo.config import cfg
 import sqlalchemy as sa
-from sqlalchemy import orm
 from sqlalchemy.orm import exc as orm_exc
-from sqlalchemy.sql import expression as expr
 
 from quantum.common import exceptions as q_exc
 from quantum import context
 from quantum.db import api as db
+from quantum.db import db_base_plugin_v2 as base_plugin
 from quantum.db import model_base
 from quantum.db import models_v2
+from quantum.openstack.common.db import exception as db_exc
 from quantum.openstack.common import log as logging
-
+from quantum.plugins.common import constants
 
 LOG = logging.getLogger(__name__)
-DEFAULT_SVCTYPE_NAME = 'default'
 
-default_servicetype_opts = [
-    cfg.StrOpt('description',
-               default='',
-               help=_('Textual description for the default service type')),
-    cfg.MultiStrOpt('service_definition',
-                    help=_('Defines a provider for an advanced service '
-                           'using the format: <service>:<plugin>[:<driver>]'))
+serviceprovider_opts = [
+    cfg.MultiStrOpt('service_provider', default=[],
+                    help=_('Defines providers for advanced services '
+                           'using the format: '
+                           '<service_type>:<name>:<driver>[:default]'))
 ]
 
-cfg.CONF.register_opts(default_servicetype_opts, 'default_servicetype')
+cfg.CONF.register_opts(serviceprovider_opts, 'service_providers')
 
 
-def parse_service_definition_opt():
+def parse_service_provider_opt():
     """Parse service definition opts and returns result."""
-    results = []
-    svc_def_opt = cfg.CONF.default_servicetype.service_definition
-    try:
-        for svc_def_str in svc_def_opt:
-            split = svc_def_str.split(':')
-            svc_def = {'service_class': split[0],
-                       'plugin': split[1]}
-            try:
-                svc_def['driver'] = split[2]
-            except IndexError:
-                # Never mind, driver is optional
-                LOG.debug(_("Default service type - no driver for service "
-                            "%(service_class)s and plugin %(plugin)s"),
-                          svc_def)
-            results.append(svc_def)
-        return results
-    except (TypeError, IndexError):
-        raise q_exc.InvalidConfigurationOption(opt_name='service_definition',
-                                               opt_value=svc_def_opt)
+    svc_providers_opt = cfg.CONF.service_providers.service_provider
+    res = []
+    for prov_def in svc_providers_opt:
+        split = prov_def.split(':')
+        svc_type = split[0]
+        name = split[1]
+        driver = split[2]
+        try:
+            default = split[3] == 'default'
+        except IndexError:
+            default = False
+        if svc_type not in constants.ALLOWED_SERVICES:
+            msg = _("Service type '%s' is not allowed") % svc_type
+            LOG.error(msg)
+            raise q_exc.Invalid(msg)
+        res.append({'service_type': svc_type,
+                    'name': name,
+                    'driver': driver,
+                    'default': default})
+    return res
 
 
-class NoDefaultServiceDefinition(q_exc.QuantumException):
-    message = _("No default service definition in configuration file. "
-                "Please add service definitions using the service_definition "
-                "variable in the [default_servicetype] section")
+class ServiceProviderNotFound(q_exc.NotFound):
+    message = _("Service provider %(service_prov_id)s could not be found")
 
 
-class ServiceTypeNotFound(q_exc.NotFound):
-    message = _("Service type %(service_type_id)s could not be found ")
+class ServiceProvider(model_base.BASEV2, models_v2.HasId):
+    service_type = sa.Column(sa.String(36), nullable=False)
+    name = sa.Column(sa.String(36), nullable=False)
+    driver = sa.Column(sa.String(255), nullable=False, unique=True)
+    default = sa.Column(sa.Boolean, nullable=False, default=False)
+    __table_args__ = (sa.UniqueConstraint('service_type', 'name',
+                                          name='uniq_serviceproviders0'
+                                          'service_type0name'),)
 
 
-class ServiceTypeInUse(q_exc.InUse):
-    message = _("There are still active instances of service type "
-                "'%(service_type_id)s'. Therefore it cannot be removed.")
+class ProviderResourceAssociation(model_base.BASEV2):
+    provider_id = sa.Column(sa.String(36),
+                            sa.ForeignKey("serviceproviders.id",
+                                          ondelete="CASCADE"),
+                            nullable=False, primary_key=True)
+    # should be manualy deleted on resource deletion
+    resource_id = sa.Column(sa.String(36), nullable=False, primary_key=True)
+    __table_args__ = (sa.UniqueConstraint('provider_id', 'resource_id',
+                                          name='uniq_provider'
+                                          'resourceassociations0'
+                                          'provider_id0resource_id'),)
 
 
-class ServiceDefinition(model_base.BASEV2, models_v2.HasId):
-    service_class = sa.Column(sa.String(255), primary_key=True)
-    plugin = sa.Column(sa.String(255))
-    driver = sa.Column(sa.String(255))
-    service_type_id = sa.Column(sa.String(36),
-                                sa.ForeignKey('servicetypes.id',
-                                              ondelete='CASCADE'),
-                                primary_key=True)
-
-
-class ServiceType(model_base.BASEV2, models_v2.HasId, models_v2.HasTenant):
-    """Service Type Object Model."""
-    name = sa.Column(sa.String(255))
-    description = sa.Column(sa.String(255))
-    default = sa.Column(sa.Boolean(), nullable=False, default=False)
-    service_definitions = orm.relationship(ServiceDefinition,
-                                           backref='servicetypes',
-                                           lazy='joined',
-                                           cascade='all')
-    # Keep track of number of instances for this service type
-    num_instances = sa.Column(sa.Integer(), default=0)
-
-    def as_dict(self):
-        """Convert a row into a dict."""
-        ret_dict = {}
-        for c in self.__table__.columns:
-            ret_dict[c.name] = getattr(self, c.name)
-        return ret_dict
-
-
-class ServiceTypeManager(object):
+class ServiceTypeManager(base_plugin.CommonDbMixin):
     """Manage service type objects in Quantum database."""
 
     _instance = None
@@ -127,28 +107,7 @@ class ServiceTypeManager(object):
 
     def __init__(self):
         self._initialize_db()
-        ctx = context.get_admin_context()
-        # Init default service type from configuration file
-        svc_defs = cfg.CONF.default_servicetype.service_definition
-        if not svc_defs:
-            raise NoDefaultServiceDefinition()
-        def_service_type = {'name': DEFAULT_SVCTYPE_NAME,
-                            'description':
-                            cfg.CONF.default_servicetype.description,
-                            'service_definitions':
-                            parse_service_definition_opt(),
-                            'default': True}
-        # Create or update record in database
-        def_svc_type_db = self._get_default_service_type(ctx)
-        if not def_svc_type_db:
-            def_svc_type_db = self._create_service_type(ctx, def_service_type)
-        else:
-            self._update_service_type(ctx,
-                                      def_svc_type_db['id'],
-                                      def_service_type,
-                                      svc_type_db=def_svc_type_db)
-        LOG.debug(_("Default service type record updated in Quantum database. "
-                    "identifier is '%s'"), def_svc_type_db['id'])
+        self._sync_conf_with_db()
 
     def _initialize_db(self):
         db.configure_db()
@@ -157,159 +116,108 @@ class ServiceTypeManager(object):
         # created the engine
         db.register_models(models_v2.model_base.BASEV2)
 
-    def _create_service_type(self, context, service_type):
-        svc_defs = service_type.pop('service_definitions')
-        with context.session.begin(subtransactions=True):
-            svc_type_db = ServiceType(**service_type)
-            # and now insert provided service type definitions
-            for svc_def in svc_defs:
-                svc_type_db.service_definitions.append(
-                    ServiceDefinition(**svc_def))
-            # sqlalchemy save-update on relationship is on by
-            # default, the following will save both the service
-            # type and its service definitions
-            context.session.add(svc_type_db)
-        return svc_type_db
+    def _sync_conf_with_db(self):
+        """Synchs configuration with the database."""
+        LOG.debug(_("Synchronizing service provider "
+                    "configuration with database"))
+        ctx = context.get_admin_context()
+        # collect existing entries, excluding reference providers
+        existing_qry = ctx.session.query(ServiceProvider.service_type,
+                                         ServiceProvider.name)
+        existing = [(svc_type, name) for svc_type, name in existing_qry]
 
-    def _update_service_type(self, context, id, service_type,
-                             svc_type_db=None):
+        svc_providers = parse_service_provider_opt()
+        conf = [(prov_def['service_type'],
+                 prov_def['name']) for prov_def in svc_providers]
+        # collect entries to delete
+        to_delete = [(svc_type, name) for svc_type, name in existing
+                     if (svc_type, name) not in conf]
+
+        # add/update existing providers
+        with ctx.session.begin(subtransactions=True):
+            for prov in svc_providers:
+                self._add_service_provider(ctx, prov)
+
+            # deleting entries absent in conf
+            for svc_type, name in to_delete:
+                prov_db = (ctx.session.query(ServiceProvider).
+                           filter_by(service_type=svc_type).
+                           filter_by(name=name).one())
+                ctx.session.delete(prov_db)
+
+    def _add_service_provider(self, context, prov):
+        """Adds or updates service provider in the database."""
         with context.session.begin(subtransactions=True):
-            if not svc_type_db:
-                svc_type_db = self._get_service_type(context, id)
             try:
-                svc_defs_map = dict([(svc_def['service'], svc_def)
-                                     for svc_def in
-                                     service_type.pop('service_definitions')])
-            except KeyError:
-                # No service defs in request
-                svc_defs_map = {}
-            svc_type_db.update(service_type)
-            for svc_def_db in svc_type_db.service_definitions:
+                prov_db = (context.session.query(ServiceProvider).
+                           filter_by(name=prov['name']).
+                           filter_by(service_type=prov['service_type']).
+                           one())
+                prov_db.update(prov)
                 try:
-                    svc_def_db.update(svc_defs_map.pop(
-                        svc_def_db['service_class']))
-                except KeyError:
-                    # too bad, the service def was not there
-                    # then we should delete it.
-                    context.session.delete(svc_def_db)
-            # Add remaining service definitions
-            for svc_def in svc_defs_map:
-                context.session.add(ServiceDefinition(**svc_def))
-        return svc_type_db
+                    context.session.flush()
+                except db_exc.DBDuplicateEntry:
+                    msg = (_("Driver %s is not unique across providers") %
+                           prov['driver'])
+                    LOG.exception(msg)
+                    raise q_exc.Invalid(msg)
+            except orm_exc.NoResultFound:
+                #ensure only one default provider is added for given service
+                if prov['default']:
+                    exists = (context.session.query(ServiceProvider).
+                              filter_by(service_type=prov['service_type']).
+                              filter_by(default=True).first())
+                    if exists:
+                        msg = _("Multiple default providers "
+                                "for service %s") % prov['service_type']
+                        LOG.exception(msg)
+                        raise q_exc.Invalid(msg)
+                svc_provider = ServiceProvider(
+                    service_type=prov['service_type'],
+                    name=prov['name'],
+                    driver=prov['driver'],
+                    default=prov['default']
+                )
+                context.session.add(svc_provider)
+                try:
+                    context.session.flush()
+                except db_exc.DBDuplicateEntry:
+                    msg = (_("Driver %s is not unique across providers") %
+                           prov['driver'])
+                    LOG.exception(msg)
+                    raise q_exc.Invalid(msg)
 
-    def _get_service_type(self, context, svc_type_id):
+    def get_service_providers(self, context, filters=None, fields=None):
+        return self._get_collection(context, ServiceProvider,
+                                    self._make_svc_provider_dict,
+                                    filters, fields)
+
+    def _get_service_provider(self, context, id):
+        query = context.session.query(ServiceProvider).filter_by(id=id)
         try:
-            query = context.session.query(ServiceType)
-            return query.filter(ServiceType.id == svc_type_id).one()
-            # filter is on primary key, do not catch MultipleResultsFound
+            return query.one()
         except orm_exc.NoResultFound:
-            raise ServiceTypeNotFound(service_type_id=svc_type_id)
+            raise ServiceProviderNotFound(service_prov_id=id)
 
-    def _get_default_service_type(self, context):
-        try:
-            query = context.session.query(ServiceType)
-            return query.filter(ServiceType.default == expr.true()).one()
-        except orm_exc.NoResultFound:
-            return
-        except orm_exc.MultipleResultsFound:
-            # This should never happen. If it does, take the first instance
-            query2 = context.session.query(ServiceType)
-            results = query2.filter(ServiceType.default == expr.true()).all()
-            LOG.warning(_("Multiple default service type instances found."
-                          "Will use instance '%s'"), results[0]['id'])
-            return results[0]
+    def get_service_provider(self, context, id, fields=None):
+        return self._make_svc_provider_dict(
+            self._get_service_provider(context, id),
+            fields
+        )
 
-    def _make_svc_type_dict(self, context, svc_type, fields=None):
+    def _make_svc_provider_dict(self, svc_prov, fields=None):
+        res = {'id': svc_prov['id'],
+               'service_type': svc_prov['service_type'],
+               'name': svc_prov['name'],
+               'driver': svc_prov['driver'],
+               'default': svc_prov['default']
+               }
 
-        def _make_svc_def_dict(svc_def_db):
-            svc_def = {'service_class': svc_def_db['service_class']}
-            svc_def.update({'plugin': svc_def_db['plugin'],
-                            'driver': svc_def_db['driver']})
-            return svc_def
+        return self._fields(res, fields)
 
-        res = {'id': svc_type['id'],
-               'name': svc_type['name'],
-               'default': svc_type['default'],
-               'num_instances': svc_type['num_instances'],
-               'service_definitions':
-               [_make_svc_def_dict(svc_def) for svc_def
-                in svc_type['service_definitions']]}
-        # Field selection
-        if fields:
-            return dict(((k, v) for k, v in res.iteritems()
-                         if k in fields))
-        return res
-
-    def get_service_type(self, context, id, fields=None):
-        """Retrieve a service type record."""
-        return self._make_svc_type_dict(context,
-                                        self._get_service_type(context, id),
-                                        fields)
-
-    def get_service_types(self, context, fields=None, filters=None):
-        """Retrieve a possibly filtered list of service types."""
-        query = context.session.query(ServiceType)
-        if filters:
-            for key, value in filters.iteritems():
-                column = getattr(ServiceType, key, None)
-                if column:
-                    query = query.filter(column.in_(value))
-        return [self._make_svc_type_dict(context, svc_type, fields)
-                for svc_type in query]
-
-    def create_service_type(self, context, service_type):
-        """Create a new service type."""
-        svc_type_data = service_type['service_type']
-        svc_type_db = self._create_service_type(context, svc_type_data)
-        LOG.debug(_("Created service type object:%s"), svc_type_db['id'])
-        return self._make_svc_type_dict(context, svc_type_db)
-
-    def update_service_type(self, context, id, service_type):
-        """Update a service type."""
-        svc_type_data = service_type['service_type']
-        svc_type_db = self._update_service_type(context, id,
-                                                svc_type_data)
-        return self._make_svc_type_dict(context, svc_type_db)
-
-    def delete_service_type(self, context, id):
-        """Delete a service type."""
-        # Verify that the service type is not in use.
-        svc_type_db = self._get_service_type(context, id)
-        if svc_type_db['num_instances'] > 0:
-            raise ServiceTypeInUse(service_type_id=svc_type_db['id'])
+    def add_resource_association(self, context, prov_id,
+                                 resource_id):
         with context.session.begin(subtransactions=True):
-            context.session.delete(svc_type_db)
-
-    def increase_service_type_refcount(self, context, id):
-        """Increase references count for a service type object
-
-        This method should be invoked by plugins using the service
-        type concept everytime an instance of an object associated
-        with a given service type is created.
-        """
-        #TODO(salvatore-orlando): Devise a better solution than this
-        #refcount mechanisms. Perhaps adding hooks into models which
-        #use service types in order to enforce ref. integrity and cascade
-        with context.session.begin(subtransactions=True):
-            svc_type_db = self._get_service_type(context, id)
-            svc_type_db['num_instances'] = svc_type_db['num_instances'] + 1
-        return svc_type_db['num_instances']
-
-    def decrease_service_type_refcount(self, context, id):
-        """Decrease references count for a service type object
-
-        This method should be invoked by plugins using the service
-        type concept everytime an instance of an object associated
-        with a given service type is removed
-        """
-        #TODO(salvatore-orlando): Devise a better solution than this
-        #refcount mechanisms. Perhaps adding hooks into models which
-        #use service types in order to enforce ref. integrity and cascade
-        with context.session.begin(subtransactions=True):
-            svc_type_db = self._get_service_type(context, id)
-            if svc_type_db['num_instances'] == 0:
-                LOG.warning(_("Number of instances for service type "
-                              "'%s' is already 0."), svc_type_db['name'])
-                return
-            svc_type_db['num_instances'] = svc_type_db['num_instances'] - 1
-        return svc_type_db['num_instances']
+            assoc = ProviderResourceAssociation(provider_id=prov_id,
+                                                resource_id=resource_id)
+            context.session.add(assoc)
