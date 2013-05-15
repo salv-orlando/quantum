@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from oslo.config import cfg
-from sqlalchemy.orm import exc
 
 from quantum.api.v2 import attributes
 from quantum.common import constants
@@ -45,6 +44,30 @@ class DhcpRpcCallbackMixin(object):
             nets = plugin.get_networks(context, filters=filters)
         return [net['id'] for net in nets]
 
+    def get_all_network_info(self, context, **kwargs):
+        """Returns all the networks/subnets/ports in system."""
+        host = kwargs.get('host')
+        LOG.debug(_('get_all_network_info from %s') % host)
+        network_to_ports_map = {}
+        network_to_subnets_map = {}
+        plugin = manager.QuantumManager.get_plugin()
+        networks = plugin.get_networks(context)
+        subnets = plugin.get_subnets(context)
+        ports = plugin.get_ports(context)
+        for subnet in subnets:
+            network_to_subnets_map.setdefault(
+                subnet['network_id'], []).append(subnet)
+
+        for port in ports:
+            network_to_ports_map.setdefault(
+                port['network_id'], []).append(port)
+
+        for network in networks:
+            network['subnets'] = network_to_subnets_map.get(network['id'], [])
+            network['ports'] = network_to_ports_map.get(network['id'], [])
+
+        return networks
+
     def get_network_info(self, context, **kwargs):
         """Retrieve and return a extended information about a network."""
         network_id = kwargs.get('network_id')
@@ -59,78 +82,6 @@ class DhcpRpcCallbackMixin(object):
         network['subnets'] = plugin.get_subnets(context, filters=filters)
         network['ports'] = plugin.get_ports(context, filters=filters)
         return network
-
-    def get_dhcp_port(self, context, **kwargs):
-        """Allocate a DHCP port for the host and return port information.
-
-        This method will re-use an existing port if one already exists.  When a
-        port is re-used, the fixed_ip allocation will be updated to the current
-        network state.
-
-        """
-        host = kwargs.get('host')
-        network_id = kwargs.get('network_id')
-        device_id = kwargs.get('device_id')
-        # There could be more than one dhcp server per network, so create
-        # a device id that combines host and network ids
-
-        LOG.debug(_('Port %(device_id)s for %(network_id)s requested from '
-                    '%(host)s'), {'device_id': device_id,
-                                  'network_id': network_id,
-                                  'host': host})
-        plugin = manager.QuantumManager.get_plugin()
-        retval = None
-
-        filters = dict(network_id=[network_id])
-        subnets = dict([(s['id'], s) for s in
-                        plugin.get_subnets(context, filters=filters)])
-
-        dhcp_enabled_subnet_ids = [s['id'] for s in
-                                   subnets.values() if s['enable_dhcp']]
-
-        try:
-            filters = dict(network_id=[network_id], device_id=[device_id])
-            ports = plugin.get_ports(context, filters=filters)
-            if len(ports):
-                # Ensure that fixed_ips cover all dhcp_enabled subnets.
-                port = ports[0]
-                for fixed_ip in port['fixed_ips']:
-                    if fixed_ip['subnet_id'] in dhcp_enabled_subnet_ids:
-                        dhcp_enabled_subnet_ids.remove(fixed_ip['subnet_id'])
-                port['fixed_ips'].extend(
-                    [dict(subnet_id=s) for s in dhcp_enabled_subnet_ids])
-
-                retval = plugin.update_port(context, port['id'],
-                                            dict(port=port))
-
-        except exc.NoResultFound:
-            pass
-
-        if retval is None:
-            # No previous port exists, so create a new one.
-            LOG.debug(_('DHCP port %(device_id)s on network %(network_id)s '
-                        'does not exist on %(host)s'), locals())
-
-            network = plugin.get_network(context, network_id)
-
-            port_dict = dict(
-                admin_state_up=True,
-                device_id=device_id,
-                network_id=network_id,
-                tenant_id=network['tenant_id'],
-                mac_address=attributes.ATTR_NOT_SPECIFIED,
-                name='',
-                device_owner='network:dhcp',
-                fixed_ips=[dict(subnet_id=s) for s in dhcp_enabled_subnet_ids])
-
-            retval = plugin.create_port(context, dict(port=port_dict))
-
-        # Convert subnet_id to subnet dict
-        for fixed_ip in retval['fixed_ips']:
-            subnet_id = fixed_ip.pop('subnet_id')
-            fixed_ip['subnet'] = subnets[subnet_id]
-
-        return retval
 
     def release_dhcp_port(self, context, **kwargs):
         """Release the port currently being used by a DHCP agent."""
@@ -183,3 +134,29 @@ class DhcpRpcCallbackMixin(object):
 
         plugin.update_fixed_ip_lease_expiration(context, network_id,
                                                 ip_address, lease_remaining)
+
+    def create_dhcp_port(self, context, **kwargs):
+        """Create the dhcp port."""
+        host = kwargs.get('host')
+        port = kwargs.get('port')
+        LOG.debug(_('Create dhcp port  %(port)s '
+                    'from %(host)s.'),
+                  {'port': port,
+                   'host': host})
+
+        if 'mac_address' not in port['port']:
+            port['port']['mac_address'] = attributes.ATTR_NOT_SPECIFIED
+        plugin = manager.QuantumManager.get_plugin()
+        return plugin.create_port(context, port)
+
+    def update_dhcp_port(self, context, **kwargs):
+        """Update the dhcp port."""
+        host = kwargs.get('host')
+        port_id = kwargs.get('port_id')
+        port = kwargs.get('port')
+        LOG.debug(_('Create dhcp port  %(port)s '
+                    'from %(host)s.'),
+                  {'port': port,
+                   'host': host})
+        plugin = manager.QuantumManager.get_plugin()
+        return plugin.update_port(context, port_id, port)
