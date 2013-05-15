@@ -32,7 +32,6 @@ from quantum.agent import rpc as agent_rpc
 from quantum.common import constants
 from quantum.common import exceptions
 from quantum.common import topics
-from quantum.common import utils
 from quantum import context
 from quantum import manager
 from quantum.openstack.common import importutils
@@ -67,9 +66,6 @@ class DhcpAgent(manager.Manager):
                     help=_("Allows for serving metadata requests from a "
                            "dedicate network. Requires "
                            "enable isolated_metadata = True ")),
-        cfg.IntOpt('num_sync_threads', default=20,
-                   help="Number of threads to use to parallelize "
-                        " inital sync.")
     ]
 
     def __init__(self, host=None):
@@ -149,19 +145,17 @@ class DhcpAgent(manager.Manager):
         """Sync the local DHCP state with Quantum."""
         LOG.info(_('Synchronizing state'))
         known_networks = set(self.cache.get_network_ids())
-        pool = utils.ThreadPool(cfg.CONF.num_sync_threads)
+
         try:
             active_networks = set(self.plugin_rpc.get_active_networks())
             for deleted_id in known_networks - active_networks:
-                pool.add_task(self.disable_dhcp_helper, deleted_id)
-            pool.wait_completion()
+                self.disable_dhcp_helper(deleted_id)
+
             for network_id in active_networks:
-                pool.add_task(self.refresh_dhcp_helper, network_id)
-            pool.wait_completion()
+                self.refresh_dhcp_helper(network_id)
         except:
             self.needs_resync = True
             LOG.exception(_('Unable to sync network state.'))
-        LOG.info(_('Finished Synchronizing state'))
 
     def _periodic_resync_helper(self):
         """Resync the dhcp state at the configured interval."""
