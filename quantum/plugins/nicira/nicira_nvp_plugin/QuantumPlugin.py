@@ -958,7 +958,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 shared=net_data.get(attr.SHARED))
             net_data['id'] = lswitch['uuid']
 
-        with context.session.begin(subtransactions=True):
+        new_net = None
+        try:
             new_net = super(NvpPluginV2, self).create_network(context,
                                                               network)
             # Ensure there's an id in net_data
@@ -985,6 +986,11 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                                    net_binding)
             self._extend_network_port_security_dict(context, new_net)
             self._extend_network_dict_l3(context, new_net)
+        except Exception as e:
+            if new_net:
+                LOG.exception("Error creating network")
+                super(NvpPluginV2, self).delete_network(context, net_data['id'])
+                raise e
         self.schedule_network(context, new_net)
         return new_net
 
@@ -1058,42 +1064,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         with context.session.begin(subtransactions=True):
             # goto to the plugin DB and fetch the network
             network = self._get_network(context, id)
-            # if the network is external, do not go to NVP
-            if not self._network_is_external(context, id):
-                # verify the fabric status of the corresponding
-                # logical switch(es) in nvp
-                try:
-                    # FIXME(salvatore-orlando): This is not going to work
-                    # unless we store the nova_id in the database once we'll
-                    # enable multiple clusters
-                    cluster = self._find_target_cluster(network)
-                    lswitches = nvplib.get_lswitches(cluster, id)
-                    nvp_net_status = constants.NET_STATUS_ACTIVE
-                    quantum_status = network.status
-                    for lswitch in lswitches:
-                        relations = lswitch.get('_relations')
-                        if relations:
-                            lswitch_status = relations.get(
-                                'LogicalSwitchStatus')
-                            # FIXME(salvatore-orlando): Being unable to fetch
-                            # logical switch status should be an exception.
-                            if (lswitch_status and
-                                not lswitch_status.get('fabric_status',
-                                                       None)):
-                                nvp_net_status = constants.NET_STATUS_DOWN
-                                break
-                    LOG.debug(_("Current network status:%(nvp_net_status)s; "
-                                "Status in Quantum DB:%(quantum_status)s"),
-                              locals())
-                    if nvp_net_status != network.status:
-                        # update the network status
-                        network.status = nvp_net_status
-                except q_exc.NotFound:
-                    network.status = constants.NET_STATUS_ERROR
-                except Exception:
-                    err_msg = _("Unable to get logical switches")
-                    LOG.exception(err_msg)
-                    raise nvp_exc.NvpPluginException(err_msg=err_msg)
             # Don't do field selection here otherwise we won't be able
             # to add provider networks fields
             net_result = self._make_network_dict(network, None)
@@ -1101,6 +1071,34 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self._extend_network_port_security_dict(context, net_result)
             self._extend_network_dict_l3(context, net_result)
             self._extend_network_qos_queue(context, net_result)
+        # if the network is external, do not go to NVP
+        if not self._network_is_external(context, id):
+            # verify the fabric status of the corresponding
+            # logical switch(es) in nvp
+            try:
+                # FIXME(salvatore-orlando): This is not going to work
+                # unless we store the nova_id in the database once we'll
+                # enable multiple clusters
+                cluster = self._find_target_cluster(network)
+                lswitches = nvplib.get_lswitches(cluster, id)
+                net_result['status'] = constants.NET_STATUS_ACTIVE
+                for lswitch in lswitches:
+                    relations = lswitch.get('_relations')
+                    if relations:
+                        lswitch_status = relations.get('LogicalSwitchStatus')
+                        # FIXME(salvatore-orlando): Being unable to fetch
+                        # logical switch status should be an exception.
+                        if (lswitch_status and
+                            not lswitch_status.get('fabric_status', None)):
+                            net_result['status'] = constants.NET_STATUS_DOWN
+                            break
+            except q_exc.NotFound:
+                net_result['status'] = constants.NET_STATUS_ERROR
+            except Exception:
+                err_msg = _("Unable to get logical switches")
+                LOG.exception(err_msg)
+                raise nvp_exc.NvpPluginException(err_msg=err_msg)
+
         return self._fields(net_result, fields)
 
     def get_networks(self, context, filters=None, fields=None):
@@ -1333,7 +1331,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self._enforce_set_auth(context, port,
                                    self.port_security_enabled_create)
         port_data = port['port']
-        with context.session.begin(subtransactions=True):
+        quantum_db = None
+        try:
             # First we allocate port in quantum database
             quantum_db = super(NvpPluginV2, self).create_port(context, port)
             # Update fields obtained from quantum db (eg: MAC address)
@@ -1381,6 +1380,13 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self._extend_port_port_security_dict(context, port_data)
             self._extend_port_dict_security_group(context, port_data)
             self._extend_port_qos_queue(context, port_data)
+        except Exception as e:
+            # Check if quantum_db is set. This own't be set if
+            # failed to create in db
+            if quantum_db:
+                LOG.exception("Error creating port")
+                super(NvpPluginV2, self).delete_port(context, quantum_db['id'])
+            raise e
         net = self.get_network(context, port_data['network_id'])
         self.schedule_network(context, net)
         return port_data
