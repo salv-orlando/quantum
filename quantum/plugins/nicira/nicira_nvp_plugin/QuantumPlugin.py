@@ -958,10 +958,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 shared=net_data.get(attr.SHARED))
             net_data['id'] = lswitch['uuid']
 
-        new_net = None
+        new_net = super(NvpPluginV2, self).create_network(context,
+                                                          network)
         try:
-            new_net = super(NvpPluginV2, self).create_network(context,
-                                                              network)
             # Ensure there's an id in net_data
             net_data['id'] = new_net['id']
             # Process port security extension
@@ -987,10 +986,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self._extend_network_port_security_dict(context, new_net)
             self._extend_network_dict_l3(context, new_net)
         except Exception as e:
-            if new_net:
-                LOG.exception("Error creating network")
-                super(NvpPluginV2, self).delete_network(context, net_data['id'])
-                raise e
+            LOG.exception("Error creating network")
+            super(NvpPluginV2, self).delete_network(context,
+                                                    net_data['id'])
+            raise e
         self.schedule_network(context, new_net)
         return new_net
 
@@ -1331,8 +1330,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self._enforce_set_auth(context, port,
                                    self.port_security_enabled_create)
         port_data = port['port']
-        quantum_db = None
-        try:
+        with context.session.begin(subtransactions=True):
             # First we allocate port in quantum database
             quantum_db = super(NvpPluginV2, self).create_port(context, port)
             # Update fields obtained from quantum db (eg: MAC address)
@@ -1351,42 +1349,38 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 self._get_security_groups_on_port(context, port))
             self._process_port_create_security_group(
                 context, quantum_db['id'], port_data[ext_sg.SECURITYGROUPS])
-            # QoS extension checks
+            self._extend_port_port_security_dict(context, port_data)
+            self._extend_port_dict_security_group(context, port_data)
+            # provider networking extension checks
+            # Fetch the network and network binding from Quantum db
+        try:
+            # QoS extension checks. Doing outside of transaction to not
+            # block as this call goes to nvp and the database. That said
+            # this should be safe as no ids were returned yet so the port
+            # cannot be deleted yet.
             port_data[ext_qos.QUEUE] = self._check_for_queue_and_create(
                 context, port_data)
             self._process_port_queue_mapping(context, port_data)
-            # provider networking extension checks
-            # Fetch the network and network binding from Quantum db
-            try:
-                port_data = port['port'].copy()
-                port_create_func = self._port_drivers['create'].get(
-                    port_data['device_owner'],
-                    self._port_drivers['create']['default'])
 
-                port_create_func(context, port_data)
-            except Exception as e:
-                # FIXME (arosen) or the plugin_interface call failed in which
-                # case we need to garbage collect the left over port in nvp.
-                err_msg = _("Unable to create port or set port attachment "
-                            "in NVP.")
-                LOG.exception(err_msg)
-                raise e
+            port_data = port['port'].copy()
+            port_create_func = self._port_drivers['create'].get(
+                port_data['device_owner'],
+                self._port_drivers['create']['default'])
 
-            LOG.debug(_("create_port completed on NVP for tenant "
-                        "%(tenant_id)s: (%(id)s)"), port_data)
-
-            # remove since it will be added in extend based on policy
-            del port_data[ext_qos.QUEUE]
-            self._extend_port_port_security_dict(context, port_data)
-            self._extend_port_dict_security_group(context, port_data)
-            self._extend_port_qos_queue(context, port_data)
+            port_create_func(context, port_data)
         except Exception as e:
-            # Check if quantum_db is set. This own't be set if
-            # failed to create in db
-            if quantum_db:
-                LOG.exception("Error creating port")
-                super(NvpPluginV2, self).delete_port(context, quantum_db['id'])
+            # FIXME (arosen) or the plugin_interface call failed in which
+            # case we need to garbage collect the left over port in nvp.
+            err_msg = _("Unable to create port or set port attachment "
+                        "in NVP.")
+            LOG.exception(err_msg)
+            super(NvpPluginV2, self).delete_port(context, quantum_db['id'])
             raise e
+        # remove since it will be added in extend based on policy
+        del port_data[ext_qos.QUEUE]
+        self._extend_port_qos_queue(context, port_data)
+        LOG.debug(_("create_port completed on NVP for tenant "
+                    "%(tenant_id)s: (%(id)s)"), port_data)
         net = self.get_network(context, port_data['network_id'])
         self.schedule_network(context, net)
         return port_data
