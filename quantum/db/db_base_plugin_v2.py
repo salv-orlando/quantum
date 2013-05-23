@@ -954,6 +954,10 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                 [sg['security_group_id']
                  for sg in port.security_group_port_bindings])
 
+        if getattr(port, 'mac_learning_status', None):
+            if port.mac_learning_status[0]['mac_learning_enabled']:
+                res['mac_learning_enabled'] = True
+
         return self._fields(res, fields)
 
     def _create_bulk(self, resource, context, request_items):
