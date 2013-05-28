@@ -650,6 +650,7 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                              new_ips):
         """Add or remove IPs from the port."""
         ips = []
+        prev_ips = []
 
         # the new_ips contain all of the fixed_ips that are to be updated
         if len(new_ips) > cfg.CONF.max_fixed_ips_per_port:
@@ -663,6 +664,7 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                     original_ip['ip_address'] == new_ip['ip_address']):
                     original_ips.remove(original_ip)
                     new_ips.remove(new_ip)
+                    prev_ips.append(original_ip)
 
         # Check if the IP's to add are OK
         to_add = self._test_fixed_ips_for_port(context, network_id, new_ips)
@@ -678,7 +680,7 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
             LOG.debug(_("Port update. Adding %s"), to_add)
             network = self._get_network(context, network_id)
             ips = self._allocate_fixed_ips(context, network, to_add)
-        return ips
+        return ips, prev_ips
 
     def _allocate_ips_for_port(self, context, network, port):
         """Allocate IP addresses for the port.
@@ -1339,23 +1341,24 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
     def update_port(self, context, id, port):
         p = port['port']
 
+        changed_ips = False
         with context.session.begin(subtransactions=True):
             port = self._get_port(context, id)
             # Check if the IPs need to be updated
             if 'fixed_ips' in p:
+                changed_ips = True
                 self._recycle_expired_ip_allocations(context,
                                                      port['network_id'])
                 original = self._make_port_dict(port)
-                ips = self._update_ips_for_port(context,
-                                                port["network_id"],
-                                                id,
-                                                original["fixed_ips"],
-                                                p['fixed_ips'])
+                new_ips, prev_ips = self._update_ips_for_port(
+                    context, port["network_id"], id, original["fixed_ips"],
+                    p['fixed_ips'])
+
                 # 'fixed_ip's not part of DB so it is deleted
                 del p['fixed_ips']
 
                 # Update ips if necessary
-                for ip in ips:
+                for ip in new_ips:
                     allocated = models_v2.IPAllocation(
                         network_id=port['network_id'], port_id=port.id,
                         ip_address=ip['ip_address'], subnet_id=ip['subnet_id'],
@@ -1364,7 +1367,11 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
 
             port.update(p)
 
-        return self._make_port_dict(port)
+        result = self._make_port_dict(port)
+        if changed_ips:
+            result['fixed_ips'] = prev_ips + new_ips
+
+        return result
 
     def delete_port(self, context, id):
         with context.session.begin(subtransactions=True):
@@ -1442,6 +1449,7 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                                       sorts=sorts, limit=limit,
                                       marker_obj=marker_obj,
                                       page_reverse=page_reverse)
+
         items = [self._make_port_dict(c, fields, context=context)
                  for c in query.all()]
         if limit and page_reverse:
