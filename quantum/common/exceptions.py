@@ -84,6 +84,14 @@ class PolicyNotFound(NotFound):
     message = _("Policy configuration policy.json could not be found")
 
 
+class PolicyInitError(QuantumException):
+    message = _("Failed to init policy %(policy)s because %(reason)s")
+
+
+class PolicyCheckError(QuantumException):
+    message = _("Failed to check policy %(policy)s because %(reason)s")
+
+
 class StateInvalid(BadRequest):
     message = _("Unsupported port state: %(port_state)s")
 
