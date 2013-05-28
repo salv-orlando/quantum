@@ -17,6 +17,7 @@
 # @author: Aaron Rosen, Nicira, Inc
 
 import sqlalchemy as sa
+from sqlalchemy import orm
 from sqlalchemy.orm import exc
 
 from quantum.api.v2 import attributes as attr
@@ -54,6 +55,11 @@ class NetworkQueueMapping(model_base.BASEV2):
 
     queue_id = sa.Column(sa.String(36), sa.ForeignKey("qosqueues.id",
                                                       ondelete="CASCADE"))
+
+    networks = orm.relationship(
+        models_v2.Network,
+        backref=orm.backref('nvp_network_qos_binding', lazy='joined',
+                            cascade='delete'))
 
 
 class NVPQoSDbMixin(ext_qos.QueuePluginBase):

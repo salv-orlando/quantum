@@ -1066,10 +1066,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             # Don't do field selection here otherwise we won't be able
             # to add provider networks fields
             net_result = self._make_network_dict(network, None)
-            self._extend_network_dict_provider(context, net_result)
-            self._extend_network_port_security_dict(context, net_result)
-            self._extend_network_dict_l3(context, net_result)
-            self._extend_network_qos_queue(context, net_result)
         # if the network is external, do not go to NVP
         if not self._network_is_external(context, id):
             # verify the fabric status of the corresponding
@@ -1106,12 +1102,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         with context.session.begin(subtransactions=True):
             quantum_lswitches = (
                 super(NvpPluginV2, self).get_networks(context, filters))
-            for net in quantum_lswitches:
-                self._extend_network_dict_provider(context, net)
-                self._extend_network_port_security_dict(context, net)
-                self._extend_network_dict_l3(context, net)
-                self._extend_network_qos_queue(context, net)
-
             tenant_ids = filters and filters.get('tenant_id') or None
         filter_fmt = "&tag=%s&tag_scope=os_tid"
         if context.is_admin and not tenant_ids:
@@ -1153,7 +1143,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         for quantum_lswitch in quantum_lswitches:
             # Skip external networks as they do not exist in NVP
-            if quantum_lswitch[l3.EXTERNAL]:
+            if l3.EXTERNAL in quantum_lswitch and quantum_lswitch[l3.EXTERNAL]:
                 continue
             elif quantum_lswitch['id'] not in nvp_lswitches:
                 LOG.warning(_("Logical Switch %s found in quantum database "
@@ -1204,10 +1194,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 net[ext_qos.QUEUE] = network['network'][ext_qos.QUEUE]
                 self._delete_network_queue_mapping(context, id)
                 self._process_network_queue_mapping(context, net)
-            self._extend_network_port_security_dict(context, net)
             self._process_l3_update(context, network['network'], id)
             self._extend_network_dict_provider(context, net)
-            self._extend_network_dict_l3(context, net)
             self._extend_network_qos_queue(context, net)
         return net
 
@@ -1217,9 +1205,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         with context.session.begin(subtransactions=True):
             quantum_lports = super(NvpPluginV2, self).get_ports(
                 context, filters)
-            for quantum_lport in quantum_lports:
-                self._extend_port_port_security_dict(context, quantum_lport)
-                self._extend_port_dict_security_group(context, quantum_lport)
         if (filters.get('network_id') and len(filters.get('network_id')) and
             self._network_is_external(context, filters['network_id'][0])):
             # Do not perform check on NVP platform
@@ -1516,8 +1501,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         with context.session.begin(subtransactions=True):
             quantum_db_port = super(NvpPluginV2, self).get_port(context,
                                                                 id, fields)
-            self._extend_port_port_security_dict(context, quantum_db_port)
-            self._extend_port_dict_security_group(context, quantum_db_port)
+            # we should move this into the model. We are currently not
+            # returning queue_id on get_ports() and we should be.
             self._extend_port_qos_queue(context, quantum_db_port)
 
             if self._network_is_external(context,

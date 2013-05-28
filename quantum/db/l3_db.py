@@ -64,6 +64,11 @@ class ExternalNetwork(model_base.BASEV2):
                            sa.ForeignKey('networks.id', ondelete="CASCADE"),
                            primary_key=True)
 
+    network = orm.relationship(
+        models_v2.Network,
+        backref=orm.backref('external', lazy='joined',
+                            uselist=False, cascade='delete'))
+
 
 class FloatingIP(model_base.BASEV2, models_v2.HasId, models_v2.HasTenant):
     """Represents a floating IP, which may or many not be

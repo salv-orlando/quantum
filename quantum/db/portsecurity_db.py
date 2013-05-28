@@ -17,9 +17,11 @@
 # @author: Aaron Rosen, Nicira, Inc
 
 import sqlalchemy as sa
+from sqlalchemy import orm
 from sqlalchemy.orm import exc
 
 from quantum.db import model_base
+from quantum.db import models_v2
 from quantum.extensions import portsecurity as psec
 from quantum.openstack.common import log as logging
 
@@ -32,12 +34,22 @@ class PortSecurityBinding(model_base.BASEV2):
                         primary_key=True)
     port_security_enabled = sa.Column(sa.Boolean(), nullable=False)
 
+    ports = orm.relationship(
+        models_v2.Port,
+        backref=orm.backref('port_security_binding', lazy='joined',
+                            cascade='delete'))
+
 
 class NetworkSecurityBinding(model_base.BASEV2):
     network_id = sa.Column(sa.String(36),
                            sa.ForeignKey('networks.id', ondelete="CASCADE"),
                            primary_key=True)
     port_security_enabled = sa.Column(sa.Boolean(), nullable=False)
+
+    networks = orm.relationship(
+        models_v2.Network,
+        backref=orm.backref('network_security_binding', lazy='joined',
+                            cascade='delete'))
 
 
 class PortSecurityDbMixin(object):

@@ -29,6 +29,7 @@ from quantum.common import exceptions as q_exc
 from quantum.db import api as db
 from quantum.db import models_v2
 from quantum.db import sqlalchemyutils
+from quantum.extensions import providernet as pnet
 from quantum.openstack.common import log as logging
 from quantum.openstack.common import timeutils
 from quantum.openstack.common import uuidutils
@@ -885,6 +886,26 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                'shared': network['shared'],
                'subnets': [subnet['id']
                            for subnet in network['subnets']]}
+        # Needed since not all plugins have these attributes
+        if getattr(network, 'port_security_binding', None):
+            res['port_security_enabled'] = (
+                network.network_security_binding[0]['port_security_enabled'])
+        if getattr(network, 'nvp_network_qos_binding', None):
+            res['queue_id'] = network.nvp_network_qos_binding[0]['queue_id']
+        if getattr(network, 'external', None):
+            res['router:external'] = True
+        else:
+            res['router:external'] = False
+
+        if getattr(network, 'nvp_network_binding', None):
+            # Previously we checked the policy.json file to see if we should
+            # return this but we do not do that now as this is just a work
+            # around
+            res[pnet.NETWORK_TYPE] = (
+                network.nvp_network_binding[0].binding_type)
+            res[pnet.PHYSICAL_NETWORK] = (
+                network.nvp_network_binding[0].phy_uuid)
+            res[pnet.SEGMENTATION_ID] = network.nvp_network_binding[0].vlan_id
 
         return self._fields(res, fields)
 
@@ -926,6 +947,17 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                              for ip in port["fixed_ips"]],
                "device_id": port["device_id"],
                "device_owner": port["device_owner"]}
+
+        # Needed since not all plugins have these attributes
+        if getattr(port, 'port_security_binding', None):
+            res['port_security_enabled'] = (
+                port.port_security_binding[0]['port_security_enabled'])
+
+        if getattr(port, 'security_group_port_bindings', None):
+            res["security_groups"] = (
+                [sg['security_group_id']
+                 for sg in port.security_group_port_bindings])
+
         # Augment the port with network owner if available
         if context:
             network = self._get_network(context, port['network_id'])
@@ -1168,6 +1200,8 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
            gratuitous DHCP offers"""
 
         s = subnet['subnet']
+        changed_host_routes = False
+        changed_dns = False
         db_subnet = self._get_subnet(context, id)
         # Fill 'ip_version' and 'allocation_pools' fields with the current
         # value since _validate_subnet() expects subnet spec has 'ip_version'
@@ -1183,11 +1217,13 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
 
         with context.session.begin(subtransactions=True):
             if "dns_nameservers" in s:
+                changed_dns = True
                 old_dns_list = self._get_dns_by_subnet(context, id)
                 new_dns_addr_set = set(s["dns_nameservers"])
                 old_dns_addr_set = set([dns['address']
                                         for dns in old_dns_list])
 
+                new_dns = list(new_dns_addr_set)
                 for dns_addr in old_dns_addr_set - new_dns_addr_set:
                     for dns in old_dns_list:
                         if dns['address'] == dns_addr:
@@ -1203,6 +1239,7 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                 return ht['destination'] + "_" + ht['nexthop']
 
             if "host_routes" in s:
+                changed_host_routes = True
                 old_route_list = self._get_route_by_subnet(context, id)
 
                 new_route_set = set([_combine(route)
@@ -1215,7 +1252,12 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                     for route in old_route_list:
                         if _combine(route) == route_str:
                             context.session.delete(route)
+                new_routes = []
                 for route_str in new_route_set - old_route_set:
+                    new_routes.append(
+                        {'destination': route_str.partition("_")[0],
+                         'nexthop': route_str.partition("_")[2]})
+
                     route = models_v2.SubnetRoute(
                         destination=route_str.partition("_")[0],
                         nexthop=route_str.partition("_")[2],
@@ -1225,7 +1267,13 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
 
             subnet = self._get_subnet(context, id)
             subnet.update(s)
-        return self._make_subnet_dict(subnet)
+
+        result = self._make_subnet_dict(subnet)
+        if changed_dns:
+            result['dns_nameservers'] = new_dns
+        if changed_host_routes:
+            result['host_routes'] = new_routes
+        return result
 
     def delete_subnet(self, context, id):
         with context.session.begin(subtransactions=True):
