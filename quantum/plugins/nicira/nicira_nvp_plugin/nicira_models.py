@@ -16,9 +16,10 @@
 #    under the License.
 
 
-from sqlalchemy import Column, Enum, ForeignKey, Integer, String
+from sqlalchemy import Column, Enum, ForeignKey, Integer, String, orm
 
-from quantum.db.models_v2 import model_base
+from quantum.db import models_v2
+from quantum.db import model_base
 
 
 class NvpNetworkBinding(model_base.BASEV2):
@@ -38,6 +39,11 @@ class NvpNetworkBinding(model_base.BASEV2):
                           nullable=False)
     phy_uuid = Column(String(36))
     vlan_id = Column(Integer)
+
+    networks = orm.relationship(
+        models_v2.Network,
+        backref=orm.backref('nvp_network_binding', lazy='joined',
+                            cascade='delete'))
 
     def __init__(self, network_id, binding_type, phy_uuid, vlan_id):
         self.network_id = network_id

@@ -46,7 +46,7 @@ class SecurityGroupPortBinding(model_base.BASEV2):
 
     ports = orm.relationship(
         models_v2.Port,
-        backref=orm.backref("securitygroupportbindings",
+        backref=orm.backref("security_group_port_bindings",
                             lazy='joined', cascade='delete'))
 
 

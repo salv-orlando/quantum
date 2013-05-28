@@ -140,14 +140,16 @@ class Subnet(model_base.BASEV2, HasId, HasTenant):
     gateway_ip = sa.Column(sa.String(64))
     allocation_pools = orm.relationship(IPAllocationPool,
                                         backref='subnet',
-                                        lazy="dynamic",
+                                        lazy="joined",
                                         cascade='delete')
     enable_dhcp = sa.Column(sa.Boolean())
     dns_nameservers = orm.relationship(DNSNameServer,
                                        backref='subnet',
+                                       lazy="joined",
                                        cascade='all, delete, delete-orphan')
     routes = orm.relationship(SubnetRoute,
                               backref='subnet',
+                              lazy="joined",
                               cascade='all, delete, delete-orphan')
     shared = sa.Column(sa.Boolean)
 
@@ -156,7 +158,7 @@ class Network(model_base.BASEV2, HasId, HasTenant):
     """Represents a v2 quantum network."""
     name = sa.Column(sa.String(255))
     ports = orm.relationship(Port, backref='networks')
-    subnets = orm.relationship(Subnet, backref='networks')
+    subnets = orm.relationship(Subnet, backref='networks', lazy='joined')
     status = sa.Column(sa.String(16))
     admin_state_up = sa.Column(sa.Boolean)
     shared = sa.Column(sa.Boolean)
