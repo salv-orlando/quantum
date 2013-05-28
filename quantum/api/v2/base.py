@@ -226,7 +226,7 @@ class Controller(object):
         # FIXME(salvatore-orlando): obj_getter might return references to
         # other resources. Must check authZ on them too.
         if do_authz:
-            policy.enforce(request.context, action, obj, plugin=self._plugin)
+            policy.enforce(request.context, action, obj)
         return obj
 
     def _send_dhcp_notification(self, context, data, methodname):
@@ -313,16 +313,11 @@ class Controller(object):
             items = [body]
             bulk = False
         for item in items:
-            network = self._validate_network_tenant_ownership(
-                request, item[self._resource])
-            # Augment item with network's owner tenant_id
-            if network:
-                item[self._resource]['network_tenant_id'] = (
-                    network['tenant_id'])
+            self._validate_network_tenant_ownership(request,
+                                                    item[self._resource])
             policy.enforce(request.context,
                            action,
-                           item[self._resource],
-                           plugin=self._plugin)
+                           item[self._resource])
             try:
                 tenant_id = item[self._resource]['tenant_id']
                 count = quota.QUOTAS.count(request.context, self._resource,
@@ -388,8 +383,7 @@ class Controller(object):
         try:
             policy.enforce(request.context,
                            action,
-                           obj,
-                           plugin=self._plugin)
+                           obj)
         except exceptions.PolicyNotAuthorized:
             # To avoid giving away information, pretend that it
             # doesn't exist
@@ -439,8 +433,7 @@ class Controller(object):
         try:
             policy.enforce(request.context,
                            action,
-                           orig_obj,
-                           plugin=self._plugin)
+                           orig_obj)
         except exceptions.PolicyNotAuthorized:
             # To avoid giving away information, pretend that it
             # doesn't exist
@@ -578,7 +571,7 @@ class Controller(object):
             resource_item['network_id'])
         # do not perform the check on shared networks
         if network.get('shared'):
-            return network
+            return
 
         network_owner = network['tenant_id']
 
@@ -589,7 +582,6 @@ class Controller(object):
                 "tenant_id": resource_item['tenant_id'],
                 "resource": self._resource,
             })
-        return network
 
 
 def create_resource(collection, resource, plugin, params, allow_bulk=False,

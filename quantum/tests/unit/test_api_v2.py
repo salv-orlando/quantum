@@ -945,7 +945,6 @@ class JSONV2TestCase(APIv2TestBase, testlib_api.WebTestCase):
         res = self.api.post(_get_path('ports', fmt=self.fmt),
                             self.serialize(initial_input),
                             content_type='application/' + self.fmt)
-        full_input['port']['network_tenant_id'] = tenant_id
         instance.create_port.assert_called_with(mock.ANY, port=full_input)
         self.assertEqual(res.status_int, exc.HTTPCreated.code)
         res = self.deserialize(res)

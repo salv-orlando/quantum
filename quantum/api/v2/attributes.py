@@ -600,12 +600,10 @@ RESOURCE_ATTRIBUTE_MAP = {
     }
 }
 
-# Associates to each resource its own parent resource
-# Resources without parents, such as networks, are not in this list
+# Identify the attribute used by a resource to reference another resource
 
-RESOURCE_HIERARCHY_MAP = {
-    'ports': {'parent': 'networks', 'identified_by': 'network_id'},
-    'subnets': {'parent': 'networks', 'identified_by': 'network_id'}
+RESOURCE_FOREIGN_KEYS = {
+    'networks': 'network_id'
 }
 
 PLURALS = {'networks': 'network',

@@ -909,8 +909,7 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
 
         return self._fields(res, fields)
 
-    def _make_subnet_dict(self, subnet, fields=None,
-                          context=None):
+    def _make_subnet_dict(self, subnet, fields=None):
         res = {'id': subnet['id'],
                'name': subnet['name'],
                'tenant_id': subnet['tenant_id'],
@@ -927,14 +926,11 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                'host_routes': [{'destination': route['destination'],
                                 'nexthop': route['nexthop']}
                                for route in subnet['routes']],
-               'shared': subnet['shared']}
-        # Augment the port with network owner if available
-        if context:
-            network = self._get_network(context, subnet['network_id'])
-            res['network_tenant_id'] = network['tenant_id']
+               'shared': subnet['shared']
+               }
         return self._fields(res, fields)
 
-    def _make_port_dict(self, port, fields=None, context=None):
+    def _make_port_dict(self, port, fields=None):
         res = {"id": port["id"],
                'name': port['name'],
                "network_id": port["network_id"],
@@ -958,10 +954,6 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                 [sg['security_group_id']
                  for sg in port.security_group_port_bindings])
 
-        # Augment the port with network owner if available
-        if context:
-            network = self._get_network(context, port['network_id'])
-            res['network_tenant_id'] = network['tenant_id']
         return self._fields(res, fields)
 
     def _create_bulk(self, resource, context, request_items):
@@ -1297,23 +1289,19 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
 
     def get_subnet(self, context, id, fields=None):
         subnet = self._get_subnet(context, id)
-        return self._make_subnet_dict(subnet, fields, context=context)
+        return self._make_subnet_dict(subnet, fields)
 
     def get_subnets(self, context, filters=None, fields=None,
                     sorts=None, limit=None, marker=None,
                     page_reverse=False):
         marker_obj = self._get_marker_obj(context, 'subnet', limit, marker)
-        query = self._get_collection_query(context, models_v2.Subnet,
-                                           filters=filters,
-                                           sorts=sorts,
-                                           limit=limit,
-                                           marker_obj=marker_obj,
-                                           page_reverse=page_reverse)
-        items = [self._make_subnet_dict(c, fields, context=context)
-                 for c in query.all()]
-        if limit and page_reverse:
-            items.reverse()
-        return items
+        return self._get_collection(context, models_v2.Subnet,
+                                    self._make_subnet_dict,
+                                    filters=filters, fields=fields,
+                                    sorts=sorts,
+                                    limit=limit,
+                                    marker_obj=marker_obj,
+                                    page_reverse=page_reverse)
 
     def get_subnets_count(self, context, filters=None):
         return self._get_collection_count(context, models_v2.Subnet,
@@ -1460,7 +1448,7 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
 
     def get_port(self, context, id, fields=None):
         port = self._get_port(context, id)
-        return self._make_port_dict(port, fields, context=context)
+        return self._make_port_dict(port, fields)
 
     def _get_ports_query(self, context, filters=None, sorts=None, limit=None,
                          marker_obj=None, page_reverse=False):
@@ -1497,9 +1485,7 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2):
                                       sorts=sorts, limit=limit,
                                       marker_obj=marker_obj,
                                       page_reverse=page_reverse)
-
-        items = [self._make_port_dict(c, fields, context=context)
-                 for c in query.all()]
+        items = [self._make_port_dict(c, fields) for c in query.all()]
         if limit and page_reverse:
             items.reverse()
         return items

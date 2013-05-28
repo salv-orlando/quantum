@@ -2,6 +2,7 @@
     "admin_or_owner": "role:admin or tenant_id:%(tenant_id)s",
     "admin_or_network_owner": "role:admin or tenant_id:%(network_tenant_id)s",
     "admin_only": "role:admin",
+    "context_is_admin":  "role:admin",
     "regular_user": "",
     "shared": "field:networks:shared=True",
     "external": "field:networks:router:external=True",
