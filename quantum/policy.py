@@ -266,4 +266,3 @@ def enforce(context, action, target, plugin=None):
     credentials = context.to_dict()
     return policy.check(match_rule, target, credentials,
                         exceptions.PolicyNotAuthorized, action=action)
-
