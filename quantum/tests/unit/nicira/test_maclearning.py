@@ -122,6 +122,16 @@ class MacLearningDBTestCase(test_db_plugin.QuantumDbPluginV2TestCase):
             res = self.deserialize(self.fmt, req.get_response(self.api))
             self.assertTrue(res['port']['mac_learning_enabled'])
 
+    def test_update_preexisting_port_with_mac_learning(self):
+        with self.port() as port:
+            req = self.new_show_request('ports', port['port']['id'], self.fmt)
+            sport = self.deserialize(self.fmt, req.get_response(self.api))
+            self.assertNotIn('mac_learning_enabled', sport['port'])
+            data = {'port': {'mac_learning_enabled': True}}
+            req = self.new_update_request('ports', data, port['port']['id'])
+            res = self.deserialize(self.fmt, req.get_response(self.api))
+            self.assertTrue(res['port']['mac_learning_enabled'])
+
     def test_list_ports(self):
         # for this test we need to enable overlapping ips
         cfg.CONF.set_default('allow_overlapping_ips', True)

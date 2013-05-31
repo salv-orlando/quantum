@@ -68,7 +68,9 @@ class MacLearningDbMixin(object):
             state = query.filter(MacLearningState.port_id == port_id).one()
             state.update({mac.MAC_LEARNING: enabled})
         except exc.NoResultFound:
-            raise mac.MACLearningStateNotFound(port_id=port_id)
+            self._create_mac_learning_state(context,
+                                            {'id': port_id,
+                                             mac.MAC_LEARNING: enabled})
 
     def _create_mac_learning_state(self, context, port):
         with context.session.begin(subtransactions=True):

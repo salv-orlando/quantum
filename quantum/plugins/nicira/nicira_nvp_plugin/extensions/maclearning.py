@@ -21,11 +21,6 @@ from quantum.api.v2 import attributes
 from quantum.common import exceptions as qexception
 
 
-class MACLearningStateNotFound(qexception.InvalidExtensionEnv):
-    message = _("Unable to find MAC learning property for "
-                "port: %(port_id)s")
-
-
 MAC_LEARNING = 'mac_learning_enabled'
 EXTENDED_ATTRIBUTES_2_0 = {
     'ports': {
