@@ -162,7 +162,6 @@ def check(rule, target, creds, exc=None, *args, **kwargs):
              expression, this True value will be the specified string
              from the expression.
     """
-
     # Allow the rule to be a Check tree
     if isinstance(rule, BaseCheck):
         result = rule(target, creds)

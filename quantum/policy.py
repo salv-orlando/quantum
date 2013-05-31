@@ -100,12 +100,18 @@ def _build_match_rule(action, target):
                                                 res_map[resource],
                                                 target):
                     attribute = res_map[resource][attribute_name]
-                    if 'enforce_policy' in attribute and is_write:
+                    if 'enforce_policy' in attribute:
                         attr_rule = policy.RuleCheck('rule', '%s:%s' %
                                                      (action, attribute_name))
                         match_rule = policy.AndCheck([match_rule, attr_rule])
-
     return match_rule
+
+@policy.register("notrole")
+class NotRoleCheck(policy.Check):
+    def __call__(self, target, creds):
+        """Check that there is no match for the role the cred dict."""
+
+        return self.match.lower() not in [x.lower() for x in creds['roles']]
 
 
 # This check is registered as 'tenant_id' so that it can override
@@ -243,7 +249,10 @@ def check(context, action, target, plugin=None):
     init()
     match_rule = _build_match_rule(action, target)
     credentials = context.to_dict()
-    return policy.check(match_rule, target, credentials)
+
+    res = policy.check(match_rule, target, credentials)
+    LOG.warn("#### POLICY CHECK RETURNS:%s", res)
+    return res
 
 
 def enforce(context, action, target, plugin=None):

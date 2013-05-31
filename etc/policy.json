@@ -36,6 +36,7 @@
     "update_network": "rule:admin_or_owner",
     "delete_network": "rule:admin_or_owner",
 
+    "create_on_shared": "rule:regular_user",
     "create_port": "",
     "create_port:mac_address": "rule:admin_or_network_owner",
     "create_port:fixed_ips": "rule:admin_or_network_owner",
@@ -48,6 +49,7 @@
     "update_port:mac_learning_enabled": "rule:admin_or_network_owner",
     "delete_port": "rule:admin_or_owner",
 
+    "update_router:external_gateway_info": "rule:admin_or_owner",
     "extension:service_type:view_extended": "rule:admin_only",
     "create_service_type": "rule:admin_only",
     "update_service_type": "rule:admin_only",

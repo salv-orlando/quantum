@@ -569,10 +569,14 @@ class Controller(object):
         network = self._plugin.get_network(
             request.context,
             resource_item['network_id'])
-        # do not perform the check on shared networks
+        # If the network is shared invoke the policy engine to check
+        # whether this is allowed with currenct credentials
         if network.get('shared'):
+            policy.enforce(
+                request.context, 'create_on_shared',
+                resource_item)
+            # If we hit the following line the tenant is authorized
             return
-
         network_owner = network['tenant_id']
 
         if network_owner != resource_item['tenant_id']:
