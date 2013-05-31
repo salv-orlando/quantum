@@ -485,8 +485,14 @@ class FakeClient:
             val_func = self._validators.get(res_type)
             if val_func:
                 val_func(body_json)
-            resource = res_dict[uuids[-1]]
+            try:
+                resource = res_dict[uuids[-1]]
+            except KeyError:
+                raise NvpApiClient.ResourceNotFound()
             if not is_attachment:
+                edit_resource = getattr(self, '_build_%s' % res_type, None)
+                if edit_resource:
+                    body_json = edit_resource(body)
                 resource.update(body_json)
             else:
                 relations = resource.get("_relations", {})

@@ -19,8 +19,9 @@ import mock
 import os
 
 from quantum.openstack.common import jsonutils as json
-import quantum.plugins.nicira as nvp_plugin
+from quantum.plugins.nicira.common import exceptions
 from quantum.plugins.nicira import nvp_cluster
+import quantum.plugins.nicira as nvp_plugin
 from quantum.plugins.nicira import NvpApiClient
 from quantum.plugins.nicira import nvplib
 from quantum.tests import base
@@ -195,12 +196,13 @@ class TestNvpLibLogicalPorts(NvplibTestCase):
         self.assertIsNotNone(lport2)
         self.assertEqual(lport['uuid'], lport2['uuid'])
 
-    def test_get_port_by_tag_not_found_returns_None(self):
+    def test_get_port_by_tag_not_found_raises(self):
         tenant_id = 'pippo'
         quantum_port_id = 'whatever'
         lswitch = nvplib.create_lswitch(self.fake_cluster, tenant_id,
                                         'fake-switch')
-        lport = nvplib.get_port_by_quantum_tag(self.fake_cluster,
-                                               lswitch['uuid'],
-                                               quantum_port_id)
-        self.assertIsNone(lport)
+        self.assertRaises(exceptions.NvpInvalidQuantumIdTag,
+                          nvplib.get_port_by_quantum_tag,
+                          self.fake_cluster,
+                          lswitch['uuid'],
+                          quantum_port_id)

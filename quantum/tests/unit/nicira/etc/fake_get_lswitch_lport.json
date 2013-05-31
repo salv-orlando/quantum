@@ -3,6 +3,7 @@
    {"LogicalPortStatus":
       {"type": "LogicalSwitchPortStatus",
        "fabric_status_up": false,
+       "link_status_up": false,
        "_href": "/ws.v1/lswitch/%(ls_uuid)s/lport/%(uuid)s/status",
        "_schema": "/ws.v1/schema/LogicalSwitchPortStatus"}
    },

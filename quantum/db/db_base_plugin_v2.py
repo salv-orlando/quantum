@@ -1003,28 +1003,31 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2,
                 subnet['shared'] = network['shared']
         return self._make_network_dict(network)
 
+    def _pre_delete_network_checks(self, context, network_id):
+        net_filter = {'network_id': [network_id]}
+        ports = self.get_ports(context, filters=net_filter)
+        # check if there are any tenant owned ports in-use
+        only_auto_del = all(p['device_owner'] in AUTO_DELETE_PORT_OWNERS
+                            for p in ports)
+        if not only_auto_del:
+            raise q_exc.NetworkInUse(net_id=network_id)
+        return ports
+
+    def _delete_network(self, context, network, ports_to_delete):
+        # clean up network owned ports
+        for port in ports_to_delete:
+            self._delete_port(context, port['id'])
+
+        # clean up subnets
+        subnets_qry = context.session.query(models_v2.Subnet)
+        subnets_qry.filter_by(network_id=network['id']).delete()
+        context.session.delete(network)
+
     def delete_network(self, context, id):
         with context.session.begin(subtransactions=True):
             network = self._get_network(context, id)
-
-            filter = {'network_id': [id]}
-            ports = self.get_ports(context, filters=filter)
-
-            # check if there are any tenant owned ports in-use
-            only_auto_del = all(p['device_owner'] in AUTO_DELETE_PORT_OWNERS
-                                for p in ports)
-
-            if not only_auto_del:
-                raise q_exc.NetworkInUse(net_id=id)
-
-            # clean up network owned ports
-            for port in ports:
-                self._delete_port(context, port['id'])
-
-            # clean up subnets
-            subnets_qry = context.session.query(models_v2.Subnet)
-            subnets_qry.filter_by(network_id=id).delete()
-            context.session.delete(network)
+            ports = self._pre_delete_network_checks(context, id)
+            self._delete_network(context, network, ports)
 
     def get_network(self, context, id, fields=None):
         network = self._get_network(context, id)
@@ -1252,7 +1255,6 @@ class QuantumDbPluginV2(quantum_plugin_base_v2.QuantumPluginBaseV2,
             allocated_qry = context.session.query(models_v2.IPAllocation)
             allocated_qry = allocated_qry.options(orm.joinedload('ports'))
             allocated = allocated_qry.filter_by(subnet_id=id)
-
             only_auto_del = all(not a.port_id or
                                 a.ports.device_owner in AUTO_DELETE_PORT_OWNERS
                                 for a in allocated)

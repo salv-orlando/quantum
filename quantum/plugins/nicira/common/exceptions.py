@@ -54,3 +54,8 @@ class NvpNatRuleMismatch(NvpPluginException):
     message = _("While retrieving NAT rules, %(actual_rules)s were found "
                 "whereas rules in the (%(min_rules)s,%(max_rules)s) interval "
                 "were expected")
+
+
+class NvpInvalidQuantumIdTag(NvpPluginException):
+    message = _("Unable to find a %(resource)s resource with quantum_id "
+                "tag equal to %(expected_id)s")

@@ -20,7 +20,6 @@
 # @author: Aaron Rosen, Nicira Networks, Inc.
 
 
-import hashlib
 import logging
 import os
 
@@ -57,6 +56,7 @@ from quantum.plugins.nicira.common import config  # noqa
 from quantum.plugins.nicira.common import exceptions as nvp_exc
 from quantum.plugins.nicira.common import metadata_access as nvp_meta
 from quantum.plugins.nicira.common import securitygroups as nvp_sec
+from quantum.plugins.nicira.drivers import nvp_synch_driver
 from quantum.plugins.nicira.extensions import nvp_networkgw as networkgw
 from quantum.plugins.nicira.extensions import nvp_qos as ext_qos
 from quantum.plugins.nicira import nicira_db
@@ -73,6 +73,9 @@ NVP_NOSNAT_RULES_ORDER = 10
 NVP_FLOATINGIP_NAT_RULES_ORDER = 224
 NVP_EXTGW_NAT_RULES_ORDER = 255
 NVP_EXT_PATH = os.path.join(os.path.dirname(__file__), 'extensions')
+
+# Operation status for NVP object being deleted
+STATUS_DELETING = 'deleting'
 
 
 # Provider network extension - allowed network types for the NVP Plugin
@@ -147,6 +150,80 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
     port_security_enabled_update = "update_port:port_security_enabled"
 
+    def _create_network_handler(self, context, network_data, response):
+        """Helper function for handling create_network responses.
+
+        This function must be passed to the NVP driver.
+        """
+        with context.session.begin(subtransactions=True):
+            # NOTE(salv-orlando): Consider adding nvp mappings
+            # for lswitches to the quantum db
+            net = self._get_network(context, network_data['id'])
+            net['status'] = constants.NET_STATUS_ACTIVE
+
+    def _delete_network_handler(self, context, network_data, ports_to_delete):
+        """Helper function for handling delete_network responses.
+
+        Perform the actual removal of the network from the Quantum DB
+        This function must be passed to the NVP driver.
+        """
+        # NOTE(salv-orlando): Try to avoid this extra load from the DB
+        network = self._get_network(context, network_data['id'])
+        self._delete_network(context, network, ports_to_delete)
+
+    def _create_port_handler(self, context, port_data, response):
+        """Helper function for handling create_port responses.
+
+        This function must be passed to the NVP driver.
+        """
+        with context.session.begin(subtransactions=True):
+            port = self._get_port(context, port_data['id'])
+            if response:
+                nicira_db.add_quantum_nvp_port_mapping(
+                    context.session, port_data['id'], response['uuid'])
+                port['status'] = constants.PORT_STATUS_ACTIVE
+            else:
+                port['status'] = constants.PORT_STATUS_ERROR
+            # Update also the information which are going to be returned
+            port_data['status'] = port['status']
+
+    def _delete_port_handler(self, context, port_data):
+        with context.session.begin(subtransactions=True):
+            self.disassociate_floatingips(context, port_data['id'])
+            queue = self._get_port_queue_bindings(
+                context, {'port_id': [port_data['id']]})
+            # Delete qos queue if possible
+            if queue:
+                self.delete_qos_queue(context, queue[0]['queue_id'], False)
+            super(NvpPluginV2, self).delete_port(context, port_data['id'])
+
+    def _create_network_exception_handler(self, context,
+                                          network_data, exception):
+        """Helper function for handling faulty create_port responses.
+
+        This function must be passed to the NVP driver
+        """
+        # Regardless of the exception, delete the network
+        self._delete_network(context, network_data['id'])
+
+    def _create_port_exception_handler(self, context, port_data, exception):
+        """Helper function for handling faulty create_port responses.
+
+        This function must be passed to the NVP driver
+        """
+        # Regardless of the exception, delete the port
+        with context.session.begin(subtransactions=True):
+            self._delete_port(context, port_data['id'])
+
+    def _update_port_exception_handler(self, context, port_data, exception):
+        """Helper function for handling faulty update_port responses.
+
+        This function must be passed to the NVP driver
+        """
+        with context.session.begin(subtransactions=True):
+            port_data['status'] = constants.PORT_STATUS_ERROR
+            LOG.error(_("Unable to update port id: %s."), port_data['id'])
+
     def __init__(self, loglevel=None):
         if loglevel:
             logging.basicConfig(level=loglevel)
@@ -197,6 +274,18 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         # Set this flag to false as the default gateway has not
         # been yet updated from the config file
         self._is_default_net_gw_in_sync = False
+
+        response_handlers = {
+            'create_network': self._create_network_handler,
+            'delete_network': self._delete_network_handler,
+            'create_port': self._create_port_handler,
+            'delete_port': self._delete_port_handler}
+        exception_handlers = {
+            'create_network': self._create_network_exception_handler,
+            'create_port': self._create_port_exception_handler,
+            'update_port': self._update_port_exception_handler}
+        self.driver = nvp_synch_driver.NvpSynchDriver(
+            self.cluster, response_handlers, exception_handlers)
 
     def _ensure_default_network_gateway(self):
         if self._is_default_net_gw_in_sync:
@@ -675,7 +764,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
     def _handle_provider_create(self, context, attrs):
         # NOTE(salvatore-orlando): This method has been borrowed from
-        # the OpenvSwtich plugin, altough changed to match NVP specifics.
+        # the OpenvSwitch plugin, altough changed to match NVP specifics.
+        # It should be in the pnet extension file
         network_type = attrs.get(pnet.NETWORK_TYPE)
         physical_network = attrs.get(pnet.PHYSICAL_NETWORK)
         segmentation_id = attrs.get(pnet.SEGMENTATION_ID)
@@ -791,31 +881,14 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
     def create_network(self, context, network):
         net_data = network['network']
+        # Replace ATTR_NOT_SPECIFIED with None for each attribute
+        for key, value in net_data.iteritems():
+            if value is attr.ATTR_NOT_SPECIFIED:
+                net_data[key] = None
         tenant_id = self._get_tenant_id_for_create(context, net_data)
         self._ensure_default_security_group(context, tenant_id)
         # Process the provider network extension
         self._handle_provider_create(context, net_data)
-        # Replace ATTR_NOT_SPECIFIED with None before sending to NVP
-        for key, value in network['network'].iteritems():
-            if value is attr.ATTR_NOT_SPECIFIED:
-                net_data[key] = None
-        # FIXME(arosen) implement admin_state_up = False in NVP
-        if net_data['admin_state_up'] is False:
-            LOG.warning(_("Network with admin_state_up=False are not yet "
-                          "supported by this plugin. Ignoring setting for "
-                          "network %s"), net_data.get('name', '<unknown>'))
-        external = net_data.get(l3.EXTERNAL)
-        if (not attr.is_attr_set(external) or
-            attr.is_attr_set(external) and not external):
-            nvp_binding_type = net_data.get(pnet.NETWORK_TYPE)
-            if nvp_binding_type in ('flat', 'vlan'):
-                nvp_binding_type = 'bridge'
-            lswitch = nvplib.create_lswitch(
-                self.cluster, tenant_id, net_data.get('name'),
-                nvp_binding_type, net_data.get(pnet.PHYSICAL_NETWORK),
-                net_data.get(pnet.SEGMENTATION_ID),
-                shared=net_data.get(attr.SHARED))
-            net_data['id'] = lswitch['uuid']
 
         with context.session.begin(subtransactions=True):
             new_net = super(NvpPluginV2, self).create_network(context,
@@ -827,13 +900,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             # DB Operations for setting the network as external
             self._process_l3_create(context, net_data, new_net['id'])
             # Process QoS queue extension
-            if network['network'].get(ext_qos.QUEUE):
-                new_net[ext_qos.QUEUE] = network['network'][ext_qos.QUEUE]
+            if net_data.get(ext_qos.QUEUE):
+                new_net[ext_qos.QUEUE] = net_data[ext_qos.QUEUE]
                 # Raises if not found
                 self.get_qos_queue(context, new_net[ext_qos.QUEUE])
                 self._process_network_queue_mapping(context, new_net)
                 self._extend_network_qos_queue(context, new_net)
-
             if net_data.get(pnet.NETWORK_TYPE):
                 net_binding = nicira_db.add_network_binding(
                     context.session, new_net['id'],
@@ -844,92 +916,30 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                                    net_binding)
             self._extend_network_port_security_dict(context, new_net)
             self._extend_network_dict_l3(context, new_net)
+        # Invoke the NVP driver
+        self.driver.create_network(context, tenant_id, new_net)
         self.schedule_network(context, new_net)
         return new_net
 
     def delete_network(self, context, id):
         external = self._network_is_external(context, id)
-        # Before deleting ports, ensure the peer of a NVP logical
-        # port with a patch attachment is removed too
-        port_filter = {'network_id': [id],
-                       'device_owner': ['network:router_interface']}
-        router_iface_ports = self.get_ports(context, filters=port_filter)
-        for port in router_iface_ports:
-            nvp_port_id = self._nvp_get_port_id(
-                context, self.cluster, port)
-            if nvp_port_id:
-                port['nvp_port_id'] = nvp_port_id
-            else:
-                LOG.warning(_("A nvp lport identifier was not found for "
-                              "quantum port '%s'"), port['id'])
-
-        super(NvpPluginV2, self).delete_network(context, id)
-        # clean up network owned ports
-        for port in router_iface_ports:
-            try:
-                if 'nvp_port_id' in port:
-                    nvplib.delete_peer_router_lport(self.cluster,
-                                                    port['device_id'],
-                                                    port['network_id'],
-                                                    port['nvp_port_id'])
-            except (TypeError, KeyError,
-                    NvpApiClient.NvpApiException,
-                    NvpApiClient.ResourceNotFound):
-                # Do not raise because the issue might as well be that the
-                # router has already been deleted, so there would be nothing
-                # to do here
-                LOG.warning(_("Ignoring exception as this means the peer for "
-                              "port '%s' has already been deleted."),
-                            nvp_port_id)
-
-        # Do not go to NVP for external networks
-        if not external:
-            try:
-                lswitch_ids = [ls['uuid'] for ls in
-                               nvplib.get_lswitches(self.cluster, id)]
-                nvplib.delete_networks(self.cluster, id, lswitch_ids)
-                LOG.debug(_("delete_network completed for tenant: %s"),
-                          context.tenant_id)
-            except q_exc.NotFound:
-                LOG.warning(_("Did not found lswitch %s in NVP"), id)
+        # Retrieve router interfaces ports as they might be
+        # required by the NVP driver
+        ports_to_delete = self._pre_delete_network_checks(context, id)
+        # Update status of the network
+        with context.session.begin(subtransactions=True):
+            net = self._get_network(context, id)
+            net['status'] = STATUS_DELETING
+        # Let the driver response handler delete the network from the database
+        self.driver.delete_network(
+            context,
+            {'id': id, l3.EXTERNAL: external},
+            ports_to_delete=ports_to_delete)
 
     def get_network(self, context, id, fields=None):
         with context.session.begin(subtransactions=True):
-            # goto to the plugin DB and fetch the network
             network = self._get_network(context, id)
-            # if the network is external, do not go to NVP
-            if not self._network_is_external(context, id):
-                # verify the fabric status of the corresponding
-                # logical switch(es) in nvp
-                try:
-                    lswitches = nvplib.get_lswitches(self.cluster, id)
-                    nvp_net_status = constants.NET_STATUS_ACTIVE
-                    quantum_status = network.status
-                    for lswitch in lswitches:
-                        relations = lswitch.get('_relations')
-                        if relations:
-                            lswitch_status = relations.get(
-                                'LogicalSwitchStatus')
-                            # FIXME(salvatore-orlando): Being unable to fetch
-                            # logical switch status should be an exception.
-                            if (lswitch_status and
-                                not lswitch_status.get('fabric_status',
-                                                       None)):
-                                nvp_net_status = constants.NET_STATUS_DOWN
-                                break
-                    LOG.debug(_("Current network status:%(nvp_net_status)s; "
-                                "Status in Quantum DB:%(quantum_status)s"),
-                              {'nvp_net_status': nvp_net_status,
-                               'quantum_status': quantum_status})
-                    if nvp_net_status != network.status:
-                        # update the network status
-                        network.status = nvp_net_status
-                except q_exc.NotFound:
-                    network.status = constants.NET_STATUS_ERROR
-                except Exception:
-                    err_msg = _("Unable to get logical switches")
-                    LOG.exception(err_msg)
-                    raise nvp_exc.NvpPluginException(err_msg=err_msg)
+            network['status'] = self.driver.get_network_status(id)
             # Don't do field selection here otherwise we won't be able
             # to add provider networks fields
             net_result = self._make_network_dict(network, None)
@@ -940,89 +950,15 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         return self._fields(net_result, fields)
 
     def get_networks(self, context, filters=None, fields=None):
-        nvp_lswitches = {}
         filters = filters or {}
         with context.session.begin(subtransactions=True):
-            quantum_lswitches = (
-                super(NvpPluginV2, self).get_networks(context, filters))
-            for net in quantum_lswitches:
+            nets = super(NvpPluginV2, self).get_networks(context, filters)
+            for net in nets:
                 self._extend_network_dict_provider(context, net)
                 self._extend_network_port_security_dict(context, net)
                 self._extend_network_dict_l3(context, net)
                 self._extend_network_qos_queue(context, net)
-
-            tenant_ids = filters and filters.get('tenant_id') or None
-        filter_fmt = "&tag=%s&tag_scope=os_tid"
-        if context.is_admin and not tenant_ids:
-            tenant_filter = ""
-        else:
-            tenant_ids = tenant_ids or [context.tenant_id]
-            tenant_filter = ''.join(filter_fmt % tid for tid in tenant_ids)
-        lswitch_filters = "uuid,display_name,fabric_status,tags"
-        lswitch_url_path_1 = (
-            "/ws.v1/lswitch?fields=%s&relations=LogicalSwitchStatus%s"
-            % (lswitch_filters, tenant_filter))
-        lswitch_url_path_2 = nvplib._build_uri_path(
-            nvplib.LSWITCH_RESOURCE,
-            fields=lswitch_filters,
-            relations='LogicalSwitchStatus',
-            filters={'tag': 'true', 'tag_scope': 'shared'})
-        try:
-            res = nvplib.get_all_query_pages(lswitch_url_path_1, self.cluster)
-            nvp_lswitches.update(dict((ls['uuid'], ls) for ls in res))
-            # Issue a second query for fetching shared networks.
-            # We cannot unfortunately use just a single query because tags
-            # cannot be or-ed
-            res_shared = nvplib.get_all_query_pages(lswitch_url_path_2,
-                                                    self.cluster)
-            nvp_lswitches.update(dict((ls['uuid'], ls) for ls in res_shared))
-        except Exception:
-            err_msg = _("Unable to get logical switches")
-            LOG.exception(err_msg)
-            raise nvp_exc.NvpPluginException(err_msg=err_msg)
-
-        if filters.get('id'):
-            nvp_lswitches = dict(
-                (uuid, ls) for (uuid, ls) in nvp_lswitches.iteritems()
-                if uuid in set(filters['id']))
-
-        for quantum_lswitch in quantum_lswitches:
-            # Skip external networks as they do not exist in NVP
-            if quantum_lswitch[l3.EXTERNAL]:
-                continue
-            elif quantum_lswitch['id'] not in nvp_lswitches:
-                LOG.warning(_("Logical Switch %s found in quantum database "
-                              "but not in NVP."), quantum_lswitch["id"])
-                quantum_lswitch["status"] = constants.NET_STATUS_ERROR
-            else:
-                # TODO(salvatore-orlando): be careful about "extended"
-                # logical switches
-                ls = nvp_lswitches.pop(quantum_lswitch['id'])
-                if (ls["_relations"]["LogicalSwitchStatus"]["fabric_status"]):
-                    quantum_lswitch["status"] = constants.NET_STATUS_ACTIVE
-                else:
-                    quantum_lswitch["status"] = constants.NET_STATUS_DOWN
-
-        # do not make the case in which switches are found in NVP
-        # but not in Quantum catastrophic.
-        if nvp_lswitches:
-            LOG.warning(_("Found %s logical switches not bound "
-                        "to Quantum networks. Quantum and NVP are "
-                        "potentially out of sync"), len(nvp_lswitches))
-
-        LOG.debug(_("get_networks() completed for tenant %s"),
-                  context.tenant_id)
-
-        if fields:
-            ret_fields = []
-            for quantum_lswitch in quantum_lswitches:
-                row = {}
-                for field in fields:
-                    row[field] = quantum_lswitch[field]
-                ret_fields.append(row)
-            return ret_fields
-
-        return quantum_lswitches
+        return [self._fields(net, fields) for net in nets]
 
     def update_network(self, context, id, network):
         if network["network"].get("admin_state_up"):
@@ -1044,130 +980,35 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self._extend_network_dict_provider(context, net)
             self._extend_network_dict_l3(context, net)
             self._extend_network_qos_queue(context, net)
+        # TODO(salv-orlando): Probably restore capability for updating name
+        # in nvp - might also be needed for provider networks
         return net
 
     def get_ports(self, context, filters=None, fields=None):
         with context.session.begin(subtransactions=True):
-            quantum_lports = super(NvpPluginV2, self).get_ports(
+            ports = super(NvpPluginV2, self).get_ports(
                 context, filters)
-            for quantum_lport in quantum_lports:
-                self._extend_port_port_security_dict(context, quantum_lport)
-        if (filters.get('network_id') and len(filters.get('network_id')) and
-            self._network_is_external(context, filters['network_id'][0])):
-            # Do not perform check on NVP platform
-            return quantum_lports
-
-        vm_filter = ""
-        tenant_filter = ""
-        # This is used when calling delete_network. Quantum checks to see if
-        # the network has any ports.
-        if filters.get("network_id"):
-            # FIXME (Aaron) If we get more than one network_id this won't work
-            lswitch = filters["network_id"][0]
-        else:
-            lswitch = "*"
-
-        if filters.get("device_id"):
-            for vm_id in filters.get("device_id"):
-                vm_filter = ("%stag_scope=vm_id&tag=%s&" % (vm_filter,
-                             hashlib.sha1(vm_id).hexdigest()))
-        else:
-            vm_id = ""
-
-        if filters.get("tenant_id"):
-            for tenant in filters.get("tenant_id"):
-                tenant_filter = ("%stag_scope=os_tid&tag=%s&" %
-                                 (tenant_filter, tenant))
-
-        nvp_lports = {}
-
-        lport_fields_str = ("tags,admin_status_enabled,display_name,"
-                            "fabric_status_up")
-        try:
-            lport_query_path = (
-                "/ws.v1/lswitch/%s/lport?fields=%s&%s%stag_scope=q_port_id"
-                "&relations=LogicalPortStatus" %
-                (lswitch, lport_fields_str, vm_filter, tenant_filter))
-
-            try:
-                ports = nvplib.get_all_query_pages(lport_query_path,
-                                                   self.cluster)
-            except q_exc.NotFound:
-                LOG.warn(_("Lswitch %s not found in NVP"), lswitch)
-                ports = None
-
-            if ports:
-                for port in ports:
-                    for tag in port["tags"]:
-                        if tag["scope"] == "q_port_id":
-                            nvp_lports[tag["tag"]] = port
-        except Exception:
-            err_msg = _("Unable to get ports")
-            LOG.exception(err_msg)
-            raise nvp_exc.NvpPluginException(err_msg=err_msg)
-
-        lports = []
-        for quantum_lport in quantum_lports:
-            # if a quantum port is not found in NVP, this migth be because
-            # such port is not mapped to a logical switch - ie: floating ip
-            if quantum_lport['device_owner'] in (l3_db.DEVICE_OWNER_FLOATINGIP,
-                                                 l3_db.DEVICE_OWNER_ROUTER_GW):
-                lports.append(quantum_lport)
-                continue
-            try:
-                quantum_lport["admin_state_up"] = (
-                    nvp_lports[quantum_lport["id"]]["admin_status_enabled"])
-
-                if (nvp_lports[quantum_lport["id"]]
-                        ["_relations"]
-                        ["LogicalPortStatus"]
-                        ["fabric_status_up"]):
-                    quantum_lport["status"] = constants.PORT_STATUS_ACTIVE
-                else:
-                    quantum_lport["status"] = constants.PORT_STATUS_DOWN
-
-                del nvp_lports[quantum_lport["id"]]
-            except KeyError:
-                quantum_lport["status"] = constants.PORT_STATUS_ERROR
-                LOG.debug(_("Quantum logical port %s was not found on NVP"),
-                          quantum_lport['id'])
-
-            lports.append(quantum_lport)
-        # do not make the case in which ports are found in NVP
-        # but not in Quantum catastrophic.
-        if nvp_lports:
-            LOG.warning(_("Found %s logical ports not bound "
-                          "to Quantum ports. Quantum and NVP are "
-                          "potentially out of sync"), len(nvp_lports))
-
-        if fields:
-            ret_fields = []
-            for lport in lports:
-                row = {}
-                for field in fields:
-                    row[field] = lport[field]
-                ret_fields.append(row)
-            return ret_fields
-        return lports
+            # NOTE(salv-orlando): Extend for queue_id too?
+            for port in ports:
+                self._extend_port_port_security_dict(context, port)
+        return ports
 
     def create_port(self, context, port):
-        # If PORTSECURITY is not the default value ATTR_NOT_SPECIFIED
-        # then we pass the port to the policy engine. The reason why we don't
-        # pass the value to the policy engine when the port is
-        # ATTR_NOT_SPECIFIED is for the case where a port is created on a
-        # shared network that is not owned by the tenant.
         port_data = port['port']
         notify_dhcp_agent = False
         with context.session.begin(subtransactions=True):
-            # First we allocate port in quantum database
+            # The transaction will commit before the driver operation is
+            # performed. Then the server might yield to anther request which
+            # will read the status of this port. Hence, set it to 'build'
+            # until driver operation is confirmed successful
+            port['port']['status'] = constants.PORT_STATUS_BUILD
             quantum_db = super(NvpPluginV2, self).create_port(context, port)
             # Update fields obtained from quantum db (eg: MAC address)
             port["port"].update(quantum_db)
             # metadata_dhcp_host_route
             if (cfg.CONF.NVP.metadata_mode == "dhcp_host_route" and
                 quantum_db.get('device_owner') == constants.DEVICE_OWNER_DHCP):
-                if (quantum_db.get('fixed_ips') and
-                    len(quantum_db['fixed_ips'])):
+                if quantum_db.get('fixed_ips'):
                     notify_dhcp_agent = self._ensure_metadata_host_route(
                         context, quantum_db['fixed_ips'][0])
             # port security extension checks
@@ -1188,35 +1029,16 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             port_data[ext_qos.QUEUE] = self._check_for_queue_and_create(
                 context, port_data)
             self._process_port_queue_mapping(context, port_data)
-            # provider networking extension checks
-            # Fetch the network and network binding from Quantum db
-            try:
-                port_data = port['port'].copy()
-                port_create_func = self._port_drivers['create'].get(
-                    port_data['device_owner'],
-                    self._port_drivers['create']['default'])
-
-                port_create_func(context, port_data)
-            except q_exc.NotFound:
-                LOG.warning(_("Network %s was not found in NVP."),
-                            port_data['network_id'])
-                port_data['status'] = constants.PORT_STATUS_ERROR
-            except Exception as e:
-                # FIXME (arosen) or the plugin_interface call failed in which
-                # case we need to garbage collect the left over port in nvp.
-                err_msg = _("Unable to create port or set port attachment "
-                            "in NVP.")
-                LOG.exception(err_msg)
-                raise e
-
-            LOG.debug(_("create_port completed on NVP for tenant "
-                        "%(tenant_id)s: (%(id)s)"), port_data)
-
             # remove since it will be added in extend based on policy
             del port_data[ext_qos.QUEUE]
+            # MA VA CAC
             self._extend_port_port_security_dict(context, port_data)
             self._extend_port_qos_queue(context, port_data)
-        net = self.get_network(context, port_data['network_id'])
+ 
+        # Peform driver operation
+        net = self._get_network(context, port_data['network_id'])
+        self.driver.create_port(context, port_data, net)
+
         self.schedule_network(context, net)
         if notify_dhcp_agent:
             self._send_subnet_update_end(
@@ -1232,15 +1054,13 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             ret_port = super(NvpPluginV2, self).update_port(
                 context, id, port)
             # copy values over - except fixed_ips as
-            # they've alreaby been processed
+            # they've already been processed
             port['port'].pop('fixed_ips', None)
             ret_port.update(port['port'])
-            tenant_id = self._get_tenant_id_for_create(context, ret_port)
             # populate port_security setting
             if psec.PORTSECURITY not in port['port']:
                 ret_port[psec.PORTSECURITY] = self._get_port_security_binding(
                     context, id)
-
             has_ip = self._ip_on_port(ret_port)
             # checks if security groups were updated adding/modifying
             # security groups, port security is set and port has ip
@@ -1250,6 +1070,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 # Update did not have security groups passed in. Check
                 # that port does not have any security groups already on it.
                 filters = {'port_id': [id]}
+                # TODO(salv-orlando): This is probably not necessary anymore
                 security_groups = (
                     super(NvpPluginV2, self)._get_port_security_group_bindings(
                         context, filters)
@@ -1263,65 +1084,25 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 sgids = self._get_security_groups_on_port(context, port)
                 self._process_port_create_security_group(context, ret_port,
                                                          sgids)
-
             if psec.PORTSECURITY in port['port']:
                 self._update_port_security_binding(
                     context, id, ret_port[psec.PORTSECURITY])
 
             ret_port[ext_qos.QUEUE] = self._check_for_queue_and_create(
                 context, ret_port)
+            # TODO(salv-orlando): try to avoid delete and process
             self._delete_port_queue_mapping(context, ret_port['id'])
             self._process_port_queue_mapping(context, ret_port)
             self._extend_port_port_security_dict(context, ret_port)
-            LOG.warn(_("Update port request: %s"), port)
-            nvp_port_id = self._nvp_get_port_id(
-                context, self.cluster, ret_port)
-            if nvp_port_id:
-                try:
-                    nvplib.update_port(self.cluster,
-                                       ret_port['network_id'],
-                                       nvp_port_id, id, tenant_id,
-                                       ret_port['name'], ret_port['device_id'],
-                                       ret_port['admin_state_up'],
-                                       ret_port['mac_address'],
-                                       ret_port['fixed_ips'],
-                                       ret_port[psec.PORTSECURITY],
-                                       ret_port[ext_sg.SECURITYGROUPS],
-                                       ret_port[ext_qos.QUEUE])
 
-                    # Update the port status from nvp. If we fail here hide it
-                    # since the port was successfully updated but we were not
-                    # able to retrieve the status.
-                    ret_port['status'] = nvplib.get_port_status(
-                        self.cluster, ret_port['network_id'],
-                        nvp_port_id)
-                # FIXME(arosen) improve exception handling.
-                except Exception:
-                    ret_port['status'] = constants.PORT_STATUS_ERROR
-                    LOG.exception(_("Unable to update port id: %s."),
-                                  nvp_port_id)
+        # Invoke NVP driver
+        self.driver.update_port(context, ret_port)
 
-            # If nvp_port_id is not in database or in nvp put in error state.
-            else:
-                ret_port['status'] = constants.PORT_STATUS_ERROR
-
-            # remove since it will be added in extend based on policy
-            del ret_port[ext_qos.QUEUE]
-            self._extend_port_qos_queue(context, ret_port)
         return ret_port
 
     def delete_port(self, context, id, l3_port_check=True,
                     nw_gw_port_check=True):
-        """Deletes a port on a specified Virtual Network.
-
-        If the port contains a remote interface attachment, the remote
-        interface is first un-plugged and then the port is deleted.
-
-        :returns: None
-        :raises: exception.PortInUse
-        :raises: exception.PortNotFound
-        :raises: exception.NetworkNotFound
-        """
+        """Deletes a port on a specified Virtual Network."""
         # if needed, check to see if this is a port owned by
         # a l3 router.  If so, we should prevent deletion here
         if l3_port_check:
@@ -1331,15 +1112,16 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         if nw_gw_port_check:
             self.prevent_network_gateway_port_deletion(context,
                                                        quantum_db_port)
-        port_delete_func = self._port_drivers['delete'].get(
-            quantum_db_port['device_owner'],
-            self._port_drivers['delete']['default'])
+        # Update status of the port
+        with context.session.begin(subtransactions=True):
+            port = self._get_port(context, id)
+            port['status'] = STATUS_DELETING
 
-        port_delete_func(context, quantum_db_port)
-        self.disassociate_floatingips(context, id)
+        # Let the driver response handler delete the port from the database
+        self.driver.delete_port(context, quantum_db_port)
+
         notify_dhcp_agent = False
         with context.session.begin(subtransactions=True):
-            queue = self._get_port_queue_bindings(context, {'port_id': [id]})
             # metadata_dhcp_host_route
             port_device_owner = quantum_db_port['device_owner']
             if (cfg.CONF.NVP.metadata_mode == "dhcp_host_route" and
@@ -1347,45 +1129,20 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     notify_dhcp_agent = self._ensure_metadata_host_route(
                         context, quantum_db_port['fixed_ips'][0],
                         is_delete=True)
-            super(NvpPluginV2, self).delete_port(context, id)
-            # Delete qos queue if possible
-            if queue:
-                self.delete_qos_queue(context, queue[0]['queue_id'], False)
         if notify_dhcp_agent:
             self._send_subnet_update_end(
                 context, quantum_db_port['fixed_ips'][0]['subnet_id'])
 
     def get_port(self, context, id, fields=None):
         with context.session.begin(subtransactions=True):
-            quantum_db_port = super(NvpPluginV2, self).get_port(context,
-                                                                id, fields)
-            self._extend_port_port_security_dict(context, quantum_db_port)
-            self._extend_port_qos_queue(context, quantum_db_port)
-
-            if self._network_is_external(context,
-                                         quantum_db_port['network_id']):
-                return quantum_db_port
-            nvp_id = self._nvp_get_port_id(context, self.cluster,
-                                           quantum_db_port)
-            # If there's no nvp IP do not bother going to NVP and put
-            # the port in error state
-            if nvp_id:
-                try:
-                    port = nvplib.get_logical_port_status(
-                        self.cluster, quantum_db_port['network_id'],
-                        nvp_id)
-                    quantum_db_port["admin_state_up"] = (
-                        port["admin_status_enabled"])
-                    if port["fabric_status_up"]:
-                        quantum_db_port["status"] = (
-                            constants.PORT_STATUS_ACTIVE)
-                    else:
-                        quantum_db_port["status"] = constants.PORT_STATUS_DOWN
-                except q_exc.NotFound:
-                    quantum_db_port["status"] = constants.PORT_STATUS_ERROR
-            else:
-                quantum_db_port["status"] = constants.PORT_STATUS_ERROR
-        return quantum_db_port
+            port = super(NvpPluginV2, self).get_port(context, id, fields)
+            self._extend_port_port_security_dict(context, port)
+            self._extend_port_qos_queue(context, port)
+            if self._network_is_external(context, port['network_id']):
+                return port
+            port['status'] = self.driver.get_port_status(
+                context, id, port['network_id'])
+        return port
 
     def create_router(self, context, router):
         # NOTE(salvatore-orlando): We completely override this method in
