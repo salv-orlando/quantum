@@ -1034,7 +1034,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             # MA VA CAC
             self._extend_port_port_security_dict(context, port_data)
             self._extend_port_qos_queue(context, port_data)
- 
+
         # Peform driver operation
         net = self._get_network(context, port_data['network_id'])
         self.driver.create_port(context, port_data, net)

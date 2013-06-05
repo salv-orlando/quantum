@@ -19,9 +19,9 @@ import mock
 import os
 
 from quantum.openstack.common import jsonutils as json
+import quantum.plugins.nicira as nvp_plugin
 from quantum.plugins.nicira.common import exceptions
 from quantum.plugins.nicira import nvp_cluster
-import quantum.plugins.nicira as nvp_plugin
 from quantum.plugins.nicira import NvpApiClient
 from quantum.plugins.nicira import nvplib
 from quantum.tests import base

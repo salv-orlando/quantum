@@ -360,7 +360,7 @@ class NvpSynchDriver(base_driver.BaseDriver):
             LOG.info(_("The network %s was already removed in the "
                        "NVP backend"), network_data['id'])
         except Exception:
-            with excutils.save_and_reraise_exception():            
+            with excutils.save_and_reraise_exception():
                 self.exception_handlers['delete_network'](
                     context, network_data, sys.exc_info())
 
@@ -384,20 +384,41 @@ class NvpSynchDriver(base_driver.BaseDriver):
             nvp_port_id = self._nvp_get_port_id(
                 context, self.cluster,
                 port_data['id'], port_data['network_id'])
-            nvplib.update_port(self.cluster,
-                               port_data['network_id'],
-                               nvp_port_id,
-                               port_data['id'],
-                               port_data['tenant_id'],
-                               port_data['name'],
-                               port_data['device_id'],
-                               port_data['admin_state_up'],
-                               port_data['mac_address'],
-                               port_data['fixed_ips'],
-                               port_data[ext_psec.PORTSECURITY],
-                               port_data[ext_sg.SECURITYGROUPS],
-                               port_data[ext_qos.QUEUE])
-            self.response_handlers['update_port'](context, port_data)
+            # TODO(salv-orlando): We should cache the lswitch binding
+            # too as long as we allow for multiple lswitches
+            # TODO(salv-orlando): This routine has room for improvements!
+            lswitches = nvplib.get_lswitches(self.cluster,
+                                             port_data['network_id'])
+            # Unfortunately the port could be on any switch
+            for lswitch in lswitches:
+                try:
+                    nvplib.update_port(self.cluster,
+                                       lswitch['uuid'],
+                                       nvp_port_id,
+                                       port_data['id'],
+                                       port_data['tenant_id'],
+                                       port_data['name'],
+                                       port_data['device_id'],
+                                       port_data['admin_state_up'],
+                                       port_data['mac_address'],
+                                       port_data['fixed_ips'],
+                                       port_data[ext_psec.PORTSECURITY],
+                                       port_data[ext_sg.SECURITYGROUPS],
+                                       port_data[ext_qos.QUEUE])
+                    self.response_handlers['update_port'](context, port_data)
+                    break
+                except NvpApiClient.ResourceNotFound:
+                    # Skip this logical switch, look for the next one
+                    LOG.debug(_("Logical port %(port_id)s was not "
+                                "found on logical switch %(lswitch_id)s"),
+                              {'lport_id': nvp_port_id,
+                               'lswitch_id': lswitch['uuid']})
+            else:
+                # NOTE(salv-orlando): as nvp_get_port_id returned successfully
+                # we should never hit these lines
+                # Put the port in error state but do not bubble up the error
+                self.exception_handlers['update_port'](
+                    context, port_data, None)
         except NvpApiClient.ResourceNotFound:
             LOG.warning(_("NVP logical port:%s not found"), nvp_port_id)
             # Put the port in error state but do not bubble up the error
@@ -422,6 +443,6 @@ class NvpSynchDriver(base_driver.BaseDriver):
             self.response_handlers['delete_port'](context, port_data)
         except Exception:
             # Let the exception handler deal with the Exception
-            with excutils.save_and_reraise_exception():            
+            with excutils.save_and_reraise_exception():
                 self.exception_handlers['delete_port'](context, port_data,
                                                        sys.exc_info())

@@ -318,7 +318,6 @@ def query_lswitches_status(cluster, tenant_id=None,
             try:
                 bwcomp_lswitch_uri_path = _build_uri_path(
                     LSWITCH_RESOURCE, network_id,
-                    fields="uuid,fabric_status,tags",
                     relations="LogicalSwitchStatus")
                 results.append(do_request(
                     HTTP_GET, bwcomp_lswitch_uri_path, cluster=cluster))
