@@ -24,7 +24,7 @@ import webob.exc
 from quantum.common import constants
 import quantum.common.test_lib as test_lib
 from quantum import context
-#from quantum.extensions import l3
+from quantum.extensions import l3
 from quantum.extensions import providernet as pnet
 from quantum.extensions import securitygroup as secgrp
 from quantum import manager
@@ -32,7 +32,7 @@ import quantum.plugins.nicira as nvp_plugin
 #from quantum.plugins.nicira.extensions import nvp_networkgw
 from quantum.plugins.nicira.extensions import nvp_qos as ext_qos
 from quantum.plugins.nicira import nvplib
-#from quantum.plugins.nicira import QuantumPlugin
+from quantum.plugins.nicira import QuantumPlugin
 from quantum.tests.unit.nicira import fake_nvpapiclient
 #import quantum.tests.unit.nicira.test_networkgw as test_l2_gw
 import quantum.tests.unit.test_db_plugin as test_plugin
@@ -303,7 +303,7 @@ class TestNiciraSecurityGroup(ext_sg.TestSecurityGroups,
             # Assert Quantum name is not truncated
             self.assertEqual(sg['security_group']['name'], name)
 
-"""
+
 class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
                               NiciraPluginV2TestCase):
 
@@ -539,9 +539,9 @@ class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
             subnets = self._list('subnets')['subnets']
             # Test that route is deleted after dhcp port is removed
             self.assertEquals(len(subnets[0]['host_routes']), 0)
+
+
 """
-
-
 class NvpQoSTestExtensionManager(object):
 
     def get_resources(self):
@@ -876,7 +876,7 @@ class NiciraQuantumNVPOutOfSync(test_l3_plugin.L3NatTestCaseBase,
         self.assertEqual(router['router']['status'],
                          constants.NET_STATUS_ERROR)
 
-"""
+
 class TestNiciraNetworkGateway(test_l2_gw.NetworkGatewayDbTestCase,
                                NiciraPluginV2TestCase):
 

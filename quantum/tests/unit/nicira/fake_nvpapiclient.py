@@ -109,6 +109,7 @@ class FakeClient:
     _fake_lswitch_lport_dict = {}
     _fake_lrouter_lport_dict = {}
     _fake_lrouter_nat_dict = {}
+    _fake_lrouterstatus_dict = {}
     _fake_lswitch_lportstatus_dict = {}
     _fake_lrouter_lportstatus_dict = {}
     _fake_securityprofile_dict = {}
@@ -159,7 +160,8 @@ class FakeClient:
 
     def _add_lrouter(self, body):
         fake_lrouter = json.loads(body)
-        fake_lrouter['uuid'] = uuidutils.generate_uuid()
+        new_uuid = uuidutils.generate_uuid()
+        fake_lrouter['uuid'] = new_uuid
         self._fake_lrouter_dict[fake_lrouter['uuid']] = fake_lrouter
         fake_lrouter['tenant_id'] = self._get_tag(fake_lrouter, 'os_tid')
         fake_lrouter['lport_count'] = 0
@@ -167,6 +169,8 @@ class FakeClient:
             'default_route_next_hop')
         fake_lrouter['default_next_hop'] = default_nexthop.get(
             'gateway_ip_address', '0.0.0.0')
+        fake_lrouter_status = fake_lrouter.copy()
+        self._fake_lrouterstatus_dict[new_uuid] = fake_lrouter_status
         return fake_lrouter
 
     def _add_lqueue(self, body):

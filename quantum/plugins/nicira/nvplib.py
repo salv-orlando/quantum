@@ -121,7 +121,8 @@ def _build_uri_path(resource,
                     relations=None,
                     filters=None,
                     types=None,
-                    is_attachment=False):
+                    is_attachment=False,
+                    is_status=False):
     resources = resource.split('/')
     res_path = resources[0] + (resource_id and "/%s" % resource_id or '')
     if len(resources) > 1:
@@ -131,6 +132,8 @@ def _build_uri_path(resource,
                                  res_path)
     if is_attachment:
         res_path = "%s/attachment" % res_path
+    elif is_status:
+        res_path = "%s/status" % res_path
     params = []
     params.append(fields and "fields=%s" % fields)
     params.append(relations and "relations=%s" % relations)
@@ -433,7 +436,8 @@ def create_l2_gw_service(cluster, tenant_id, display_name, devices):
         raise
 
 
-def create_lrouter(cluster, tenant_id, display_name, nexthop):
+def create_lrouter(cluster, tenant_id, display_name,
+                   nexthop, quantum_router_id):
     """Create a NVP logical router on the specified cluster.
 
         :param cluster: The target NVP cluster
@@ -444,9 +448,9 @@ def create_lrouter(cluster, tenant_id, display_name, nexthop):
         :raise NvpApiException: if there is a problem while communicating
         with the NVP controller
     """
-    display_name = _check_and_truncate_name(display_name)
-    tags = [{"tag": tenant_id, "scope": "os_tid"},
-            {"tag": QUANTUM_VERSION, "scope": "quantum"}]
+    tags = [{'tag': tenant_id, 'scope': 'os_tid'},
+            {'tag': QUANTUM_VERSION, 'scope': 'quantum'},
+            {'tag': quantum_router_id, 'scope': 'q_router_id'}]
     lrouter_obj = {
         "display_name": display_name,
         "tags": tags,
@@ -509,6 +513,15 @@ def get_lrouter(cluster, lrouter_id):
         LOG.exception(_("An exception occured while communicating with "
                         "the NVP controller for cluster:%s"), cluster.name)
         raise
+
+
+def get_lrouter_status(cluster, lrouter_id):
+    return do_request(
+        HTTP_GET,
+        _build_uri_path(LROUTER_RESOURCE,
+                        resource_id=lrouter_id,
+                        is_status=True),
+        cluster=cluster)
 
 
 def get_l2_gw_service(cluster, gateway_id):
@@ -722,31 +735,56 @@ def get_port_by_display_name(clusters, lswitch, display_name):
     raise exception.PortNotFound(port_id=display_name, net_id=lswitch)
 
 
-def get_port_by_quantum_tag(cluster, lswitch_uuid, quantum_port_id):
+def _get_by_tag(cluster, resource, tag, scope, parent_uuid=None):
     """Get port by quantum tag.
 
     Returns the NVP UUID of the logical port with tag q_port_id equal to
     quantum_port_id or None if the port is not Found.
     """
-    uri = _build_uri_path(LSWITCHPORT_RESOURCE,
-                          parent_resource_id=lswitch_uuid,
+    uri = _build_uri_path(resource,
+                          parent_resource_id=parent_uuid,
                           fields='uuid',
-                          filters={'tag': quantum_port_id,
-                                   'tag_scope': 'q_port_id'})
+                          filters={'tag': tag, 'tag_scope': scope})
+    LOG.debug(_("Looking for port with tag %(scope)s = %(tag)s' "),
+              {'scope': scope, 'tag': tag})
+    try:
+        res = do_request(HTTP_GET, uri, cluster=cluster)
+        if len(res["results"]) != 1:
+            raise nvp_exc.NvpInvalidQuantumIdTag(resource=resource,
+                                                 expected_id=tag)
+    except NvpApiClient.NvpApiException:
+        LOG.exception(_("An exception occurred while querying NVP "
+                        "resources by tag"))
+        raise
+    return res["results"][0]
+
+
+def get_port_by_quantum_tag(cluster, lswitch_uuid, quantum_port_id):
+    """Get port by quantum tag.
+
+    Returns the NVP UUID of the logical port with tag q_port_id equal to
+    quantum_port_id.
+    Raises if the port is not found
+    """
     LOG.debug(_("Looking for port with q_port_id tag '%(quantum_port_id)s' "
-                "on: '%(lswitch_uuid)s'") %
+                "on: '%(lswitch_uuid)s'"),
               {'quantum_port_id': quantum_port_id,
                'lswitch_uuid': lswitch_uuid})
-    try:
-        res_obj = do_single_request(HTTP_GET, uri, cluster=cluster)
-    except NvpApiClient.NvpApiException:
-        LOG.exception(_("An exception occurred while querying NVP ports"))
-        raise
-    res = json.loads(res_obj)
-    if len(res["results"]) != 1:
-        raise nvp_exc.NvpInvalidQuantumIdTag(resource='lport',
-                                             expected_id=quantum_port_id)
-    return res["results"][0]
+    return _get_by_tag(cluster, LSWITCHPORT_RESOURCE, quantum_port_id,
+                       'q_port_id', parent_uuid=lswitch_uuid)
+
+
+def get_router_by_quantum_tag(cluster, quantum_router_id):
+    """Get router by quantum tag.
+
+    Returns the NVP UUID of the logical router with tag q_router_id
+    equal to quantum_router_id.
+    Raises if the router is not found.
+    """
+    LOG.debug(_("Looking for router with q_router_id tag %s"),
+              quantum_router_id)
+    return _get_by_tag(cluster, LROUTER_RESOURCE,
+                       quantum_router_id, 'q_router_id')
 
 
 def get_port(cluster, network, port, relations=None):
@@ -947,11 +985,8 @@ def delete_peer_router_lport(cluster, lr_uuid, ls_uuid, lp_uuid):
         raise
 
 
-def find_router_gw_port(context, cluster, router_id):
+def find_router_gw_port(cluster, router_id):
     """Retrieves the external gateway port for a NVP logical router."""
-
-    # Find the uuid of nvp ext gw logical router port
-    # TODO(salvatore-orlando): Consider storing it in Quantum DB
     results = query_lrouter_lports(
         cluster, router_id,
         relations="LogicalPortAttachment")

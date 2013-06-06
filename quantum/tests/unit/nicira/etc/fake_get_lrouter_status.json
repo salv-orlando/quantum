@@ -1,0 +1,9 @@
+{
+  "_href": "/ws.v1/lrouter/%(uuid)s/status", 
+  "lport_admin_up_count": 1, 
+  "_schema": "/ws.v1/schema/LogicalRouterStatus", 
+  "lport_count": 1, 
+  "fabric_status": true, 
+  "type": "LogicalRouterStatus", 
+  "lport_link_up_count": 1
+}

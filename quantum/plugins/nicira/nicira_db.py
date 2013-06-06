@@ -67,21 +67,69 @@ def add_network_binding(session, network_id, binding_type, phy_uuid, vlan_id):
     return binding
 
 
-def add_quantum_nvp_port_mapping(session, quantum_id, nvp_id):
+def _add_quantum_nvp_mapping(session, model, quantum_id, nvp_id):
     with session.begin(subtransactions=True):
-        mapping = nicira_models.QuantumNvpPortMapping(quantum_id, nvp_id)
+        mapping = model()
+        mapping.quantum_id = quantum_id
+        mapping.nvp_id = nvp_id
         session.add(mapping)
         return mapping
 
 
-def get_nvp_port_id(session, quantum_id):
+def add_quantum_nvp_port_mapping(session, quantum_id, nvp_id):
+    return _add_quantum_nvp_mapping(
+        session, nicira_models.QuantumNvpPortMapping, quantum_id, nvp_id)
+
+
+def add_quantum_nvp_router_mapping(session, quantum_id, nvp_id,
+                                   nvp_gw_port_id=None):
+    with session.begin(subtransactions=True):
+        mapping = _add_quantum_nvp_mapping(
+            session, nicira_models.QuantumNvpRouterMapping, quantum_id, nvp_id)
+        if nvp_gw_port_id:
+            mapping.nvp_gw_port_id = nvp_gw_port_id
+    return mapping
+
+
+def set_quantum_nvp_router_mapping(session, quantum_id,
+                                   nvp_id=None, nvp_gw_port_id=None):
+    with session.begin(subtransactions=True):
+        try:
+            mapping = (session.query(nicira_models.QuantumNvpRouterMapping).
+                       filter_by(quantum_id=quantum_id).one())
+        except exc.NoResultFound:
+            LOG.warn(_("No mapping found for router:%s"), quantum_id)
+        if nvp_id:
+            mapping.nvp_id = nvp_id
+        if nvp_gw_port_id:
+            mapping.nvp_gw_port_id = nvp_gw_port_id
+    return mapping
+
+
+def _get_nvp_id(session, model, quantum_id, field='nvp_id'):
     try:
-        mapping = (session.query(nicira_models.QuantumNvpPortMapping).
+        mapping = (session.query(model).
                    filter_by(quantum_id=quantum_id).
                    one())
-        return mapping['nvp_id']
+        return mapping[field]
     except exc.NoResultFound:
         return
+
+
+def get_nvp_port_id(session, quantum_id):
+    return _get_nvp_id(
+        session, nicira_models.QuantumNvpPortMapping, quantum_id)
+
+
+def get_nvp_router_id(session, quantum_id):
+    return _get_nvp_id(
+        session, nicira_models.QuantumNvpRouterMapping, quantum_id)
+
+
+def get_nvp_router_gw_portid(session, quantum_id):
+    return _get_nvp_id(
+        session, nicira_models.QuantumNvpRouterMapping,
+        quantum_id, field='nvp_gw_port_id')
 
 
 def unset_default_network_gateways(session):

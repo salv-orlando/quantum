@@ -141,6 +141,17 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
                 func(self, res, router)
         return self._fields(res, fields)
 
+    def _create_router(self, context, tenant_id, router, status='ACTIVE'):
+        # pre-generate id so it will be available when
+        # configuring external gw port
+        router_db = Router(id=uuidutils.generate_uuid(),
+                           tenant_id=tenant_id,
+                           name=router['name'],
+                           admin_state_up=router['admin_state_up'],
+                           status=status)
+        context.session.add(router_db)
+        return router_db
+
     def create_router(self, context, router):
         r = router['router']
         has_gw_info = False
@@ -150,14 +161,7 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
             del r[EXTERNAL_GW_INFO]
         tenant_id = self._get_tenant_id_for_create(context, r)
         with context.session.begin(subtransactions=True):
-            # pre-generate id so it will be available when
-            # configuring external gw port
-            router_db = Router(id=uuidutils.generate_uuid(),
-                               tenant_id=tenant_id,
-                               name=r['name'],
-                               admin_state_up=r['admin_state_up'],
-                               status="ACTIVE")
-            context.session.add(router_db)
+            router_db = self._create_router(context, tenant_id, r)
             if has_gw_info:
                 self._update_router_gw_info(context, router_db['id'], gw_info)
         return self._make_router_dict(router_db)
@@ -214,11 +218,15 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
         # network_id attribute is required by API, so it must be present
         network_id = info['network_id'] if info else None
         if network_id:
-            self._get_network(context, network_id)
+            ext_net = self._get_network(context, network_id)
             if not self._network_is_external(context, network_id):
                 msg = _("Network %s is not a valid external "
                         "network") % network_id
                 raise q_exc.BadRequest(resource='router', msg=msg)
+            if not ext_net.subnets:
+                msg = (_("No subnet found on external network "
+                         "'%s'. Unable to set external gateway"),
+                       network_id)
 
         # figure out if we need to delete existing port
         if gw_port and gw_port['network_id'] != network_id:
@@ -244,31 +252,35 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
                                                   subnet['cidr'])
             self._create_router_gw_port(context, router, network_id)
 
+    def _pre_delete_router_checks(self, context, router):
+        # Ensure that the router is not used
+        router_id = router['id']
+        fips = self.get_floatingips_count(
+            context.elevated(), filters={'router_id': [router_id]})
+        if fips:
+            raise l3.RouterInUse(router_id=router_id)
+
+        device_filter = {'device_id': [router_id],
+                         'device_owner': [DEVICE_OWNER_ROUTER_INTF]}
+        ports = self.get_ports_count(context.elevated(),
+                                     filters=device_filter)
+        if ports:
+            raise l3.RouterInUse(router_id=router_id)
+
+    def _delete_router(self, context, router):
+        # delete any gw port
+        device_filter = {'device_id': [router['id']],
+                         'device_owner': [DEVICE_OWNER_ROUTER_GW]}
+        ports = self.get_ports(context.elevated(), filters=device_filter)
+        if ports:
+            self._delete_port(context.elevated(), ports[0]['id'])
+        context.session.delete(router)
+
     def delete_router(self, context, id):
         with context.session.begin(subtransactions=True):
             router = self._get_router(context, id)
-
-            # Ensure that the router is not used
-            fips = self.get_floatingips_count(context.elevated(),
-                                              filters={'router_id': [id]})
-            if fips:
-                raise l3.RouterInUse(router_id=id)
-
-            device_filter = {'device_id': [id],
-                             'device_owner': [DEVICE_OWNER_ROUTER_INTF]}
-            ports = self.get_ports_count(context.elevated(),
-                                         filters=device_filter)
-            if ports:
-                raise l3.RouterInUse(router_id=id)
-
-            # delete any gw port
-            device_filter = {'device_id': [id],
-                             'device_owner': [DEVICE_OWNER_ROUTER_GW]}
-            ports = self.get_ports(context.elevated(), filters=device_filter)
-            if ports:
-                self._delete_port(context.elevated(), ports[0]['id'])
-
-            context.session.delete(router)
+            self._pre_delete_router_checks(context, router)
+            self._delete_router(context, router)
         l3_rpc_agent_api.L3AgentNotify.router_deleted(context, id)
 
     def get_router(self, context, id, fields=None):
