@@ -297,16 +297,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             nvplib.LOG.setLevel(loglevel)
             NvpApiClient.LOG.setLevel(loglevel)
 
-        # Routines for managing logical ports in NVP
-        self._port_drivers = {
-            'create': {networkgw_db.DEVICE_OWNER_NET_GW_INTF:
-                       self._nvp_create_l2_gw_port,
-                       'default': self._nvp_create_port},
-            'delete': {networkgw_db.DEVICE_OWNER_NET_GW_INTF:
-                       self._nvp_delete_port,
-                       'default': self._nvp_delete_port}
-        }
-
         # If no api_extensions_path is provided set the following
         if not cfg.CONF.api_extensions_path:
             cfg.CONF.set_override('api_extensions_path', NVP_EXT_PATH)
@@ -444,72 +434,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                    port_data[ext_sg.SECURITYGROUPS],
                                    port_data[ext_qos.QUEUE])
 
-    def _nvp_create_port(self, context, port_data):
-        """Driver for creating a logical switch port on NVP platform."""
-        # FIXME(salvatore-orlando): On the NVP platform we do not really have
-        # external networks. So if as user tries and create a "regular" VIF
-        # port on an external network we are unable to actually create.
-        # However, in order to not break unit tests, we need to still create
-        # the DB object and return success
-        if self._network_is_external(context, port_data['network_id']):
-            LOG.error(_("NVP plugin does not support regular VIF ports on "
-                        "external networks. Port %s will be down."),
-                      port_data['network_id'])
-            # No need to actually update the DB state - the default is down
-            return port_data
-        try:
-            selected_lswitch = self._nvp_find_lswitch_for_port(context,
-                                                               port_data)
-            lport = self._nvp_create_port_helper(self.cluster,
-                                                 selected_lswitch['uuid'],
-                                                 port_data,
-                                                 True)
-            nicira_db.add_quantum_nvp_port_mapping(
-                context.session, port_data['id'], lport['uuid'])
-            if (not port_data['device_owner'] in
-                (l3_db.DEVICE_OWNER_ROUTER_GW,
-                 l3_db.DEVICE_OWNER_ROUTER_INTF)):
-                nvplib.plug_interface(self.cluster, selected_lswitch['uuid'],
-                                      lport['uuid'], "VifAttachment",
-                                      port_data['id'])
-            LOG.debug(_("_nvp_create_port completed for port %(name)s "
-                        "on network %(network_id)s. The new port id is "
-                        "%(id)s."), port_data)
-        except NvpApiClient.NvpApiException:
-            msg = (_("An exception occured while plugging the interface "
-                     "into network:%s") % port_data['network_id'])
-            LOG.exception(msg)
-            raise q_exc.QuantumException(message=msg)
-
-    def _nvp_delete_port(self, context, port_data):
-        # FIXME(salvatore-orlando): On the NVP platform we do not really have
-        # external networks. So deleting regular ports from external networks
-        # does not make sense. However we cannot raise as this would break
-        # unit tests.
-        if self._network_is_external(context, port_data['network_id']):
-            LOG.error(_("NVP plugin does not support regular VIF ports on "
-                        "external networks. Port %s will be down."),
-                      port_data['network_id'])
-            return
-        nvp_port_id = self._nvp_get_port_id(context, self.cluster,
-                                            port_data)
-        if not nvp_port_id:
-            LOG.debug(_("Port '%s' was already deleted on NVP platform"), id)
-            return
-        # TODO(bgh): if this is a bridged network and the lswitch we just got
-        # back will have zero ports after the delete we should garbage collect
-        # the lswitch.
-        try:
-            nvplib.delete_port(self.cluster,
-                               port_data['network_id'],
-                               nvp_port_id)
-            LOG.debug(_("_nvp_delete_port completed for port %(port_id)s "
-                        "on network %(net_id)s"),
-                      {'port_id': port_data['id'],
-                       'net_id': port_data['network_id']})
-
-        except q_exc.NotFound:
-            LOG.warning(_("port %s not found in NVP"), port_data['id'])
 
     def _nvp_create_l2_gw_port(self, context, port_data):
         """Create a switch port, and attach it to a L2 gateway attachment."""
@@ -549,43 +473,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             LOG.exception(msg)
             super(NvpPluginV2, self).delete_port(context, port_data["id"])
             raise q_exc.QuantumException(message=msg)
-
-    def _nvp_create_fip_port(self, context, port_data):
-        # As we do not create ports for floating IPs in NVP,
-        # this is a no-op driver
-        pass
-
-    def _nvp_delete_fip_port(self, context, port_data):
-        # As we do not create ports for floating IPs in NVP,
-        # this is a no-op driver
-        pass
-
-    def _nvp_get_port_id(self, context, cluster, quantum_port):
-        """Return the NVP port uuid for a given quantum port.
-
-        First, look up the Quantum database. If not found, execute
-        a query on NVP platform as the mapping might be missing because
-        the port was created before upgrading to grizzly.
-        """
-        nvp_port_id = nicira_db.get_nvp_port_id(context.session,
-                                                quantum_port['id'])
-        if nvp_port_id:
-            return nvp_port_id
-        # Perform a query to NVP and then update the DB
-        try:
-            nvp_port = nvplib.get_port_by_quantum_tag(
-                cluster,
-                quantum_port['network_id'],
-                quantum_port['id'])
-            if nvp_port:
-                nicira_db.add_quantum_nvp_port_mapping(
-                    context.session,
-                    quantum_port['id'],
-                    nvp_port['uuid'])
-                return nvp_port['uuid']
-        except Exception:
-            LOG.exception(_("Unable to find NVP uuid for Quantum port %s"),
-                          quantum_port['id'])
 
     def _extend_fault_map(self):
         """Extends the Quantum Fault Map.
@@ -882,7 +769,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             port_data['ip_addresses'] = self._build_ip_address_list(
                 context, port_data['fixed_ips'])
             port_data['subnet_cidrs'] = self._find_router_subnets_cidrs(
-                context, port_data['device_id'])            
+                context, port_data['device_id'])
         self.driver.create_port(context, port_data, net)
 
         self.schedule_network(context, net)
@@ -964,7 +851,7 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
         if quantum_db_port['device_owner'] == l3_db.DEVICE_OWNER_ROUTER_GW:
             quantum_db_port['subnet_cidrs'] = self._find_router_subnets_cidrs(
-                context, quantum_db_port['device_id'])            
+                context, quantum_db_port['device_id'])
         # Let the driver response handler delete the port from the database
         # Peform driver operation
         net = self._get_network(context, quantum_db_port['network_id'])
@@ -1039,31 +926,60 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                            'router_name': router_db['bname']})
             with excutils.save_and_reraise_exception():
                 self.delete_router(context, router_db['id'])
+            raise
         return self._make_router_dict(router_db)
 
     def update_router(self, context, id, router):
-        r = super(NvpPluginV2, self).update_router(
-            context, id, router)
+        r = router['router']
+        # An empty EXTERNAL_GW_INFO is used for removing ext gateway
+        has_gw_info = l3_db.EXTERNAL_GW_INFO in r
         gw_info = r.get(l3_db.EXTERNAL_GW_INFO)
         ext_subnet = None
         if gw_info:
+            # The following DB read will be performed again when updating
+            # gateway info. This is not great, but still better than
+            # creating NVP router and the having to remove it if something
+            # goes wrong. Also, this will allow us to create the NVP
+            # router and set the correct nexthop in a single call
             network_id = gw_info.get('network_id')
             if network_id:
                 ext_net = self._get_network(context, network_id)
-                ext_subnet = ext_net.subnets[0]
-        # Invoke NVP driver
-        # TODO: Must handle router update....
-        # self.driver.update_router(context, r, ext_subnet)
-        return r
+                if not self._network_is_external(context, network_id):
+                    msg = (_("Network '%s' is not a valid external "
+                             "network") % network_id)
+                    raise q_exc.BadRequest(resource='router', msg=msg)
+                if ext_net.subnets:
+                    ext_subnet = ext_net.subnets[0]
+                else:
+                    msg = (_("No subnet found on external network "
+                             "'%s'. Unable to set external gateway"),
+                           network_id)
+                    raise q_exc.BadRequest(resource='router', msg=msg)
+        router_db = self._update_router(context, id, r)
+        self.driver.update_router(
+            context, router_db, ext_subnet)
+        try:
+            with context.session.begin(subtransactions=True):
+                if has_gw_info:
+                    self._update_router_gw_info(context,
+                                                router_db['id'], gw_info)
+        except Exception as e:
+            # TODO(salv-orlando): Need to rollback!
+            LOG.exception(_("Unable to update external gateway info for "
+                            "router %(router_name)s [%(router_id)s]."),
+                          {'router_id': router_db['id'],
+                           'router_name': router_db['name']})
+            raise e
+        return self._make_router_dict(router_db)
 
     def delete_router(self, context, id):
         router = self._get_router(context, id)
-        self._pre_delete_router_checks(context, router)
         # Ensure metadata access network is detached and destroyed
         # This will also destroy relevant objects on NVP platform.
         # TODO(salvatore-orlando): Ensure failure during metadata
         # handling are properly managed
         self._handle_metadata_access_network(context, id, do_create=False)
+        self._pre_delete_router_checks(context, router)
         with context.session.begin(subtransactions=True):
             router = self._get_router(context, id)
             router['status'] = STATUS_DELETING
@@ -1104,9 +1020,17 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         info = super(NvpPluginV2, self).remove_router_interface(
             context, router_id, interface_info)
 
+        # TODO(salv-orlando): Ensure driver works fine with metadata
+        # access network
+        # Ensure the connection to the 'metadata access network'
+        # is removed  (with the network) if this the last subnet
+        # on the router
+        self._handle_metadata_access_network(context, router_id)
+
         # Fetch info needed by the driver from the database
         subnet = self._get_subnet(context, info['subnet_id'])
         router = self._get_router(context, router_id)
+
         # NOTE(salvatore-orlando): If we fail here, there is nothing
         # to restore at the quantum db level, since the logical switch
         # port connected with the router has been removed anyway.
@@ -1116,12 +1040,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self.driver.remove_router_interface(
             context, router, {'id': info['port_id']}, subnet)
 
-        # TODO(salv-orlando): Ensure driver works fine with metadata
-        # access network
-        # Ensure the connection to the 'metadata access network'
-        # is removed  (with the network) if this the last subnet
-        # on the router
-        self._handle_metadata_access_network(context, router_id)
         return info
 
     def _remove_floatingip_address(self, context, fip_db):

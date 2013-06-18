@@ -1523,7 +1523,7 @@ class L3NatDBTestCase(L3NatTestCaseBase):
             self.assertEqual(ext_net['network'][l3.EXTERNAL],
                              True)
 
-    def _test_notify_op_agent(self, target_func, *args):
+    def _test_notify_op_agent(self, target_func, *args, **kwargs):
         l3_rpc_agent_api_str = (
             'quantum.api.rpc.agentnotifiers.l3_rpc_agent_api.L3AgentNotifyAPI')
         oldNotify = l3_rpc_agent_api.L3AgentNotify
@@ -1532,14 +1532,14 @@ class L3NatDBTestCase(L3NatTestCaseBase):
                 l3_rpc_agent_api.L3AgentNotify = notifyApi
                 kargs = [item for item in args]
                 kargs.append(notifyApi)
-                target_func(*kargs)
+                target_func(*kargs, **kwargs)
         except Exception:
             l3_rpc_agent_api.L3AgentNotify = oldNotify
             raise
         else:
             l3_rpc_agent_api.L3AgentNotify = oldNotify
 
-    def _test_router_gateway_op_agent(self, notifyApi):
+    def _test_router_gateway_op_agent(self, notifyApi, call_count=2):
         with self.router() as r:
             with self.subnet() as s:
                 self._set_net_external(s['subnet']['network_id'])
@@ -1550,7 +1550,7 @@ class L3NatDBTestCase(L3NatTestCaseBase):
                     r['router']['id'],
                     s['subnet']['network_id'])
                 self.assertEqual(
-                    2, notifyApi.routers_updated.call_count)
+                    call_count, notifyApi.routers_updated.call_count)
 
     def test_router_gateway_op_agent(self):
         self._test_notify_op_agent(self._test_router_gateway_op_agent)
@@ -1573,12 +1573,12 @@ class L3NatDBTestCase(L3NatTestCaseBase):
             self._test_notify_op_agent(
                 self._test_interfaces_op_agent, r)
 
-    def _test_floatingips_op_agent(self, notifyApi):
+    def _test_floatingips_op_agent(self, notifyApi, call_count=6):
         with self.floatingip_with_assoc():
             pass
         # add gateway, add interface, associate, deletion of floatingip,
         # delete gateway, delete interface
-        self.assertEqual(6, notifyApi.routers_updated.call_count)
+        self.assertEqual(call_count, notifyApi.routers_updated.call_count)
 
     def test_floatingips_op_agent(self):
         self._test_notify_op_agent(self._test_floatingips_op_agent)

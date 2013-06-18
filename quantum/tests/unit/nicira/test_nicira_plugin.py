@@ -17,11 +17,11 @@ import contextlib
 import os
 
 import mock
-#import netaddr
+import netaddr
 from oslo.config import cfg
 import webob.exc
 
-from quantum.common import constants
+#from quantum.common import constants
 import quantum.common.test_lib as test_lib
 from quantum import context
 from quantum.extensions import l3
@@ -30,7 +30,7 @@ from quantum.extensions import securitygroup as secgrp
 from quantum import manager
 import quantum.plugins.nicira as nvp_plugin
 #from quantum.plugins.nicira.extensions import nvp_networkgw
-from quantum.plugins.nicira.extensions import nvp_qos as ext_qos
+#from quantum.plugins.nicira.extensions import nvp_qos as ext_qos
 from quantum.plugins.nicira import nvplib
 from quantum.plugins.nicira import QuantumPlugin
 from quantum.tests.unit.nicira import fake_nvpapiclient
@@ -38,7 +38,7 @@ from quantum.tests.unit.nicira import fake_nvpapiclient
 import quantum.tests.unit.test_db_plugin as test_plugin
 import quantum.tests.unit.test_extension_portsecurity as psec
 import quantum.tests.unit.test_extension_security_group as ext_sg
-from quantum.tests.unit import test_extensions
+#from quantum.tests.unit import test_extensions
 import quantum.tests.unit.test_l3_plugin as test_l3_plugin
 from quantum.tests.unit import testlib_api
 
@@ -335,6 +335,13 @@ class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
                 self.assertEqual(net['network'][k], v)
 
     def _nvp_validate_ext_gw(self, router_id, l3_gw_uuid, vlan_id):
+        for lrouter_uuid, lrouter in self.fc._fake_lrouter_dict.iteritems():
+            if self.fc._get_tag(lrouter, 'q_router_id') == router_id:
+                router_id = lrouter_uuid
+                break
+        else:
+            self.fail(_("Unable to find NVP lrouter id for router: %s"),
+                      router_id)
         ports = [port for port in self.fc._fake_lrouter_lport_dict.values()
                  if (port['lr_uuid'] == router_id and
                      port['att_type'] == "L3GatewayAttachment")]
@@ -540,6 +547,17 @@ class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
             # Test that route is deleted after dhcp port is removed
             self.assertEquals(len(subnets[0]['host_routes']), 0)
 
+    def test_floatingips_op_agent(self):
+        # This test is overriden as the nicira plugin does not
+        # send some notifications (it should send no notifications)
+        self._test_notify_op_agent(self._test_floatingips_op_agent,
+                                   call_count=4)
+
+    def test_router_gateway_op_agent(self):
+        # This test is overriden as the nicira plugin does not
+        # send notifications
+        self._test_notify_op_agent(self._test_router_gateway_op_agent,
+                                   call_count=0)
 
 """
 class NvpQoSTestExtensionManager(object):

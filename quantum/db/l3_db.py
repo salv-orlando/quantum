@@ -166,6 +166,13 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
                 self._update_router_gw_info(context, router_db['id'], gw_info)
         return self._make_router_dict(router_db)
 
+    def _update_router(self, context, router_id, router_data):
+        router_db = self._get_router(context, router_id)
+        # Ensure we actually have something to update
+        if router_data.keys():
+            router_db.update(router_data)
+        return router_db
+
     def update_router(self, context, id, router):
         r = router['router']
         has_gw_info = False
@@ -176,10 +183,7 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
         with context.session.begin(subtransactions=True):
             if has_gw_info:
                 self._update_router_gw_info(context, id, gw_info)
-            router_db = self._get_router(context, id)
-            # Ensure we actually have something to update
-            if r.keys():
-                router_db.update(r)
+            router_db = self._update_router(context, id, r)
         routers = self.get_sync_data(context.elevated(),
                                      [router_db['id']])
         l3_rpc_agent_api.L3AgentNotify.routers_updated(context, routers)

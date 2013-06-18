@@ -79,11 +79,15 @@ class NvpSynchDriver(base_driver.BaseDriver):
             'create': {l3_db.DEVICE_OWNER_ROUTER_GW:
                        self._nvp_create_ext_gw_port,
                        l3_db.DEVICE_OWNER_ROUTER_INTF:
-                       self._nvp_create_port},
+                       self._nvp_create_port,
+                       l3_db.DEVICE_OWNER_FLOATINGIP:
+                       self._nvp_create_fip_port},
             'delete': {l3_db.DEVICE_OWNER_ROUTER_GW:
                        self._nvp_delete_ext_gw_port,
                        l3_db.DEVICE_OWNER_ROUTER_INTF:
-                       self._nvp_delete_port}
+                       self._nvp_delete_port,
+                       l3_db.DEVICE_OWNER_FLOATINGIP:
+                       self._nvp_delete_fip_port}
         }
 
         def get_default_create_port_driver():
@@ -109,11 +113,11 @@ class NvpSynchDriver(base_driver.BaseDriver):
             get_default_exception_handler, exception_handlers)
         super(NvpSynchDriver, self).__init__()
 
-    def _default_response_handler(self, context, resource, **kwargs):
+    def _default_response_handler(self, context, resource, *args, **kwargs):
         """Noop response handler."""
 
     def _default_exception_handler(self, context, resource,
-                                   exception, **kwargs):
+                                   exception, *args, **kwargs):
         """Noop exception handler."""
 
     def _nvp_get_port_id(self, context, cluster, port_id, network_id):
@@ -228,6 +232,9 @@ class NvpSynchDriver(base_driver.BaseDriver):
 
     def _nvp_create_port(self, context, port_data, network):
         """Driver for creating a logical switch port on NVP platform."""
+        if network[l3.EXTERNAL]:
+            # Standard ports cannot be created on external networks
+            return
         selected_lswitch = self._nvp_find_lswitch_for_port(
             context, port_data, network)
         if not selected_lswitch:
@@ -291,6 +298,18 @@ class NvpSynchDriver(base_driver.BaseDriver):
                                         nvp_port_id)
         # Delete logical switch port
         self._nvp_delete_port(context, port_data)
+
+
+    def _nvp_create_fip_port(self, context, port_data, network):
+        # As we do not create ports for floating IPs in NVP,
+        # this is a no-op driver
+        pass
+
+    def _nvp_delete_fip_port(self, context, port_data):
+        # As we do not create ports for floating IPs in NVP,
+        # this is a no-op driver
+        pass
+
 
     def _nvp_find_router_gw_port(self, context, port_data):
         """Retrieves the UUID of a NVP L3 gateway port.
@@ -623,10 +642,9 @@ class NvpSynchDriver(base_driver.BaseDriver):
             context, port_data, network)
         try:
             lport = None
-            if not network[l3.EXTERNAL]:
-                port_func = (
-                    self._create_port_drivers[port_data['device_owner']])
-                lport = port_func(context, port_data, network)
+            port_func = (
+                self._create_port_drivers[port_data['device_owner']])
+            lport = port_func(context, port_data, network)
             self.response_handlers['create_port'](context, port_data, lport)
             # lport might be None if logical switch was not found
             return lport and lport['uuid']
@@ -726,6 +744,23 @@ class NvpSynchDriver(base_driver.BaseDriver):
             # Let the exception handler deal with the Exception
             with excutils.save_and_reraise_exception():
                 self.exception_handlers['create_router'](context, router_data,
+                                                         sys.exc_info())
+
+    def update_router(self, context, router_data, ext_subnet=None):
+        super(NvpSynchDriver, self).update_router(context, router_data)
+        try:
+            # Use a 'fake' nexthop if the external gateway is not set
+            nexthop = ext_subnet and ext_subnet.get('gateway_ip') or '1.1.1.1'
+            nvp_router_id = self._nvp_get_router_id(
+                context, self.cluster, router_data['id'])
+            lrouter = nvplib.update_lrouter(
+                self.cluster, nvp_router_id, router_data['name'], nexthop)
+            self.response_handlers['update_router'](
+                context, router_data, lrouter)
+        except Exception:
+            # Let the exception handler deal with the Exception
+            with excutils.save_and_reraise_exception():
+                self.exception_handlers['update_router'](context, router_data,
                                                          sys.exc_info())
 
     def delete_router(self, context, router_data):

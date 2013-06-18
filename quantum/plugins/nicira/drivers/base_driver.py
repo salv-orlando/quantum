@@ -58,6 +58,9 @@ class BaseDriver(object):
     def create_router(self, context, tenant_id, router_data):
         LOG.debug(_("Creating router:%s"), router_data['id'])
 
+    def update_router(self, context, router_data):
+        LOG.debug(_("Updating router:%s"), router_data['id'])
+
     def delete_router(self, context, router_data):
         LOG.debug(_("Deleting router:%s"), router_data['id'])
 
