@@ -1447,7 +1447,8 @@ NVPLIB_FUNC_DICT = {
 # -----------------------------------------------------------------------------
 def create_lqueue(cluster, lqueue):
     uri = _build_uri_path(LQUEUE_RESOURCE)
-    lqueue['tags'] = [{'tag': QUANTUM_VERSION, 'scope': 'quantum'}]
+    lqueue['tags'] = [{'tag': QUANTUM_VERSION, 'scope': 'quantum'},
+                      {'tag': lqueue['id'], 'scope': 'q_queue_id'}]
     try:
         resp_obj = do_single_request(HTTP_POST, uri, json.dumps(lqueue),
                                      cluster=cluster)

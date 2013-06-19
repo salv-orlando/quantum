@@ -477,6 +477,22 @@ class NvpSynchDriver(base_driver.BaseDriver):
             attachment_type, attachment, attachment_vlan)
         return lrouter_port
 
+    def _nvp_lqueue(self, queue):
+        """Convert fields to nvp fields."""
+        params = {'name': 'display_name',
+                  'qos_marking': 'qos_marking',
+                  'min': 'min_bandwidth_rate',
+                  'max': 'max_bandwidth_rate',
+                  'dscp': 'dscp'}
+        nvp_queue = dict(
+            (nvp_name, queue.get(api_name))
+            for api_name, nvp_name in params.iteritems()
+            if queue.get(api_name))
+        if 'display_name' in nvp_queue:
+            nvp_queue['display_name'] = nvplib._check_and_truncate_name(
+                nvp_queue['display_name'])
+        return nvp_queue
+
     def get_port_status(self, context, port_id, network_id):
         super(NvpSynchDriver, self).get_port_status(
             context, port_id, network_id)
@@ -996,3 +1012,12 @@ class NvpSynchDriver(base_driver.BaseDriver):
             with excutils.save_and_reraise_exception():
                 self.exception_handlers['disassociate_floating_ip'](
                     context, floatingip_data, rollback_data, sys.exc_info())
+
+    def create_queue(self, context, queue_data):
+        try:
+            nvplib.create_lqueue(self.cluster, self._nvp_lqueue(queue_data))
+            self.response_handlers['create_queeue'](context, queue_data)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                self.exception_handlers['create_queeue'](
+                    context, queue_data, sys.exc_info())

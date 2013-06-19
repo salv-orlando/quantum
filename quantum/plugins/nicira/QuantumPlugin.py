@@ -219,6 +219,14 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         router = self._get_router(context, router_data['id'])
         self._delete_router(context, router)
 
+    def _delete_queue_handler(self, context, queue):
+        """Helper function for handling delete_queue responses.
+
+        Perform the actual removal of the queue from the Quantum DB
+        This function must be passed to the NVP driver.
+        """
+        super(NvpPluginV2, self).delete_qos_queue(context, queue['id'])
+
     def _create_network_exception_handler(self, context,
                                           network_data, exception):
         """Helper function for handling faulty create_network responses.
@@ -1311,20 +1319,21 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             return super(NvpPluginV2, self).delete_security_group_rule(context,
                                                                        sgrid)
 
-    def create_qos_queue(self, context, qos_queue, check_policy=True):
+    def create_qos_queue(self, context, qos_queue):
         q = qos_queue.get('qos_queue')
         self._validate_qos_queue(context, q)
-        q['id'] = nvplib.create_lqueue(self.cluster,
-                                       self._nvp_lqueue(q))
-        return super(NvpPluginV2, self).create_qos_queue(context, qos_queue)
+        # Ensure no ATTR_NOT_SPECIFIED value is sent to dirver
+        # TODO(salv-orlando): Per-tenant queues
+        q = dict((k,v if v != attr.ATTR_NOT_SPECIFIED else None)
+                 for k,v in q.iteritems())
+        queue = super(NvpPluginV2, self).create_qos_queue(
+                context, qos_queue)
+        self.driver.create_queue(context, queue)
+        return queue
 
-    def delete_qos_queue(self, context, id, raise_in_use=True):
+    def delete_qos_queue(self, context, id):
         filters = {'queue_id': [id]}
-        queues = self._get_port_queue_bindings(context, filters)
-        if queues:
-            if raise_in_use:
-                raise ext_qos.QueueInUseByPort()
-            else:
-                return
+        if self._get_port_queue_bindings(context, filters):
+            raise ext_qos.QueueInUseByPort()
         nvplib.delete_lqueue(self.cluster, id)
         return super(NvpPluginV2, self).delete_qos_queue(context, id)

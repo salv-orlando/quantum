@@ -28,6 +28,7 @@ from quantum.plugins.nicira import nvplib
 
 
 class QoSQueue(model_base.BASEV2, models_v2.HasId, models_v2.HasTenant):
+    #TODO(salv-orlando): Add tenant_id and status
     name = sa.Column(sa.String(255))
     default = sa.Column(sa.Boolean, default=False)
     min = sa.Column(sa.Integer, nullable=False)
@@ -275,21 +276,3 @@ class NVPQoSDbMixin(ext_qos.QueuePluginBase):
         # Max can be None
         if max and min > max:
             raise ext_qos.QueueMinGreaterMax()
-
-    def _nvp_lqueue(self, queue):
-        """Convert fields to nvp fields."""
-        nvp_queue = {}
-        params = {'name': 'display_name',
-                  'qos_marking': 'qos_marking',
-                  'min': 'min_bandwidth_rate',
-                  'max': 'max_bandwidth_rate',
-                  'dscp': 'dscp'}
-        nvp_queue = dict(
-            (nvp_name, queue.get(api_name))
-            for api_name, nvp_name in params.iteritems()
-            if attr.is_attr_set(queue.get(api_name))
-        )
-        if 'display_name' in nvp_queue:
-            nvp_queue['display_name'] = nvplib._check_and_truncate_name(
-                nvp_queue['display_name'])
-        return nvp_queue

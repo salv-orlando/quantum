@@ -91,3 +91,9 @@ class BaseDriver(object):
                   {'floating_ip': rollback_data['floating_ip_address'],
                    'port_id': rollback_data['fixed_port_id'],
                    'router_id': rollback_data['router_id']})
+
+    def create_queue(self, context, queue_data):
+        LOG.debug(_("Creating queue:%s", queue_data['id']))
+
+    def delete_queue(self, context, queue_data):
+        LOG.debug(_("Deleting queue:%s", queue_data['id']))
