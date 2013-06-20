@@ -157,6 +157,8 @@ class FakeClient:
         fake_lswitch['zone_uuid'] = zone_uuid
         fake_lswitch['tenant_id'] = self._get_tag(fake_lswitch, 'os_tid')
         fake_lswitch['lport_count'] = 0
+        # set status value
+        fake_lswitch['status'] = 'true'
         return fake_lswitch
 
     def _build_lrouter(self, body, uuid=None):
@@ -175,6 +177,8 @@ class FakeClient:
                                            uuidutils.generate_uuid())
         self._fake_lrouter_dict[fake_lrouter['uuid']] = fake_lrouter
         fake_lrouter['lport_count'] = 0
+        # set status value
+        fake_lrouter['status'] = 'true'
         return fake_lrouter
 
     def _add_lqueue(self, body):
@@ -203,6 +207,8 @@ class FakeClient:
         fake_lport_status['ls_uuid'] = fake_lswitch['uuid']
         fake_lport_status['ls_name'] = fake_lswitch['display_name']
         fake_lport_status['ls_zone_uuid'] = fake_lswitch['zone_uuid']
+        # set status value
+        fake_lport['status'] = 'true'
         self._fake_lswitch_lportstatus_dict[new_uuid] = fake_lport_status
         return fake_lport
 

@@ -44,6 +44,15 @@ nvp_opts = [
     cfg.StrOpt('default_transport_type', default='stt',
                help=_("The default network tranport type to use (stt, gre, "
                       "bridge, ipsec_gre, or ipsec_stt)")),
+    cfg.IntOpt('state_sync_interval', default=120,
+               help=_("Interval in seconds between runs of the state "
+                      "synchronization task")),
+    cfg.IntOpt('min_sync_req_delay', default=10,
+               help=_('Minimum delay, in seconds, between two state '
+                      'synchronization queries to NVP')),
+    cfg.IntOpt('min_chunk_size', default=500,
+               help=_('Minimum number of resources to be retrieved from NVP '
+                      'during state synchronization'))
 ]
 
 connection_opts = [

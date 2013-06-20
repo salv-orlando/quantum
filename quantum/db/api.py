@@ -31,6 +31,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import DisconnectionError
 from sqlalchemy.interfaces import PoolListener
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from quantum.db import model_base
 from quantum.openstack.common import log as logging
@@ -174,6 +175,7 @@ def configure_db():
             engine_args['listeners'] = [SqliteForeignKeysListener()]
             if sql_connection == "sqlite://":
                 engine_args["connect_args"] = {'check_same_thread': False}
+                engine_args["poolclass"] = StaticPool
 
         _ENGINE = create_engine(sql_connection, **engine_args)
 
