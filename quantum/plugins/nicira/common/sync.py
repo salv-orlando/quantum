@@ -330,18 +330,29 @@ class NvpSynchronizer():
                     ctx, router, lrouter and lrouter.get('data'))
 
     def synchronize_port(self, context, quantum_port_data,
-                         lswitchport=None):
+                         lswitchport=None, ext_networks=None):
         """Synchronize a Quantum port with its NVP counterpart."""
+        # Skip synchronization for ports on external networks
+        if not ext_networks:
+            ext_networks = [net['id'] for net in ctx.session.query(
+                models_v2.Network).join(l3_db.ExternalNetwork,
+                models_v2.Network.id == l3_db.ExternalNetwork.network_id)]
+        if quantum_port_data['network_id'] in ext_networks:
+            with context.session.begin(subtransactions=True):
+                quantum_port_data['status'] = constants.PORT_STATUS_ACTIVE
+                return
+ 
         if not lswitchport:
             # Try to get port from nvp
             try:
                 lp_uuid = self._plugin._nvp_get_port_id(
                     context, self._cluster, quantum_port_data)
-                lswitchport = nvplib.get_port(
-                    self._cluster, quantum_port_data['network_id'],
-                    lp_uuid, relations='LogicalPortStatus')
-                # Update the cache
-                self._nvp_cache.update_lswitchport(lswitchport)
+                if lp_uuid:
+                    lswitchport = nvplib.get_port(
+                        self._cluster, quantum_port_data['network_id'],
+                        lp_uuid, relations='LogicalPortStatus')
+                    # Update the cache
+                    self._nvp_cache.update_lswitchport(lswitchport)
             except exceptions.PortNotFound:
                 # NOTE(salv-orlando): We should be catching
                 # NvpApiClient.ResourceNotFound here
@@ -394,11 +405,15 @@ class NvpSynchronizer():
             # At the first sync we need to fetch all ports
             filters = ({} if scan_missing else
                        {'id': quantum_port_mappings.keys()})
+            ext_nets = [net['id'] for net in ctx.session.query(
+                models_v2.Network).join(l3_db.ExternalNetwork,
+                models_v2.Network.id == l3_db.ExternalNetwork.network_id)]
             for port in self._plugin._get_collection_query(
                 ctx, models_v2.Port, filters=filters):
                 lswitchport = quantum_port_mappings.get(port['id'])
                 self.synchronize_port(
-                    ctx, port, lswitchport and lswitchport.get('data'))
+                    ctx, port, lswitchport and lswitchport.get('data'),
+                    ext_networks=ext_nets)
 
     def _get_chunk_size(self, sp):
         # NOTE(salv-orlando): Try to use __future__ for this routine only?
@@ -407,12 +422,15 @@ class NvpSynchronizer():
         new_size = max(1.0, ratio) * float(sp.chunk_size)
         return int(new_size) + (new_size - int(new_size) > 0)
 
-    def _fetch_data(self, uri, cursor, chunk_size):
+    def _fetch_data(self, uri, cursor, page_size):
         if cursor:
             if cursor == 'start':
                 cursor = None
-            return nvplib.get_single_query_page(
-                uri, self._cluster, cursor, chunk_size)
+            results, new_cursor, size = nvplib.get_single_query_page(
+                uri, self._cluster, cursor, page_size)
+            # reset cursor before returning if we queried just to
+            # know the number of entities
+            return results, new_cursor if page_size else 'start', size
         # If not cursor there is nothing to retrieve
         return [], cursor, None
 
@@ -426,18 +444,18 @@ class NvpSynchronizer():
         fetched = len(lswitches)
         lrouters = lswitchports = []
         lr_count = lp_count = 0
-        if fetched < chunk_size and sp.lr_cursor:
+        if fetched < chunk_size and sp.lr_cursor or sp.lr_cursor == 'start':
             (lrouters, sp.lr_cursor, lr_count) = self._fetch_data(
-                self.LR_URI, sp.lr_cursor, chunk_size - fetched)
+                self.LR_URI, sp.lr_cursor, max(chunk_size - fetched, 0))
         fetched += len(lrouters)
-        if fetched < chunk_size and sp.lp_cursor:
+        if fetched < chunk_size and sp.lp_cursor or sp.lp_cursor == 'start':
             (lswitchports, sp.lp_cursor, lp_count) = self._fetch_data(
-                self.LP_URI, sp.lp_cursor, chunk_size - fetched)
+                self.LP_URI, sp.lp_cursor, max(chunk_size - fetched, 0))
         fetched += len(lswitchports)
         if sp.current_chunk == 0:
             # No cursors were provided. Then it must be possible to
             # calculate the total amount of data to fetch
-            sp.total_size = ls_count + lr_count + lp_count
+           sp.total_size = ls_count + lr_count + lp_count
         sp.chunk_size = self._get_chunk_size(sp)
         # Calculate chunk size adjustment
         sp.extra_chunk_size = sp.chunk_size - base_chunk_size
@@ -502,8 +520,8 @@ class NvpSynchronizer():
                   'total_chunks': num_chunks})
         sp.current_chunk = (sp.current_chunk + 1) % num_chunks
         # Set init_sync_performed to True if the 1st sync cycle is complete
-        sp.init_sync_performed = (sp.current_chunk == 0 or
-                                  not sp.init_sync_performed)
+        if not sp.init_sync_performed:
+            sp.init_sync_performed = sp.current_chunk == 0
         LOG.debug(_("Time elapsed at end of sync: %s"),
                   timeutils.utcnow() - start)
         return self._sync_interval / num_chunks
