@@ -18,6 +18,7 @@
 # service type constants:
 CORE = "CORE"
 DUMMY = "DUMMY"
+ROUTER = "ROUTER"
 LOADBALANCER = "LOADBALANCER"
 
 #maps extension alias to service type
@@ -27,7 +28,7 @@ EXT_TO_SERVICE_MAPPING = {
 }
 
 # TODO(salvatore-orlando): Move these (or derive them) from conf file
-ALLOWED_SERVICES = [CORE, DUMMY, LOADBALANCER]
+ALLOWED_SERVICES = [CORE, DUMMY, ROUTER, LOADBALANCER]
 
 COMMON_PREFIXES = {
     CORE: "",

@@ -50,6 +50,9 @@ class Routerservicetype(object):
     def get_updated(cls):
         return "2013-01-29T00:00:00-00:00"
 
+    def get_required_extensions(self):
+        return ["router"]
+
     def get_extended_resources(self, version):
         if version == "2.0":
             return EXTENDED_ATTRIBUTES_2_0

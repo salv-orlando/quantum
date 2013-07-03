@@ -48,11 +48,11 @@ URI_PREFIX = "/ws.v1"
 LSWITCH_RESOURCE = "lswitch"
 LSWITCHPORT_RESOURCE = "lport/%s" % LSWITCH_RESOURCE
 LROUTER_RESOURCE = "lrouter"
-# Current quantum version
 LROUTERPORT_RESOURCE = "lport/%s" % LROUTER_RESOURCE
 LROUTERNAT_RESOURCE = "nat/lrouter"
 LQUEUE_RESOURCE = "lqueue"
 GWSERVICE_RESOURCE = "gateway-service"
+# Current quantum version
 QUANTUM_VERSION = "2013.1"
 # Other constants for NVP resource
 MAX_DISPLAY_NAME_LEN = 40
@@ -74,16 +74,30 @@ taken_context_ids = []
 _lqueue_cache = {}
 
 
-def version_dependent(func):
-    func_name = func.__name__
+def version_dependent(wrapped_func):
+    func_name = wrapped_func.__name__
 
     def dispatch_version_dependent_function(cluster, *args, **kwargs):
-        nvp_ver = cluster.api_client.get_nvp_version()
-        if nvp_ver:
-            ver_major = int(nvp_ver.split('.')[0])
-            real_func = NVPLIB_FUNC_DICT[func_name][ver_major]
+        # Call the wrapper function, in case we need to
+        # run validation checks regarding versions. It
+        # should return the NVP version
+        v = (wrapped_func(cluster, *args, **kwargs) or
+             cluster.api_client.get_nvp_version())
+        if v:
+            func = (NVPLIB_FUNC_DICT[func_name][v.major].get(v.minor) or
+                    NVPLIB_FUNC_DICT[func_name][v.major]['default'])
+            if func is None:
+                raise NotImplementedError(_('NVP version %(ver)s '
+                                            'does not support method '
+                                            '%(func)s.') % {'ver': v,
+                                                            'fun': func_name})
+        else:
+            raise NvpApiClient.ServiceUnavailable('NVP version is not set. '
+                                                  'Unable to complete request'
+                                                  'correctly. Check log for '
+                                                  'NVP communication errors.')
         func_kwargs = kwargs
-        arg_spec = inspect.getargspec(real_func)
+        arg_spec = inspect.getargspec(func)
         if not arg_spec.keywords and not arg_spec.varargs:
             # drop args unknown to function from func_args
             arg_set = set(func_kwargs.keys())
@@ -91,7 +105,7 @@ def version_dependent(func):
                 del func_kwargs[arg]
         # NOTE(salvatore-orlando): shall we fail here if a required
         # argument is not passed, or let the called function raise?
-        real_func(cluster, *args, **func_kwargs)
+        return func(cluster, *args, **func_kwargs)
 
     return dispatch_version_dependent_function
 
@@ -284,7 +298,44 @@ def create_l2_gw_service(cluster, tenant_id, display_name, devices):
         json.dumps(gwservice_obj), cluster=cluster)
 
 
-def create_lrouter(cluster, tenant_id, display_name, nexthop):
+def _prepare_lrouter_body(name, tenant_id, router_type,
+                          distributed=None,
+                          **kwargs):
+    body = {
+        "display_name": _check_and_truncate_name(name),
+        "tags": [{"tag": tenant_id, "scope": "os_tid"},
+                 {"tag": QUANTUM_VERSION, "scope": "quantum"}],
+        "routing_config": {
+            "type": router_type
+        },
+        "type": "LogicalRouterConfig"
+    }
+    # add the distributed key only if not None (ie: True or False)
+    if distributed is not None:
+        body['distributed'] = distributed
+    if kwargs:
+        body["routing_config"].update(kwargs)
+    return body
+
+
+def _create_implicit_routing_lrouter(cluster, tenant_id, display_name, nexthop,
+                                     distributed=None):
+    implicit_routing_config = {
+        "default_route_next_hop": {
+            "gateway_ip_address": nexthop,
+            "type": "RouterNextHop"
+        },
+    }
+    lrouter_obj = _prepare_lrouter_body(
+        display_name, tenant_id,
+        "SingleDefaultRouteImplicitRoutingConfig",
+        distributed=distributed,
+        **implicit_routing_config)
+    return do_request(HTTP_POST, _build_uri_path(LROUTER_RESOURCE),
+                      json.dumps(lrouter_obj), cluster=cluster)
+
+
+def create_implicit_routing_lrouter(cluster, tenant_id, display_name, nexthop):
     """Create a NVP logical router on the specified cluster.
 
         :param cluster: The target NVP cluster
@@ -295,23 +346,31 @@ def create_lrouter(cluster, tenant_id, display_name, nexthop):
         :raise NvpApiException: if there is a problem while communicating
         with the NVP controller
     """
-    display_name = _check_and_truncate_name(display_name)
-    tags = [{"tag": tenant_id, "scope": "os_tid"},
-            {"tag": QUANTUM_VERSION, "scope": "quantum"}]
-    lrouter_obj = {
-        "display_name": display_name,
-        "tags": tags,
-        "routing_config": {
-            "default_route_next_hop": {
-                "gateway_ip_address": nexthop,
-                "type": "RouterNextHop"
-            },
-            "type": "SingleDefaultRouteImplicitRoutingConfig"
-        },
-        "type": "LogicalRouterConfig"
-    }
-    return do_request(HTTP_POST, _build_uri_path(LROUTER_RESOURCE),
-                      json.dumps(lrouter_obj), cluster=cluster)
+    return _create_implicit_routing_lrouter(
+        cluster, tenant_id, display_name, nexthop)
+
+
+def create_implicit_routing_lrouter_with_distribution(
+    cluster, tenant_id, display_name, nexthop, distributed=False):
+    """Create a NVP logical router on the specified cluster.
+
+    This function also allows for creating distributed lrouters
+    :param cluster: The target NVP cluster
+    :param tenant_id: Identifier of the Openstack tenant for which
+    the logical router is being created
+    :param display_name: Descriptive name of this logical router
+    :param nexthop: External gateway IP address for the logical router
+    :param distributed: True for distributed logical routers
+    :raise NvpApiException: if there is a problem while communicating
+    with the NVP controller
+    """
+    return _create_implicit_routing_lrouter(
+        cluster, tenant_id, display_name, nexthop, distributed)
+
+
+@version_dependent
+def create_lrouter(cluster, *args, **kwargs):
+    pass
 
 
 def delete_lrouter(cluster, lrouter_id):
@@ -381,8 +440,8 @@ def update_l2_gw_service(cluster, gateway_id, display_name):
                       json.dumps(gwservice_obj), cluster=cluster)
 
 
-def update_lrouter(cluster, lrouter_id, display_name, nexthop):
-    lrouter_obj = get_lrouter(cluster, lrouter_id)
+def update_lrouter(cluster, r_id, display_name, nexthop):
+    lrouter_obj = get_lrouter(cluster, r_id)
     if not display_name and not nexthop:
         # Nothing to update
         return lrouter_obj
@@ -395,7 +454,7 @@ def update_lrouter(cluster, lrouter_id, display_name, nexthop):
         if nh_element:
             nh_element["gateway_ip_address"] = nexthop
     return do_request(HTTP_PUT, _build_uri_path(LROUTER_RESOURCE,
-                                                resource_id=lrouter_id),
+                                                resource_id=r_id),
                       json.dumps(lrouter_obj),
                       cluster=cluster)
 
@@ -1027,14 +1086,20 @@ def update_lrouter_port_ips(cluster, lrouter_id, lport_id,
         raise nvp_exc.NvpPluginException(err_msg=msg)
 
 
-# TODO(salvatore-orlando): Also handle changes in minor versions
 NVPLIB_FUNC_DICT = {
-    'create_lrouter_dnat_rule': {2: create_lrouter_dnat_rule_v2,
-                                 3: create_lrouter_dnat_rule_v3},
-    'create_lrouter_snat_rule': {2: create_lrouter_snat_rule_v2,
-                                 3: create_lrouter_snat_rule_v3},
-    'create_lrouter_nosnat_rule': {2: create_lrouter_nosnat_rule_v2,
-                                   3: create_lrouter_nosnat_rule_v3}
+    'create_lrouter': {
+        2: {'default': create_implicit_routing_lrouter, },
+        3: {'default': create_implicit_routing_lrouter,
+            1: create_implicit_routing_lrouter_with_distribution, }, },
+    'create_lrouter_dnat_rule': {
+        2: {'default': create_lrouter_dnat_rule_v2, },
+        3: {'default': create_lrouter_dnat_rule_v3, }, },
+    'create_lrouter_snat_rule': {
+        2: {'default': create_lrouter_snat_rule_v2, },
+        3: {'default': create_lrouter_snat_rule_v3, }, },
+    'create_lrouter_nosnat_rule': {
+        2: {'default': create_lrouter_nosnat_rule_v2, },
+        3: {'default': create_lrouter_nosnat_rule_v3, }, },
 }
 
 

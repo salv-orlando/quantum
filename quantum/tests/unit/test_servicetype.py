@@ -132,7 +132,7 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                               [constants.LOADBALANCER +
                                ':lbaas:driver_path'],
                               'service_providers')
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         qry = self.ctx.session.query(st_db.ServiceProvider)
         self.assertEqual(qry.count(), 1)
 
@@ -143,14 +143,14 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                                constants.DUMMY + ':dummy:dummy_dr'],
                               'service_providers')
         ctx = context.get_admin_context()
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         # the next call will work as update existing
         cfg.CONF.set_override('service_provider',
                               [constants.LOADBALANCER +
                                ':lbaas:driver_path',
                                constants.DUMMY + ':dummy:dummy_dr1'],
                               'service_providers')
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         qry = ctx.session.query(st_db.ServiceProvider)
         self.assertEqual(qry.count(), 2)
         prov_count = (ctx.session.query(st_db.ServiceProvider).
@@ -166,7 +166,7 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                 'name': 'name2',
                 'driver': 'driver',
                 'default': False}
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         ctx = context.get_admin_context()
         self.assertRaises(
             q_exc.Invalid,
@@ -185,7 +185,7 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                 'name': 'lbaas1',
                 'driver': 'driver',
                 'default': False}
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         ctx = context.get_admin_context()
         self.assertRaises(
             q_exc.Invalid,
@@ -201,7 +201,7 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                                ':lbaas:driver_path',
                                constants.DUMMY + ':dummy:dummy_dr'],
                               'service_providers')
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         ctx = context.get_admin_context()
         qry = ctx.session.query(st_db.ServiceProvider)
         self.assertEqual(qry.count(), 2)
@@ -210,7 +210,7 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                               [constants.LOADBALANCER +
                                ':lbaas:driver_path'],
                               'service_providers')
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         qry = ctx.session.query(st_db.ServiceProvider)
         self.assertEqual(qry.count(), 1)
 
@@ -222,7 +222,7 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                               'service_providers')
         ctx = context.get_admin_context()
         st_db.parse_service_provider_opt()
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         res = self.manager.get_service_providers(ctx)
         self.assertEqual(len(res), 2)
 
@@ -243,7 +243,7 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                               [constants.LOADBALANCER +
                                ':lbaas:driver_path'],
                               'service_providers')
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         qry = self.ctx.session.query(st_db.ServiceProvider)
         prov = qry.one()
 
@@ -259,7 +259,7 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                               [constants.LOADBALANCER +
                                ':lbaas:driver_path'],
                               'service_providers')
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         self.assertRaises(st_db.ServiceProviderNotFound,
                           self.manager.get_service_provider, self.ctx, "123")
 
@@ -268,7 +268,7 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                               [constants.LOADBALANCER +
                                ':lbaas:driver_path'],
                               'service_providers')
-        self.manager._sync_conf_with_db()
+        self.manager.sync_svc_provider_conf_with_db()
         prov = self.ctx.session.query(st_db.ServiceProvider).one()
         self.manager.add_resource_association(self.ctx, prov['id'], "123")
         assoc = self.ctx.session.query(st_db.ProviderResourceAssociation).one()
@@ -282,7 +282,8 @@ class ServiceTypeDbTestCase(base.BaseTestCase):
                                constants.LOADBALANCER +
                                ':lbaas2:driver_path:default'],
                               'service_providers')
-        self.assertRaises(q_exc.Invalid, self.manager._sync_conf_with_db)
+        self.assertRaises(q_exc.Invalid,
+                          self.manager.sync_svc_provider_conf_with_db)
 
 
 class TestServiceTypeExtensionManager(object):

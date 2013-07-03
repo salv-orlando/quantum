@@ -44,6 +44,9 @@ class NvplibTestCase(base.BaseTestCase):
                                       % NICIRA_PKG_PATH, autospec=True)
         instance = self.mock_nvpapi.start()
         instance.return_value.login.return_value = "the_cookie"
+        fake_version = getattr(self, 'fake_version', "3.0")
+        instance.return_value.get_nvp_version.return_value = (
+            NvpApiClient.NVPVersion(fake_version))
 
         def _fake_request(*args, **kwargs):
             return self.fc.fake_request(*args, **kwargs)
@@ -110,6 +113,9 @@ class NvplibNegativeTests(base.BaseTestCase):
                                       % NICIRA_PKG_PATH, autospec=True)
         instance = self.mock_nvpapi.start()
         instance.return_value.login.return_value = "the_cookie"
+        fake_version = getattr(self, 'fake_version', "3.0")
+        instance.return_value.get_nvp_version.return_value = (
+            NvpApiClient.NVPVersion(fake_version))
 
         def _faulty_request(*args, **kwargs):
             raise nvplib.NvpApiClient.NvpApiException
@@ -371,7 +377,8 @@ class TestNvplibLogicalRouters(NvplibTestCase):
                         expected_uuid,
                         expected_display_name,
                         expected_nexthop,
-                        expected_tenant_id):
+                        expected_tenant_id,
+                        expected_distributed=None):
         self.assertEqual(res_lrouter['uuid'], expected_uuid)
         nexthop = (res_lrouter['routing_config']
                    ['default_route_next_hop']['gateway_ip_address'])
@@ -380,6 +387,9 @@ class TestNvplibLogicalRouters(NvplibTestCase):
         self.assertIn('os_tid', router_tags)
         self.assertEqual(res_lrouter['display_name'], expected_display_name)
         self.assertEqual(expected_tenant_id, router_tags['os_tid'])
+        if expected_distributed is not None:
+            self.assertEqual(expected_distributed,
+                             res_lrouter['distributed'])
 
     def test_get_lrouters(self):
         lrouter_uuids = [nvplib.create_lrouter(
@@ -389,15 +399,32 @@ class TestNvplibLogicalRouters(NvplibTestCase):
         for router in routers:
             self.assertIn(router['uuid'], lrouter_uuids)
 
-    def test_create_and_get_lrouter(self):
-        lrouter = nvplib.create_lrouter(self.fake_cluster,
-                                        'pippo',
-                                        'fake-lrouter',
-                                        '10.0.0.1')
-        res_lrouter = nvplib.get_lrouter(self.fake_cluster,
-                                         lrouter['uuid'])
-        self._verify_lrouter(res_lrouter, lrouter['uuid'],
+    def _create_lrouter(self, version, distributed=None):
+        with mock.patch.object(
+            self.fake_cluster.api_client, 'get_nvp_version',
+            return_value=NvpApiClient.NVPVersion(version)):
+                lrouter = nvplib.create_lrouter(
+                    self.fake_cluster, 'pippo', 'fake-lrouter',
+                    '10.0.0.1', distributed=distributed)
+                return nvplib.get_lrouter(self.fake_cluster,
+                                          lrouter['uuid'])
+
+    def test_create_and_get_lrouter_v30(self):
+        res_lrouter = self._create_lrouter('3.0')
+        self._verify_lrouter(res_lrouter, res_lrouter['uuid'],
                              'fake-lrouter', '10.0.0.1', 'pippo')
+
+    def test_create_and_get_lrouter_v31_centralized(self):
+        res_lrouter = self._create_lrouter('3.1', distributed=False)
+        self._verify_lrouter(res_lrouter, res_lrouter['uuid'],
+                             'fake-lrouter', '10.0.0.1', 'pippo',
+                             expected_distributed=False)
+
+    def test_create_and_get_lrouter_v31_distributed(self):
+        res_lrouter = self._create_lrouter('3.1', distributed=True)
+        self._verify_lrouter(res_lrouter, res_lrouter['uuid'],
+                             'fake-lrouter', '10.0.0.1', 'pippo',
+                             expected_distributed=True)
 
     def test_create_and_get_lrouter_name_exceeds_40chars(self):
         display_name = '*' * 50
@@ -731,9 +758,9 @@ class TestNvplibLogicalRouters(NvplibTestCase):
                                         'pippo',
                                         'fake-lrouter',
                                         '10.0.0.1')
-        with mock.patch.object(self.fake_cluster.api_client,
-                               'get_nvp_version',
-                               new=lambda: version):
+        with mock.patch.object(
+            self.fake_cluster.api_client, 'get_nvp_version',
+            return_value=NvpApiClient.NVPVersion(version)):
             nvplib.create_lrouter_snat_rule(
                 self.fake_cluster, lrouter['uuid'],
                 '10.0.0.2', '10.0.0.2', order=200,
@@ -752,9 +779,9 @@ class TestNvplibLogicalRouters(NvplibTestCase):
                                         'pippo',
                                         'fake-lrouter',
                                         '10.0.0.1')
-        with mock.patch.object(self.fake_cluster.api_client,
-                               'get_nvp_version',
-                               return_value=version):
+        with mock.patch.object(
+            self.fake_cluster.api_client, 'get_nvp_version',
+            return_value=NvpApiClient.NVPVersion(version)):
             nvplib.create_lrouter_dnat_rule(
                 self.fake_cluster, lrouter['uuid'], '192.168.0.2', order=200,
                 dest_port=dest_port,
@@ -795,9 +822,9 @@ class TestNvplibLogicalRouters(NvplibTestCase):
                                         'pippo',
                                         'fake-lrouter',
                                         '10.0.0.1')
-        with mock.patch.object(self.fake_cluster.api_client,
-                               'get_nvp_version',
-                               new=lambda: version):
+        with mock.patch.object(
+            self.fake_cluster.api_client, 'get_nvp_version',
+            return_value=NvpApiClient.NVPVersion(version)):
             nvplib.create_lrouter_nosnat_rule(
                 self.fake_cluster, lrouter['uuid'],
                 order=100,
@@ -818,9 +845,9 @@ class TestNvplibLogicalRouters(NvplibTestCase):
                                         'fake-lrouter',
                                         '10.0.0.1')
         # v2 or v3 makes no difference for this test
-        with mock.patch.object(self.fake_cluster.api_client,
-                               'get_nvp_version',
-                               new=lambda: '2.0'):
+        with mock.patch.object(
+            self.fake_cluster.api_client, 'get_nvp_version',
+            return_value=NvpApiClient.NVPVersion('2.0')):
             nvplib.create_lrouter_snat_rule(
                 self.fake_cluster, lrouter['uuid'],
                 '10.0.0.2', '10.0.0.2', order=220,

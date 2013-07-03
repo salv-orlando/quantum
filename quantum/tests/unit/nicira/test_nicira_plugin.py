@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import contextlib
+import copy
 import os
 
 import mock
@@ -21,9 +22,11 @@ import netaddr
 from oslo.config import cfg
 import webob.exc
 
+from quantum.api.v2 import attributes
 from quantum.common import constants
 import quantum.common.test_lib as test_lib
 from quantum import context
+from quantum.db import servicetype_db
 from quantum.extensions import l3
 from quantum.extensions import providernet as pnet
 from quantum.extensions import securitygroup as secgrp
@@ -47,6 +50,9 @@ from quantum.tests.unit import testlib_api
 NICIRA_PKG_PATH = nvp_plugin.__name__
 NICIRA_EXT_PATH = "../../plugins/nicira/extensions"
 
+from quantum.openstack.common import log
+LOG = log.getLogger(__name__)
+
 
 class NiciraPluginV2TestCase(test_plugin.QuantumDbPluginV2TestCase):
 
@@ -57,9 +63,9 @@ class NiciraPluginV2TestCase(test_plugin.QuantumDbPluginV2TestCase):
         data = {'network': {'name': name,
                             'admin_state_up': admin_state_up,
                             'tenant_id': self._tenant_id}}
-        attributes = kwargs
+        attrs = kwargs
         if providernet_args:
-            attributes.update(providernet_args)
+            attrs.update(providernet_args)
         for arg in (('admin_state_up', 'tenant_id', 'shared') +
                     (arg_list or ())):
             # Arg must be present and not empty
@@ -80,18 +86,43 @@ class NiciraPluginV2TestCase(test_plugin.QuantumDbPluginV2TestCase):
         self.fc = fake_nvpapiclient.FakeClient(etc_path)
         self.mock_nvpapi = mock.patch('%s.NvpApiClient.NVPApiHelper'
                                       % NICIRA_PKG_PATH, autospec=True)
-        instance = self.mock_nvpapi.start()
+        self.mock_instance = self.mock_nvpapi.start()
 
         def _fake_request(*args, **kwargs):
             return self.fc.fake_request(*args, **kwargs)
 
-        # Emulate tests against NVP 2.x
-        instance.return_value.get_nvp_version.return_value = "2.999"
-        instance.return_value.request.side_effect = _fake_request
+        self.mock_instance.return_value.get_nvp_version.return_value = (
+            NvpApiClient.NVPVersion('3.0'))
+        self.mock_instance.return_value.request.side_effect = _fake_request
+
+        # Mock service type loading
+        def fake_sync_svc_providers(inst):
+            providers = [{'service_type': 'ROUTER',
+                          'name': 'centralized',
+                          'driver': 'centralized_driver',
+                          'default': True},
+                         {'service_type': 'ROUTER',
+                          'name': 'distributed',
+                          'driver': 'distributed_driver',
+                          'default': False}]
+            ctx = context.get_admin_context()
+            for provider in providers:
+                inst._add_service_provider(ctx, provider)
+            # Unit tests might use service type ids
+            self._svc_providers = (dict((prov['name'], prov['id'])
+                                   for prov in
+                                   inst.get_service_providers(ctx)))
+
+        mock_service_type_sync = mock.patch.object(
+            servicetype_db.ServiceTypeManager,
+            'sync_svc_provider_conf_with_db',
+            new=fake_sync_svc_providers)
+        mock_service_type_sync.start()
         super(NiciraPluginV2TestCase, self).setUp(self._plugin_name)
         cfg.CONF.set_override('metadata_mode', None, 'NVP')
         self.addCleanup(self.fc.reset_all)
         self.addCleanup(self.mock_nvpapi.stop)
+        self.addCleanup(mock_service_type_sync.stop)
 
 
 class TestNiciraBasicGet(test_plugin.TestBasicGet, NiciraPluginV2TestCase):
@@ -306,8 +337,40 @@ class TestNiciraSecurityGroup(ext_sg.TestSecurityGroups,
             self.assertEqual(sg['security_group']['name'], name)
 
 
+class NiciraL3TestExtensionManager(object):
+
+    def get_resources(self):
+        # If l3 resources have been loaded and updated by main API
+        # router, update the map in the l3 extension so it will load
+        # the same attributes as the API router
+        l3_attr_map = copy.deepcopy(l3.RESOURCE_ATTRIBUTE_MAP)
+        for res in ('routers', 'floatingips'):
+            attr_info = attributes.RESOURCE_ATTRIBUTE_MAP.get(res)
+            if attr_info:
+                l3.RESOURCE_ATTRIBUTE_MAP[res] = attr_info
+        resources = l3.L3.get_resources()
+        # restore the original resources once the controllers are created
+        l3.RESOURCE_ATTRIBUTE_MAP = l3_attr_map
+        return resources
+
+    def get_actions(self):
+        return []
+
+    def get_request_extensions(self):
+        return []
+
+
 class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
                               NiciraPluginV2TestCase):
+
+    def setUp(self):
+        test_lib.test_config['l3_extension_manager'] = (
+            NiciraL3TestExtensionManager())
+        super(TestNiciraL3NatTestCase, self).setUp()
+
+    def tearDown(self):
+        del test_lib.test_config['l3_extension_manager']
+        super(TestNiciraL3NatTestCase, self).tearDown()
 
     def _create_l3_ext_network(self, vlan_id=None):
         name = 'l3_ext_net'
@@ -589,6 +652,52 @@ class TestNiciraL3NatTestCase(test_l3_plugin.L3NatDBTestCase,
                 self.assertIsNone(body['floatingip']['port_id'])
                 self.assertIsNone(body['floatingip']['fixed_ip_address'])
 
+    def _test_router_create_with_serviceprovid(self, service_prov_id,
+                                               distributed):
+        self.mock_instance.return_value.get_nvp_version.return_value = (
+            NvpApiClient.NVPVersion('3.1'))
+        mock_func_name = '_create_implicit_routing_lrouter'
+        with mock.patch.object(
+            nvplib, mock_func_name,
+            return_value={'uuid': 'xyz'}) as mock_create_lrouter:
+            data = {'router': {'tenant_id': 'whatever'}}
+            data['router']['name'] = 'router1'
+            if service_prov_id:
+                data['router']['service_provider_id'] = service_prov_id
+            router_req = self.new_create_request('routers', data,
+                                                 self.fmt)
+            router_req.get_response(self.ext_api)
+            mock_create_lrouter.assert_called_with(
+                mock.ANY, mock.ANY, data['router']['name'],
+                '1.1.1.1', distributed)
+
+    def test_router_create_centralized_servicetypeid(self):
+        service_prov_id = self._svc_providers['centralized']
+        self._test_router_create_with_serviceprovid(service_prov_id, False)
+
+    def test_router_create_distributed_servicetypeid(self):
+        service_prov_id = self._svc_providers['distributed']
+        self._test_router_create_with_serviceprovid(service_prov_id, True)
+
+    def test_router_create_bad_servicetypeid_defaults_to_centralized(self):
+        self._test_router_create_with_serviceprovid(test_l3_plugin._uuid(),
+                                                    False)
+
+    def test_router_create_no_servicetypeid_defaults_to_centralized(self):
+        self._test_router_create_with_serviceprovid(False, False)
+
+    def test_router_create_no_svcproviders_defaults_to_centralized(self):
+        service_prov_id = self._svc_providers['distributed']
+        with mock.patch.object(
+            servicetype_db.ServiceTypeManager,
+            'get_service_provider',
+            side_effect=servicetype_db.ServiceProviderNotFound(
+                service_prov_id=service_prov_id)):
+            # Setting should be ignored and centralized router should
+            # be created instead
+            self._test_router_create_with_serviceprovid(service_prov_id,
+                                                        False)
+
 
 class NvpQoSTestExtensionManager(object):
 
@@ -826,6 +935,11 @@ class TestNiciraQoSQueue(NiciraPluginV2TestCase):
 class NiciraQuantumNVPOutOfSync(test_l3_plugin.L3NatTestCaseBase,
                                 NiciraPluginV2TestCase):
 
+    def setUp(self):
+        test_lib.test_config['extension_manager'] = (
+            NiciraL3TestExtensionManager())
+        super(NiciraQuantumNVPOutOfSync, self).setUp()
+
     def test_delete_network_not_in_nvp(self):
         res = self._create_network('json', 'net1', True)
         net1 = self.deserialize('json', res)
@@ -938,6 +1052,7 @@ class NiciraQuantumNVPOutOfSync(test_l3_plugin.L3NatTestCaseBase,
 
     def test_show_router_not_in_nvp(self):
         res = self._create_router('json', 'tenant')
+        LOG.warn("#### RES:%s", res)
         router = self.deserialize('json', res)
         self.fc._fake_lrouter_dict.clear()
         req = self.new_show_request('routers', router['router']['id'])

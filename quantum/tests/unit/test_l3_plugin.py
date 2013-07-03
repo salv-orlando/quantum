@@ -508,7 +508,11 @@ class L3NatTestCaseBase(L3NatTestCaseMixin,
             'quantum.tests.unit.test_l3_plugin.TestL3NatPlugin')
         # for these tests we need to enable overlapping ips
         cfg.CONF.set_default('allow_overlapping_ips', True)
-        ext_mgr = L3TestExtensionManager()
+        # using a distinct config variable to avoid confusion
+        # with fake ext mgrs for other extensions
+        ext_mgr = test_config.get('l3_extension_manager', None)
+        if not ext_mgr:
+            ext_mgr = L3TestExtensionManager()
         test_config['extension_manager'] = ext_mgr
         super(L3NatTestCaseBase, self).setUp()
 

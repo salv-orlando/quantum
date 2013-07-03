@@ -71,6 +71,11 @@ class ServiceProviderNotFound(q_exc.NotFound):
     message = _("Service provider %(service_prov_id)s could not be found")
 
 
+class DefaultServiceProviderNotFound(ServiceProviderNotFound):
+    message = _("Service type %(service_type)s does not have a default "
+                "service provider")
+
+
 class ServiceProvider(model_base.BASEV2, models_v2.HasId):
     service_type = sa.Column(sa.String(36), nullable=False)
     name = sa.Column(sa.String(36), nullable=False)
@@ -107,7 +112,7 @@ class ServiceTypeManager(base_plugin.CommonDbMixin):
 
     def __init__(self):
         self._initialize_db()
-        self._sync_conf_with_db()
+        self.sync_svc_provider_conf_with_db()
 
     def _initialize_db(self):
         db.configure_db()
@@ -116,7 +121,7 @@ class ServiceTypeManager(base_plugin.CommonDbMixin):
         # created the engine
         db.register_models(models_v2.model_base.BASEV2)
 
-    def _sync_conf_with_db(self):
+    def sync_svc_provider_conf_with_db(self):
         """Synchs configuration with the database."""
         LOG.debug(_("Synchronizing service provider "
                     "configuration with database"))
@@ -205,6 +210,16 @@ class ServiceTypeManager(base_plugin.CommonDbMixin):
             fields
         )
 
+    def get_default_service_provider(self, context, service_type):
+        """Return the default provider for a given service type."""
+        filters = {'service_type': [service_type],
+                   'default': [True]}
+        providers = self.get_service_providers(context, filters=filters)
+        # By construction we expect at most a single item in provider
+        if not providers:
+            raise DefaultServiceProviderNotFound(service_type=service_type)
+        return providers[0]
+
     def _make_svc_provider_dict(self, svc_prov, fields=None):
         res = {'id': svc_prov['id'],
                'service_type': svc_prov['service_type'],
@@ -212,7 +227,6 @@ class ServiceTypeManager(base_plugin.CommonDbMixin):
                'driver': svc_prov['driver'],
                'default': svc_prov['default']
                }
-
         return self._fields(res, fields)
 
     def add_resource_association(self, context, prov_id,

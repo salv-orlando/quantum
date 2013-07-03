@@ -46,7 +46,9 @@ from quantum.db import l3_db
 from quantum.db import models_v2
 from quantum.db import portsecurity_db
 from quantum.db import quota_db  # noqa
+from quantum.db import routerservicetype_db
 from quantum.db import securitygroups_db
+from quantum.db import servicetype_db
 from quantum.extensions import l3
 from quantum.extensions import portsecurity as psec
 from quantum.extensions import providernet as pnet
@@ -54,6 +56,7 @@ from quantum.extensions import securitygroup as ext_sg
 from quantum.openstack.common import excutils
 from quantum.openstack.common import importutils
 from quantum.openstack.common import rpc
+from quantum.plugins.common import constants as plugin_constants
 from quantum.plugins.nicira.common import config  # noqa
 from quantum.plugins.nicira.common import exceptions as nvp_exc
 from quantum.plugins.nicira.common import metadata_access as nvp_meta
@@ -132,7 +135,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                   qos_db.NVPQoSDbMixin,
                   nvp_sec.NVPSecurityGroups,
                   nvp_meta.NvpMetadataAccess,
-                  agentschedulers_db.AgentSchedulerDbMixin):
+                  agentschedulers_db.AgentSchedulerDbMixin,
+                  routerservicetype_db.RouterServiceTypeDbMixin,
+                  servicetype_db.ServiceTypeManager):
     """L2 Virtual network plugin.
 
     NvpPluginV2 is a Quantum plugin that provides L2 Virtual Network
@@ -146,7 +151,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                    "provider",
                                    "quotas",
                                    "router",
-                                   "security-group", ]
+                                   "router-service-type",
+                                   "security-group",
+                                   "service-type"]
 
     __native_bulk_support = True
 
@@ -155,6 +162,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
 
     def __init__(self):
 
+        # TODO(salv-orlando): Replace These dicts with
+        # collections.defaultdict for better handling of default values
         # Routines for managing logical ports in NVP
         self._port_drivers = {
             'create': {l3_db.DEVICE_OWNER_ROUTER_GW:
@@ -178,6 +187,10 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                        self._nvp_delete_port,
                        'default': self._nvp_delete_port}
         }
+        # Use default driver for centralized routers
+        self._router_drivers = {
+            'default': self._nvp_create_centralized_router,
+            'distributed_driver': self._nvp_create_distributed_router}
 
         # If no api_extensions_path is provided set the following
         if not cfg.CONF.api_extensions_path:
@@ -188,6 +201,8 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                           self.nvp_opts.nvp_gen_timeout)
 
         db.configure_db()
+        # Read service provider definitions and update db
+        self.sync_svc_provider_conf_with_db()
         # Extend the fault map
         self._extend_fault_map()
         # Set up RPC interface for DHCP agent
@@ -1404,6 +1419,14 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                 quantum_db_port["status"] = constants.PORT_STATUS_ERROR
         return quantum_db_port
 
+    def _nvp_create_centralized_router(self, tenant_id, router_name, nexthop):
+        return nvplib.create_lrouter(
+            self.cluster, tenant_id, router_name, nexthop)
+
+    def _nvp_create_distributed_router(self, tenant_id, router_name, nexthop):
+        return nvplib.create_lrouter(
+            self.cluster, tenant_id, router_name, nexthop, distributed=True)
+
     def create_router(self, context, router):
         # NOTE(salvatore-orlando): We completely override this method in
         # order to be able to use the NVP ID as Quantum ID
@@ -1414,6 +1437,29 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         tenant_id = self._get_tenant_id_for_create(context, r)
         # default value to set - nvp wants it (even if we don't have it)
         nexthop = '1.1.1.1'
+        # Associate default service provider if not set
+        router_type_id = r.get('service_provider_id')
+        try:
+            if not router_type_id:
+                svc_provider = self.get_default_service_provider(
+                    context, plugin_constants.ROUTER)
+            else:
+                svc_provider = self.get_service_provider(context,
+                                                         router_type_id)
+            # Be safe in case the user specifies some non-existing driver
+            router_create_func = self._router_drivers.get(
+                svc_provider['driver'], self._router_drivers['default'])
+        except servicetype_db.ServiceProviderNotFound:
+            # Do not fail here. For backward compatibility routers should be
+            # created even if no provider was specified in request and
+            # no provider is specified in configuration files.
+            if router_type_id:
+                LOG.exception(_("Unable to load service provider: %s"),
+                              router_type_id)
+            else:
+                LOG.exception(_("Unable to fetch default service provider "
+                                "for 'router' service_type from database"))
+            router_create_func = self._router_drivers['default']
         try:
             # if external gateway info are set, then configure nexthop to
             # default external gateway
@@ -1435,9 +1481,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                     if ext_net.subnets:
                         ext_subnet = ext_net.subnets[0]
                         nexthop = ext_subnet.gateway_ip
-            lrouter = nvplib.create_lrouter(self.cluster, tenant_id,
-                                            router['router']['name'],
-                                            nexthop)
+            lrouter = router_create_func(tenant_id,
+                                         router['router']['name'],
+                                         nexthop)
             # Use NVP identfier for Quantum resource
             router['router']['id'] = lrouter['uuid']
         except NvpApiClient.NvpApiException:
