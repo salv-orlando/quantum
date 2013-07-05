@@ -121,11 +121,15 @@ class ServiceTypeManager(base_plugin.CommonDbMixin):
         # created the engine
         db.register_models(models_v2.model_base.BASEV2)
 
-    def sync_svc_provider_conf_with_db(self):
+    def sync_svc_provider_conf_with_db(self, ctx=None):
         """Synchs configuration with the database."""
+        # Use getattr as the member might not have been defined yet
+        if getattr(self, 'db_synchronized', False):
+            return
         LOG.debug(_("Synchronizing service provider "
                     "configuration with database"))
-        ctx = context.get_admin_context()
+        if not ctx:
+            ctx = context.get_admin_context()
         # collect existing entries, excluding reference providers
         existing_qry = ctx.session.query(ServiceProvider.service_type,
                                          ServiceProvider.name)
@@ -149,6 +153,7 @@ class ServiceTypeManager(base_plugin.CommonDbMixin):
                            filter_by(service_type=svc_type).
                            filter_by(name=name).one())
                 ctx.session.delete(prov_db)
+        self.db_synchronized = True
 
     def _add_service_provider(self, context, prov):
         """Adds or updates service provider in the database."""

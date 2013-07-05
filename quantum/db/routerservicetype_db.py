@@ -37,26 +37,17 @@ class RouterServiceTypeDbMixin(object):
     def _process_create_router_service_provider_id(self, context, router):
         with context.session.begin(subtransactions=True):
             db = RouterServiceProviderBinding(
-                router_id=router['id'],
-                service_provider_id=router[rst.SERVICE_PROVIDER_ID])
+                 router_id=router['id'],
+                 service_provider_id=router[rst.SERVICE_PROVIDER_ID])
             context.session.add(db)
-        return self._make_router_service_provider_id_dict(db)
 
     def _extend_router_service_provider_id_dict(self, context, router):
         rsbind = self._get_router_service_provider_id_binding(
             context, router['id'])
-        if rsbind:
-            router[rst.SERVICE_PROVIDER_ID] = rsbind['service_provider_id']
+        router[rst.SERVICE_PROVIDER_ID] = (rsbind and
+                                           rsbind['service_provider_id'])
 
     def _get_router_service_provider_id_binding(self, context, router_id):
         query = self._model_query(context, RouterServiceProviderBinding)
         query = query.filter_by(router_id=router_id)
         return query.first()
-
-    def _make_router_service_provider_id_dict(self, router_service_provider):
-        res = {
-            'router_id': router_service_provider['router_id'],
-            'service_provider_id':
-            router_service_provider[rst.SERVICE_PROVIDER_ID]
-        }
-        return self._fields(res, None)

@@ -50,9 +50,6 @@ from quantum.tests.unit import testlib_api
 NICIRA_PKG_PATH = nvp_plugin.__name__
 NICIRA_EXT_PATH = "../../plugins/nicira/extensions"
 
-from quantum.openstack.common import log
-LOG = log.getLogger(__name__)
-
 
 class NiciraPluginV2TestCase(test_plugin.QuantumDbPluginV2TestCase):
 
@@ -1052,7 +1049,6 @@ class NiciraQuantumNVPOutOfSync(test_l3_plugin.L3NatTestCaseBase,
 
     def test_show_router_not_in_nvp(self):
         res = self._create_router('json', 'tenant')
-        LOG.warn("#### RES:%s", res)
         router = self.deserialize('json', res)
         self.fc._fake_lrouter_dict.clear()
         req = self.new_show_request('routers', router['router']['id'])

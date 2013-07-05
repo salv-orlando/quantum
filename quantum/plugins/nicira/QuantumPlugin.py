@@ -52,6 +52,7 @@ from quantum.db import servicetype_db
 from quantum.extensions import l3
 from quantum.extensions import portsecurity as psec
 from quantum.extensions import providernet as pnet
+from quantum.extensions import routerservicetype as rst
 from quantum.extensions import securitygroup as ext_sg
 from quantum.openstack.common import excutils
 from quantum.openstack.common import importutils
@@ -201,8 +202,6 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
                                           self.nvp_opts.nvp_gen_timeout)
 
         db.configure_db()
-        # Read service provider definitions and update db
-        self.sync_svc_provider_conf_with_db()
         # Extend the fault map
         self._extend_fault_map()
         # Set up RPC interface for DHCP agent
@@ -1437,12 +1436,15 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         tenant_id = self._get_tenant_id_for_create(context, r)
         # default value to set - nvp wants it (even if we don't have it)
         nexthop = '1.1.1.1'
+        # Read service provider definitions and update db
+        self.sync_svc_provider_conf_with_db(context)
         # Associate default service provider if not set
-        router_type_id = r.get('service_provider_id')
+        router_type_id = r.get(rst.SERVICE_PROVIDER_ID)
         try:
             if not router_type_id:
                 svc_provider = self.get_default_service_provider(
                     context, plugin_constants.ROUTER)
+                r[rst.SERVICE_PROVIDER_ID] = svc_provider['id']
             else:
                 svc_provider = self.get_service_provider(context,
                                                          router_type_id)
@@ -1495,15 +1497,21 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             "L3GatewayAttachment", self.cluster.default_l3_gw_service_uuid)
 
         with context.session.begin(subtransactions=True):
-            router_db = l3_db.Router(id=lrouter['uuid'],
-                                     tenant_id=tenant_id,
-                                     name=r['name'],
-                                     admin_state_up=r['admin_state_up'],
-                                     status="ACTIVE")
-            context.session.add(router_db)
+            with context.session.begin(subtransactions=True):
+                router_db = l3_db.Router(id=lrouter['uuid'],
+                                         tenant_id=tenant_id,
+                                         name=r['name'],
+                                         admin_state_up=r['admin_state_up'],
+                                         status="ACTIVE")
+                context.session.add(router_db)
             if has_gw_info:
                 self._update_router_gw_info(context, router_db['id'], gw_info)
-        return self._make_router_dict(router_db)
+            if svc_provider:
+                self._process_create_router_service_provider_id(context, r)
+        router = self._make_router_dict(router_db)
+        # No need to call _extend method - we already know service provider id
+        router[rst.SERVICE_PROVIDER_ID] = svc_provider and svc_provider['id']        
+        return router
 
     def update_router(self, context, id, router):
         # Either nexthop is updated or should be kept as it was before
@@ -1591,7 +1599,9 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             # update the router status
             with context.session.begin(subtransactions=True):
                 router.status = router_op_status
-        return self._make_router_dict(router, fields)
+        router = self._make_router_dict(router, fields)
+        self._extend_router_service_provider_id_dict(context, router)
+        return self._fields(router, fields)
 
     def get_routers(self, context, filters=None, fields=None):
         router_query = self._apply_filters_to_query(
@@ -1636,9 +1646,12 @@ class NvpPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             LOG.warning(_("Found %s logical routers not bound "
                           "to Quantum routers. Quantum and NVP are "
                           "potentially out of sync"), len(nvp_lrouters))
-
-        return [self._make_router_dict(router, fields)
-                for router in routers]
+        results = []
+        for router_db in routers:
+            router = self._make_router_dict(router_db, None)
+            self._extend_router_service_provider_id_dict(context, router)
+            results.append(router)
+        return [self._fields(router, fields) for router in results]
 
     def add_router_interface(self, context, router_id, interface_info):
         router_iface_info = super(NvpPluginV2, self).add_router_interface(
