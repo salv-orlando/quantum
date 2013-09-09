@@ -261,6 +261,7 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
             router.gw_port_id = gw_port['id']
             context.session.add(router)
             context.session.add(rp)
+        return gw_port
 
     def _update_router_gw_info(self, context, router, info):
         # TODO(salvatore-orlando): guarantee atomic behavior also across
@@ -552,9 +553,6 @@ class L3_NAT_db_mixin(l3.RouterPluginBase):
                     router_id=router_id,
                     subnet_id=subnet_id)
 
-            if not found:
-                raise l3.RouterInterfaceNotFoundForSubnet(router_id=router_id,
-                                                          subnet_id=subnet_id)
         self.l3_rpc_notifier.routers_updated(
             context, [router_id], 'remove_router_interface')
         info = {'id': router_id,

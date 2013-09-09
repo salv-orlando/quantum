@@ -661,10 +661,9 @@ class L3NatDBTestCase(L3NatTestCaseBase):
                 body = self._show('ports', r_port_id,
                                   expected_code=exc.HTTPNotFound.code)
 
-                self.assertEqual(len(test_notifier.NOTIFICATIONS), 8)
                 self.assertEqual(
-                    exp_notifications,
-                    [n['event_type'] for n in test_notifier.NOTIFICATIONS]
+                    set(exp_notifications),
+                    set([n['event_type'] for n in test_notifier.NOTIFICATIONS])
                 )
 
                 for n in test_notifier.NOTIFICATIONS:

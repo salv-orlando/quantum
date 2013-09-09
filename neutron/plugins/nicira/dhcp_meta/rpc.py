@@ -121,8 +121,10 @@ def handle_router_metadata_access(plugin, context, router_id, do_create=True):
                    "the metadata access network"))
         return
     ctx_elevated = context.elevated()
-    device_filter = {'device_id': [router_id],
-                     'device_owner': [l3_db.DEVICE_OWNER_ROUTER_INTF]}
+    router_ports = context.session.query(l3_db.RouterPort).filter_by(
+        router_id=router_id, port_type=l3_db.DEVICE_OWNER_ROUTER_INTF)
+    port_ids = [rp['port_id'] for rp in router_ports]
+    device_filter = {'id': port_ids}
     # Retrieve ports calling database plugin
     ports = db_base_plugin_v2.NeutronDbPluginV2.get_ports(
         plugin, ctx_elevated, filters=device_filter)
