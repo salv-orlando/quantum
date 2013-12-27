@@ -1117,7 +1117,7 @@ class TestNvplibLogicalRouters(NvplibTestCase):
 class TestNvplibSecurityProfile(NvplibTestCase):
 
     def test_create_and_get_security_profile(self):
-        sec_prof = nvplib.create_security_profile(self.fake_cluster,
+        sec_prof = nvplib.create_security_profile(self.fake_cluster, _uuid(),
                                                   'pippo', {'name': 'test'})
         sec_prof_res = nvplib.do_request(
             nvplib.HTTP_GET,
@@ -1130,9 +1130,8 @@ class TestNvplibSecurityProfile(NvplibTestCase):
         self.assertEqual(len(sec_prof_res['logical_port_ingress_rules']), 2)
 
     def test_create_and_get_default_security_profile(self):
-        sec_prof = nvplib.create_security_profile(self.fake_cluster,
-                                                  'pippo',
-                                                  {'name': 'default'})
+        sec_prof = nvplib.create_security_profile(self.fake_cluster, _uuid(),
+                                                  'pippo', {'name': 'default'})
         sec_prof_res = nvplib.do_request(
             nvplib.HTTP_GET,
             nvplib._build_uri_path('security-profile',
@@ -1144,7 +1143,7 @@ class TestNvplibSecurityProfile(NvplibTestCase):
         self.assertEqual(len(sec_prof_res['logical_port_ingress_rules']), 2)
 
     def test_update_security_profile_rules(self):
-        sec_prof = nvplib.create_security_profile(self.fake_cluster,
+        sec_prof = nvplib.create_security_profile(self.fake_cluster, _uuid(),
                                                   'pippo', {'name': 'test'})
         ingress_rule = {'ethertype': 'IPv4'}
         egress_rule = {'ethertype': 'IPv4', 'profile_uuid': 'xyz'}
@@ -1168,7 +1167,7 @@ class TestNvplibSecurityProfile(NvplibTestCase):
                       sec_prof_res['logical_port_ingress_rules'])
 
     def test_update_security_profile_rules_noingress(self):
-        sec_prof = nvplib.create_security_profile(self.fake_cluster,
+        sec_prof = nvplib.create_security_profile(self.fake_cluster, _uuid(),
                                                   'pippo', {'name': 'test'})
         hidden_ingress_rule = {'ethertype': 'IPv4',
                                'ip_prefix': '127.0.0.1/32'}
@@ -1200,7 +1199,7 @@ class TestNvplibSecurityProfile(NvplibTestCase):
                            'logical_port_ingress_rules': []})
 
     def test_delete_security_profile(self):
-        sec_prof = nvplib.create_security_profile(self.fake_cluster,
+        sec_prof = nvplib.create_security_profile(self.fake_cluster, _uuid(),
                                                   'pippo', {'name': 'test'})
         nvplib.delete_security_profile(self.fake_cluster, sec_prof['uuid'])
         self.assertRaises(exceptions.NotFound,

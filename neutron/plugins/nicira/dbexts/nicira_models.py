@@ -57,6 +57,20 @@ class NvpNetworkBinding(model_base.BASEV2):
                                                   self.vlan_id)
 
 
+class NeutronNsxSecurityGroupMapping(model_base.BASEV2):
+    """Backend mappings for Neutron Security Group identifiers.
+
+    This class maps a neutron security group identifier to the corresponding
+    NSX security profile identifier.
+    """
+
+    __tablename__ = 'neutron_nsx_security_group_mappings'
+    neutron_id = Column(String(36),
+                        ForeignKey('securitygroups.id', ondelete="CASCADE"),
+                        primary_key=True)
+    nsx_id = Column(String(36))
+
+
 class NeutronNsxPortMapping(model_base.BASEV2):
     """Represents the mapping between neutron and nvp port uuids."""
 

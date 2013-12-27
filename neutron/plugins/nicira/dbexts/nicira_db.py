@@ -70,6 +70,20 @@ def add_neutron_nsx_port_mapping(session, neutron_id,
     return mapping
 
 
+def add_neutron_nsx_security_group_mapping(session, neutron_id, nsx_id):
+    """Map a Neutron security group to a NSX security profile.
+
+    :param session: a valid database session object
+    :param neutron_id: a neutron security group identifier
+    :param nsx_id: a nsx security profile identifier
+    """
+    with session.begin(subtransactions=True):
+        mapping = nicira_models.NeutronNsxSecurityGroupMapping(
+            neutron_id=neutron_id, nsx_id=nsx_id)
+        session.add(mapping)
+        return mapping
+
+
 def get_nsx_switch_and_port_id(session, neutron_id):
     try:
         mapping = (session.query(nicira_models.NeutronNsxPortMapping).
@@ -78,6 +92,22 @@ def get_nsx_switch_and_port_id(session, neutron_id):
         return mapping['nsx_switch_id'], mapping['nsx_port_id']
     except exc.NoResultFound:
         LOG.debug(_("NSX identifiers for neutron port %s not yet "
+                    "stored in Neutron DB"), neutron_id)
+        return None, None
+
+
+def get_nsx_security_group_id(session, neutron_id):
+    """Return the id of a security group in the NSX backend.
+
+    Note: security groups are called 'security profiles' in NSX
+    """
+    try:
+        mapping = (session.query(nicira_models.NeutronNsxSecurityGroupMapping).
+                   filter_by(neutron_id=neutron_id).
+                   one())
+        return mapping['nsx_id']
+    except exc.NoResultFound:
+        LOG.debug(_("NSX identifiers for neutron security group %s not yet "
                     "stored in Neutron DB"), neutron_id)
         return None, None
 

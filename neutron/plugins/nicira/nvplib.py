@@ -53,6 +53,7 @@ LROUTERRIB_RESOURCE = "rib/%s" % LROUTER_RESOURCE
 LROUTERNAT_RESOURCE = "nat/lrouter"
 LQUEUE_RESOURCE = "lqueue"
 GWSERVICE_RESOURCE = "gateway-service"
+SECPROF_RESOURCE = "security-profile"
 # Current neutron version
 NEUTRON_VERSION = version_info.release_string()
 # Constants for NAT rules
@@ -1076,7 +1077,16 @@ def mk_body(**kwargs):
 # -----------------------------------------------------------------------------
 # Security Group API Calls
 # -----------------------------------------------------------------------------
-def create_security_profile(cluster, tenant_id, security_profile):
+def create_security_profile(cluster, tenant_id,
+                            neutron_id, security_profile):
+    """Create a security profile on the NSX backend.
+
+    :param cluster: a NSX cluster object reference
+    :param tenant_id: identifier of the Neutron tenant
+    :param neutron_id: neutron security group identifier
+    :param security_profile: dictionary with data for
+    configuring the NSX security profile.
+    """
     path = "/ws.v1/security-profile"
     # Allow all dhcp responses and all ingress traffic
     hidden_rules = {'logical_port_egress_rules':
@@ -1088,7 +1098,10 @@ def create_security_profile(cluster, tenant_id, security_profile):
                     'logical_port_ingress_rules':
                     [{'ethertype': 'IPv4'},
                      {'ethertype': 'IPv6'}]}
-    tags = [dict(scope='os_tid', tag=tenant_id),
+    # NOTE(salv-orlando): neutron-id tags are prepended with 'q' for
+    # historical reasons
+    tags = [dict(scope='q_sec_group_id', tag=neutron_id),
+            dict(scope='os_tid', tag=tenant_id),
             dict(scope='quantum', tag=NEUTRON_VERSION)]
     display_name = utils.check_and_truncate(security_profile.get('name'))
     body = mk_body(
@@ -1142,13 +1155,15 @@ def update_security_group_rules(cluster, spid, rules):
 
 def delete_security_profile(cluster, spid):
     path = "/ws.v1/security-profile/%s" % spid
+    do_request(HTTP_DELETE, path, cluster=cluster)
 
-    try:
-        do_request(HTTP_DELETE, path, cluster=cluster)
-    except exception.NotFound as e:
-        # FIXME(salv-orlando): should not raise NeutronException
-        LOG.error(format_exception("Unknown", e, locals()))
-        raise exception.NeutronException()
+
+def query_security_profiles(cluster, fields=None, filters=None):
+    return get_all_query_pages(
+        _build_uri_path(SECPROF_RESOURCE,
+                        fields=fields,
+                        filters=filters),
+        cluster)
 
 
 def _create_nat_match_obj(**kwargs):
