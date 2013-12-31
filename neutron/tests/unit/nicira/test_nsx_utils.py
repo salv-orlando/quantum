@@ -122,7 +122,8 @@ class NsxUtilsTestCase(base.BaseTestCase):
         # found for a given security profile identifier
         exp_sec_prof_uuid = uuidutils.generate_uuid()
         self._mock_sec_group_mapping_db_calls(None)
-        with mock.patch(nicira_method('query_security_profiles'),
+        with mock.patch(nicira_method('query_security_profiles',
+                                      'nsxlib.security_profiles'),
                         return_value=[{'uuid': exp_sec_prof_uuid}]):
             self._verify_get_nsx_sec_profile_id(exp_sec_prof_uuid)
 
@@ -130,6 +131,7 @@ class NsxUtilsTestCase(base.BaseTestCase):
         # This test verifies that the function returns None if the mapping
         # are not found both in the db and in the backend
         self._mock_sec_group_mapping_db_calls(None)
-        with mock.patch(nicira_method('query_security_profiles'),
+        with mock.patch(nicira_method('query_security_profiles',
+                                      'nsxlib.security_profiles'),
                         return_value=[]):
             self._verify_get_nsx_sec_profile_id(None)

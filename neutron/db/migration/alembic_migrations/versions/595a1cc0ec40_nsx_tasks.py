@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 #
-# Copyright 2013 OpenStack Foundation
+# Copyright 2014 OpenStack Foundation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -15,17 +15,17 @@
 #    under the License.
 #
 
-"""nsx_sec_group_mapping
+"""nsx_tasks
 
-Revision ID: 1b2580001654
-Revises: 49f5e553f61f
-Create Date: 2013-12-27 13:02:42.894648
+Revision ID: 595a1cc0ec40
+Revises: 2c08f530b0cc
+Create Date: 2014-01-24 04:32:38.893830
 
 """
 
 # revision identifiers, used by Alembic.
-revision = '1b2580001654'
-down_revision = '49f5e553f61f'
+revision = '595a1cc0ec40'
+down_revision = '2c08f530b0cc'
 
 # Change to ['*'] if this migration applies to all plugins
 
@@ -43,21 +43,25 @@ from neutron.db import migration
 def upgrade(active_plugins=None, options=None):
     if not migration.should_run(active_plugins, migration_for_plugins):
         return
-    # Create table for security group mappings
+
     op.create_table(
-        'neutron_nsx_security_group_mappings',
-        sa.Column('neutron_id', sa.String(length=36), nullable=False),
-        sa.Column('nsx_id', sa.String(length=36), nullable=True),
-        sa.ForeignKeyConstraint(['neutron_id'], ['securitygroups.id'],
+        'nsxasyncsecuritygrouptasks',
+        sa.Column('id', sa.String(length=36), nullable=False),
+        sa.Column('celery_task_id', sa.String(length=36), nullable=True),
+        sa.Column('task_counter', sa.Integer(), nullable=True),
+        sa.Column('is_create', sa.Boolean(), nullable=False),
+        sa.Column('is_delete', sa.Boolean(), nullable=False),
+        sa.Column('task_data', sa.String(length=8192), nullable=True),
+        sa.Column('neutron_id', sa.String(length=36), nullable=True),
+        sa.ForeignKeyConstraint(['neutron_id'],
+                                ['securitygroups.id'],
                                 ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('neutron_id'))
-    # Execute statement to add a record in security group mappings for
-    # each record in securitygroups
-    op.execute("INSERT INTO neutron_nsx_security_group_mappings SELECT id,id "
-               "from securitygroups")
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('task_counter'),
+        mysql_engine='InnoDB')
 
 
 def downgrade(active_plugins=None, options=None):
     if not migration.should_run(active_plugins, migration_for_plugins):
         return
-    op.drop_table('neutron_nsx_security_group_mappings')
+    op.drop_table('nsxasyncsecuritygrouptasks')

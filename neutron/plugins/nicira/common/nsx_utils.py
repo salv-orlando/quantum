@@ -15,9 +15,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import celery
+
 from neutron.openstack.common import log
 from neutron.plugins.nicira.dbexts import nicira_db
 from neutron.plugins.nicira import nsx_cluster
+from neutron.plugins.nicira.nsxlib import security_profiles
 from neutron.plugins.nicira import NvpApiClient
 from neutron.plugins.nicira import nvplib
 
@@ -89,7 +92,7 @@ def get_nsx_security_group_id(session, cluster, neutron_id):
         # Find security profile on backend.
         # This is a rather expensive query, but it won't be executed
         # more than once for each security group in Neutron's lifetime
-        nsx_sec_profiles = nvplib.query_security_profiles(
+        nsx_sec_profiles = security_profiles.query_security_profiles(
             cluster, '*',
             filters={'tag': neutron_id,
                      'tag_scope': 'q_sec_group_id'})
@@ -112,9 +115,7 @@ def get_nsx_security_group_id(session, cluster, neutron_id):
     return nsx_id
 
 
-def create_nsx_cluster(cluster_opts, concurrent_connections, nsx_gen_timeout):
-    cluster = nsx_cluster.NSXCluster(**cluster_opts)
-
+def configure_nsx_cluster(cluster, concurrent_connections, nsx_gen_timeout):
     def _ctrl_split(x, y):
         return (x, int(y), True)
 
@@ -129,3 +130,17 @@ def create_nsx_cluster(cluster_opts, concurrent_connections, nsx_gen_timeout):
         concurrent_connections=concurrent_connections,
         nvp_gen_timeout=nsx_gen_timeout)
     return cluster
+
+
+def create_nsx_cluster(cluster_opts, concurrent_connections, nsx_gen_timeout):
+    return configure_nsx_cluster(nsx_cluster.NSXCluster(**cluster_opts),
+                                 concurrent_connections,
+                                 nsx_gen_timeout)
+
+
+def get_nsx_celery_app(broker_str):
+    return celery.Celery(
+        'neutron.plugins.nicira.nsx_synchronizer',
+        broker=broker_str,
+        backend='amqp',
+        include=['neutron.plugins.nicira.nsx_handlers.nsx_tasks'])
