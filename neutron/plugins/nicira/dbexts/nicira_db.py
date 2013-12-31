@@ -143,3 +143,60 @@ def is_multiprovider_network(session, network_id):
         return bool(
             session.query(nicira_models.MultiProviderNetworks).filter_by(
                 network_id=network_id).first())
+
+
+# Routines for managing aysnchronous tasks
+
+def add_task(model_class, session, neutron_id, task_data=None,
+             is_create=False, is_delete=False):
+    task = model_class()
+    task.neutron_id = neutron_id
+    task.is_create = is_create
+    task.is_delete = is_delete
+    task.task_data = task_data
+    session.add(task)
+    session.flush()
+    return task
+
+
+def set_celery_task_id(model_class, session, task_id, celery_task_id):
+    # Loading before updating as NoResultFound should be raised if the
+    # task entity is not found on the database
+    task = session.query(model_class).filter_by(id=task_id).one()
+    task.celery_task_id = celery_task_id
+    session.add(task)
+    session.flush()
+
+
+def remove_task_by_id(model_class, session, task_id):
+    session.query(model_class).filter_by(id=task_id).delete()
+
+
+def remove_task_by_celery_task_id(model_class, session, celery_task_id):
+    session.query(model_class).filter_by(
+        celery_task_id=celery_task_id).delete()
+
+
+def has_pending_tasks(model_class, session, neutron_id):
+    """Check whether there are pending tasks for a given resource.
+
+    @param model_class SqlAlchemy model class for the resource to check
+    @param session A valid and open database session
+    @neutron_id Identifier of the resource for which tasks are being checked
+
+    @returns True if there are pending tasks
+    """
+    return session.query(model_class).filter_by(neutron_id=neutron_id).count()
+
+
+def get_next_task_to_runr(model_class, session, neutron_id):
+    """Find the next task that should be run.
+
+    @param model_classs SqlAlchemy model class for the resource to check
+    @param session A valid and open database session
+    @neutron_id Identifier of the resource for which tasks are being checked
+
+    @return The task model class or None if there's no task for the resource
+    """
+    return session.query(model_class).filter_by(
+        neutron_id=neutron_id).oder_by('task_counter').first()

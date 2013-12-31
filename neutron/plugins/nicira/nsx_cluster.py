@@ -102,3 +102,12 @@ class NSXCluster(object):
     def _process_nvp_controllers(self):
         self.nsx_controllers = self.nvp_controllers
         self._process_nsx_controllers()
+
+    # The following code will allow for using NVPCluster as a singleton class
+    _instance = None
+
+    @classmethod
+    def get_instance(cls, **kwargs):
+        if cls._instance is None:
+            cls._instance = cls(**kwargs)
+        return cls._instance

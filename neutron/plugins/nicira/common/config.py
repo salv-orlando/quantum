@@ -88,7 +88,15 @@ sync_opts = [
                 deprecated_group='NVP_SYNC',
                 help=_('Always read operational status from backend on show '
                        'operations. Enabling this option might slow down '
-                       'the system.'))
+                       'the system.')),
+    cfg.BoolOpt('enable_async_tasks', default=False,
+                help=_('Perform operations on the backend as asynchronous '
+                       'tasks. Requires a celery worker to be started with '
+                       'nsx synchronization tasks')),
+    cfg.StrOpt('base_exchange_name', default='neutron_nsx',
+               help=_('Base name for creating celery exchanges for async '
+                      'tasks. The result exchange name will be optained by '
+                      'adding "_results" to the value of this variable'))
 ]
 
 connection_opts = [
@@ -171,9 +179,14 @@ vcns_opts = [
                help=_("Task status check interval"))
 ]
 
+
+def register_sync_opts():
+    cfg.CONF.register_opts(sync_opts, "NSX_SYNC")
+
 # Register the configuration options
 cfg.CONF.register_opts(connection_opts)
 cfg.CONF.register_opts(cluster_opts)
 cfg.CONF.register_opts(vcns_opts, group="vcns")
 cfg.CONF.register_opts(base_opts, group="NSX")
 cfg.CONF.register_opts(sync_opts, group="NSX_SYNC")
+register_sync_opts()

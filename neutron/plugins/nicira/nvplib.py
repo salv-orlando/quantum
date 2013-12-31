@@ -32,6 +32,7 @@ from neutron.openstack.common import excutils
 from neutron.openstack.common import log
 from neutron.plugins.nicira.common import exceptions as nvp_exc
 from neutron.plugins.nicira.common import utils
+from neutron.plugins.nicira import nsxlib
 from neutron.plugins.nicira import NvpApiClient
 from neutron.version import version_info
 
@@ -43,7 +44,7 @@ HTTP_POST = "POST"
 HTTP_DELETE = "DELETE"
 HTTP_PUT = "PUT"
 # Prefix to be used for all NVP API calls
-URI_PREFIX = "/ws.v1"
+URI_PREFIX = nsxlib.URI_PREFIX
 # Resources exposed by NVP API
 LSWITCH_RESOURCE = "lswitch"
 LSWITCHPORT_RESOURCE = "lport/%s" % LSWITCH_RESOURCE
@@ -116,39 +117,7 @@ def version_dependent(wrapped_func):
     return dispatch_version_dependent_function
 
 
-def _build_uri_path(resource,
-                    resource_id=None,
-                    parent_resource_id=None,
-                    fields=None,
-                    relations=None,
-                    filters=None,
-                    types=None,
-                    is_attachment=False,
-                    extra_action=None):
-    resources = resource.split('/')
-    res_path = resources[0] + (resource_id and "/%s" % resource_id or '')
-    if len(resources) > 1:
-        # There is also a parent resource to account for in the uri
-        res_path = "%s/%s/%s" % (resources[1],
-                                 parent_resource_id,
-                                 res_path)
-    if is_attachment:
-        res_path = "%s/attachment" % res_path
-    elif extra_action:
-        res_path = "%s/%s" % (res_path, extra_action)
-    params = []
-    params.append(fields and "fields=%s" % fields)
-    params.append(relations and "relations=%s" % relations)
-    params.append(types and "types=%s" % types)
-    if filters:
-        params.extend(['%s=%s' % (k, v) for (k, v) in filters.iteritems()])
-    uri_path = "%s/%s" % (URI_PREFIX, res_path)
-    non_empty_params = [x for x in params if x is not None]
-    if non_empty_params:
-        query_string = '&'.join(non_empty_params)
-        if query_string:
-            uri_path += "?%s" % query_string
-    return uri_path
+_build_uri_path = nsxlib._build_uri_path
 
 
 def get_cluster_version(cluster):
@@ -169,35 +138,10 @@ def get_cluster_version(cluster):
     return version
 
 
-def get_single_query_page(path, cluster, page_cursor=None,
-                          page_length=1000, neutron_only=True):
-    params = []
-    if page_cursor:
-        params.append("_page_cursor=%s" % page_cursor)
-    params.append("_page_length=%s" % page_length)
-    # NOTE(salv-orlando): On the NVP backend the 'Quantum' tag is still
-    # used for marking Neutron entities in order to preserve compatibility
-    if neutron_only:
-        params.append("tag_scope=quantum")
-    query_params = "&".join(params)
-    path = "%s%s%s" % (path, "&" if (path.find("?") != -1) else "?",
-                       query_params)
-    body = do_request(HTTP_GET, path, cluster=cluster)
-    # Result_count won't be returned if _page_cursor is supplied
-    return body['results'], body.get('page_cursor'), body.get('result_count')
-
-
-def get_all_query_pages(path, c):
-    need_more_results = True
-    result_list = []
-    page_cursor = None
-    while need_more_results:
-        results, page_cursor = get_single_query_page(
-            path, c, page_cursor)[:2]
-        if not page_cursor:
-            need_more_results = False
-        result_list.extend(results)
-    return result_list
+# Local references to get_single_query_page and
+# get_all_query_pages for backward compatibility
+get_single_query_page = nsxlib.get_single_query_page
+get_all_query_pages = nsxlib.get_all_query_pages
 
 
 # -------------------------------------------------------------------
@@ -1054,116 +998,11 @@ def do_request(*args, **kwargs):
     :returns: the result of the operation loaded into a python
         object or None.
     """
-    cluster = kwargs["cluster"]
+    # keep raising exception.NotFound for backward compatibility
     try:
-        res = cluster.api_client.request(*args)
-        if res:
-            return json.loads(res)
+        return nsxlib.do_request(*args, **kwargs)
     except NvpApiClient.ResourceNotFound:
         raise exception.NotFound()
-    except NvpApiClient.ReadOnlyMode:
-        raise nvp_exc.MaintenanceInProgress()
-
-
-def mk_body(**kwargs):
-    """Convenience function creates and dumps dictionary to string.
-
-    :param kwargs: the key/value pirs to be dumped into a json string.
-    :returns: a json string.
-    """
-    return json.dumps(kwargs, ensure_ascii=False)
-
-
-# -----------------------------------------------------------------------------
-# Security Group API Calls
-# -----------------------------------------------------------------------------
-def create_security_profile(cluster, tenant_id,
-                            neutron_id, security_profile):
-    """Create a security profile on the NSX backend.
-
-    :param cluster: a NSX cluster object reference
-    :param tenant_id: identifier of the Neutron tenant
-    :param neutron_id: neutron security group identifier
-    :param security_profile: dictionary with data for
-    configuring the NSX security profile.
-    """
-    path = "/ws.v1/security-profile"
-    # Allow all dhcp responses and all ingress traffic
-    hidden_rules = {'logical_port_egress_rules':
-                    [{'ethertype': 'IPv4',
-                      'protocol': constants.PROTO_NUM_UDP,
-                      'port_range_min': constants.DHCP_RESPONSE_PORT,
-                      'port_range_max': constants.DHCP_RESPONSE_PORT,
-                      'ip_prefix': '0.0.0.0/0'}],
-                    'logical_port_ingress_rules':
-                    [{'ethertype': 'IPv4'},
-                     {'ethertype': 'IPv6'}]}
-    # NOTE(salv-orlando): neutron-id tags are prepended with 'q' for
-    # historical reasons
-    tags = [dict(scope='q_sec_group_id', tag=neutron_id),
-            dict(scope='os_tid', tag=tenant_id),
-            dict(scope='quantum', tag=NEUTRON_VERSION)]
-    display_name = utils.check_and_truncate(security_profile.get('name'))
-    body = mk_body(
-        tags=tags, display_name=display_name,
-        logical_port_ingress_rules=(
-            hidden_rules['logical_port_ingress_rules']),
-        logical_port_egress_rules=hidden_rules['logical_port_egress_rules']
-    )
-    rsp = do_request(HTTP_POST, path, body, cluster=cluster)
-    if security_profile.get('name') == 'default':
-        # If security group is default allow ip traffic between
-        # members of the same security profile is allowed and ingress traffic
-        # from the switch
-        rules = {'logical_port_egress_rules': [{'ethertype': 'IPv4',
-                                                'profile_uuid': rsp['uuid']},
-                                               {'ethertype': 'IPv6',
-                                                'profile_uuid': rsp['uuid']}],
-                 'logical_port_ingress_rules': [{'ethertype': 'IPv4'},
-                                                {'ethertype': 'IPv6'}]}
-
-        update_security_group_rules(cluster, rsp['uuid'], rules)
-    LOG.debug(_("Created Security Profile: %s"), rsp)
-    return rsp
-
-
-def update_security_group_rules(cluster, spid, rules):
-    path = "/ws.v1/security-profile/%s" % spid
-
-    # Allow all dhcp responses in
-    rules['logical_port_egress_rules'].append(
-        {'ethertype': 'IPv4', 'protocol': constants.PROTO_NUM_UDP,
-         'port_range_min': constants.DHCP_RESPONSE_PORT,
-         'port_range_max': constants.DHCP_RESPONSE_PORT,
-         'ip_prefix': '0.0.0.0/0'})
-    # If there are no ingress rules add bunk rule to drop all ingress traffic
-    if not rules['logical_port_ingress_rules']:
-        rules['logical_port_ingress_rules'].append(
-            {'ethertype': 'IPv4', 'ip_prefix': '127.0.0.1/32'})
-    try:
-        body = mk_body(
-            logical_port_ingress_rules=rules['logical_port_ingress_rules'],
-            logical_port_egress_rules=rules['logical_port_egress_rules'])
-        rsp = do_request(HTTP_PUT, path, body, cluster=cluster)
-    except exception.NotFound as e:
-        LOG.error(format_exception("Unknown", e, locals()))
-        #FIXME(salvatore-orlando): This should not raise NeutronException
-        raise exception.NeutronException()
-    LOG.debug(_("Updated Security Profile: %s"), rsp)
-    return rsp
-
-
-def delete_security_profile(cluster, spid):
-    path = "/ws.v1/security-profile/%s" % spid
-    do_request(HTTP_DELETE, path, cluster=cluster)
-
-
-def query_security_profiles(cluster, fields=None, filters=None):
-    return get_all_query_pages(
-        _build_uri_path(SECPROF_RESOURCE,
-                        fields=fields,
-                        filters=filters),
-        cluster)
 
 
 def _create_nat_match_obj(**kwargs):

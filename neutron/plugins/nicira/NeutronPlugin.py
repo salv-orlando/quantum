@@ -63,9 +63,9 @@ from neutron.openstack.common import excutils
 from neutron.openstack.common import lockutils
 from neutron.plugins.common import constants as plugin_const
 from neutron.plugins.nicira.common import config  # noqa
+from neutron.plugins.nicira.common import constants as nsx_constants
 from neutron.plugins.nicira.common import exceptions as nvp_exc
 from neutron.plugins.nicira.common import nsx_utils
-from neutron.plugins.nicira.common import securitygroups as nvp_sec
 from neutron.plugins.nicira.common import sync
 from neutron.plugins.nicira.dbexts import distributedrouter as dist_rtr
 from neutron.plugins.nicira.dbexts import maclearning as mac_db
@@ -77,6 +77,7 @@ from neutron.plugins.nicira import dhcpmeta_modes
 from neutron.plugins.nicira.extensions import maclearning as mac_ext
 from neutron.plugins.nicira.extensions import nvp_networkgw as networkgw
 from neutron.plugins.nicira.extensions import nvp_qos as ext_qos
+from neutron.plugins.nicira import nsx_handlers
 from neutron.plugins.nicira import NvpApiClient
 from neutron.plugins.nicira import nvplib
 
@@ -111,7 +112,6 @@ class NvpPluginV2(addr_pair_db.AllowedAddressPairsMixin,
                   l3_gwmode_db.L3_NAT_db_mixin,
                   mac_db.MacLearningDbMixin,
                   networkgw_db.NetworkGatewayMixin,
-                  nvp_sec.NVPSecurityGroups,
                   portbindings_db.PortBindingMixin,
                   portsecurity_db.PortSecurityDbMixin,
                   qos_db.NVPQoSDbMixin,
@@ -202,6 +202,8 @@ class NvpPluginV2(addr_pair_db.AllowedAddressPairsMixin,
             self.nvp_sync_opts.min_sync_req_delay,
             self.nvp_sync_opts.min_chunk_size,
             self.nvp_sync_opts.max_random_sync_delay)
+        # Instantiate NSX handlers
+        self.nsx_handlers = nsx_handlers.NsxSynchronizationHandlers()
 
     def _ensure_default_network_gateway(self):
         if self._is_default_net_gw_in_sync:
@@ -2035,22 +2037,16 @@ class NvpPluginV2(addr_pair_db.AllowedAddressPairsMixin,
             self._ensure_default_security_group(context, tenant_id)
         # NOTE(salv-orlando): Pre-generating Neutron ID for security group.
         neutron_id = str(uuid.uuid4())
-        nvp_secgroup = nvplib.create_security_profile(
-            self.cluster, neutron_id, tenant_id, s)
         with context.session.begin(subtransactions=True):
             s['id'] = neutron_id
             sec_group = super(NvpPluginV2, self).create_security_group(
                 context, security_group, default_sg)
-            context.session.flush()
-            # Set status for security groups
-            # NOTE(salv-orlando): Once async processing is enabled,
-            # the status will be updated by the job handler
-            self._set_security_group_status(context,
-                                            sec_group,
-                                            "ACTIVE")
-            # Add mapping between neutron and nsx identifiers
-            nicira_db.add_neutron_nsx_security_group_mapping(
-                context.session, neutron_id, nvp_secgroup['uuid'])
+            # Initialize security group status
+            self._set_security_group_status(
+                context, s, nsx_constants.STATUS_UNKNOWN)
+        # DB operation completed. Invoke NSX handler
+        self.nsx_handlers.handle_create_security_group(
+            self, context, sec_group)
         return sec_group
 
     def delete_security_group(self, context, security_group_id):
@@ -2058,47 +2054,16 @@ class NvpPluginV2(addr_pair_db.AllowedAddressPairsMixin,
 
         :param security_group_id: security group rule to remove.
         """
+        # Use a transaction as the sec group checks perform
+        # multiple queries
         with context.session.begin(subtransactions=True):
-            security_group = super(NvpPluginV2, self).get_security_group(
+            self._pre_delete_security_group_checks(
                 context, security_group_id)
-            if not security_group:
-                raise ext_sg.SecurityGroupNotFound(id=security_group_id)
-
-            if security_group['name'] == 'default' and not context.is_admin:
-                raise ext_sg.SecurityGroupCannotRemoveDefault()
-
-            filters = {'security_group_id': [security_group['id']]}
-            if super(NvpPluginV2, self)._get_port_security_group_bindings(
-                context, filters):
-                raise ext_sg.SecurityGroupInUse(id=security_group['id'])
-            nsx_sec_profile_id = nsx_utils.get_nsx_security_group_id(
-                context.session, self.cluster, security_group_id)
-
-            try:
-                nvplib.delete_security_profile(
-                    self.cluster, nsx_sec_profile_id)
-            except q_exc.NotFound:
-                # The security profile was not found on the backend
-                # do not fail in this case.
-                LOG.warning(_("The NSX security profile %(sec_profile_id)s, "
-                              "associated with the Neutron security group "
-                              "%(sec_group_id)s was not found on the backend"),
-                            {'sec_profile_id': nsx_sec_profile_id,
-                             'sec_group_id': security_group_id})
-            except NvpApiClient.NvpApiException:
-                # Raise and fail the operation, as there is a problem which
-                # prevented the sec group from being removed from the backend
-                LOG.exception(_("An exception occurred while removing the "
-                                "NSX security profile %(sec_profile_id)s, "
-                                "associated with Netron security group "
-                                "%(sec_group_id)s"),
-                              {'sec_profile_id': nsx_sec_profile_id,
-                               'sec_group_id': security_group_id})
-                raise nvp_exc.NvpPluginException(
-                    _("Unable to remove security group %s from backend"),
-                    security_group['id'])
-            return super(NvpPluginV2, self).delete_security_group(
-                context, security_group_id)
+        # Checks completed - Invoke NSX operation
+        # The NSX handler will perform the actual DB deletion or
+        # delegate it to a callback
+        self.nsx_handlers.handle_delete_security_group(
+            self, context, security_group_id)
 
     def _validate_security_group_rules(self, context, rules):
         for rule in rules['security_group_rules']:
@@ -2125,11 +2090,9 @@ class NvpPluginV2(addr_pair_db.AllowedAddressPairsMixin,
 
         :param security_group_rule: list of rules to create
         """
-        s = security_group_rule.get('security_group_rules')
-        tenant_id = self._get_tenant_id_for_create(context, s)
+        new_rules = security_group_rule.get('security_group_rules')
+        tenant_id = self._get_tenant_id_for_create(context, new_rules)
 
-        # TODO(arosen) is there anyway we could avoid having the update of
-        # the security group rules in nvp outside of this transaction?
         with context.session.begin(subtransactions=True):
             self._ensure_default_security_group(context, tenant_id)
             security_group_id = self._validate_security_group_rules(
@@ -2137,49 +2100,36 @@ class NvpPluginV2(addr_pair_db.AllowedAddressPairsMixin,
             # Check to make sure security group exists
             security_group = super(NvpPluginV2, self).get_security_group(
                 context, security_group_id)
-
             if not security_group:
                 raise ext_sg.SecurityGroupNotFound(id=security_group_id)
             # Check for duplicate rules
-            self._check_for_duplicate_rules(context, s)
-            # gather all the existing security group rules since we need all
-            # of them to PUT to NSX.
-            combined_rules = self._merge_security_group_rules_with_current(
-                context, s, security_group['id'])
-            nsx_sec_profile_id = nsx_utils.get_nsx_security_group_id(
-                context.session, self.cluster, security_group_id)
-            nvplib.update_security_group_rules(self.cluster,
-                                               nsx_sec_profile_id,
-                                               combined_rules)
-            return super(
+            self._check_for_duplicate_rules(context, new_rules)
+            result = super(
                 NvpPluginV2, self).create_security_group_rule_bulk_native(
                     context, security_group_rule)
+        # DB operation succeeded, invoke NSX handler
+        self.nsx_handlers.handle_create_security_group_rules(
+            self, context, security_group_id, new_rules)
+        return result
 
-    def delete_security_group_rule(self, context, sgrid):
+    def delete_security_group_rule(self, context, sgr_id):
         """Delete a security group rule
-        :param sgrid: security group id to remove.
+        :param sgr_id: security group rule id to remove.
         """
         with context.session.begin(subtransactions=True):
             # determine security profile id
             security_group_rule = (
                 super(NvpPluginV2, self).get_security_group_rule(
-                    context, sgrid))
+                    context, sgr_id))
             if not security_group_rule:
-                raise ext_sg.SecurityGroupRuleNotFound(id=sgrid)
+                raise ext_sg.SecurityGroupRuleNotFound(id=sgr_id)
 
-            sgid = security_group_rule['security_group_id']
-            current_rules = self._get_security_group_rules_nvp_format(
-                context, sgid, True)
-
-            self._remove_security_group_with_id_and_id_field(
-                current_rules, sgrid)
-
-            nsx_sec_profile_id = nsx_utils.get_nsx_security_group_id(
-                context.session, self.cluster, sgid)
-            nvplib.update_security_group_rules(
-                self.cluster, nsx_sec_profile_id, current_rules)
-            return super(NvpPluginV2, self).delete_security_group_rule(context,
-                                                                       sgrid)
+            sg_id = security_group_rule['security_group_id']
+            super(NvpPluginV2, self).delete_security_group_rule(context,
+                                                                sgr_id)
+        # DB operation succeeded, invoke NSX handler
+        self.nsx_handlers.handle_delete_security_group_rule(
+            self, context, sg_id, sgr_id)
 
     def create_qos_queue(self, context, qos_queue, check_policy=True):
         q = qos_queue.get('qos_queue')

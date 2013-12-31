@@ -56,16 +56,16 @@ class SecurityGroupStatusDbMixin(object):
     db_base_plugin_v2.NeutronDbPluginV2.register_dict_extend_funcs(
         'security_groups', ['_extend_security_group_status'])
 
-    def _set_security_group_status(self, context, sec_group, status):
+    def _set_security_group_status(self, context, sec_group, new_status):
         try:
             query = self._model_query(context, SecurityGroupStatus)
             status = query.filter(
                 SecurityGroupStatus.security_group_id == sec_group['id']).one()
-            status.update({sg_status.STATUS: status})
+            status.update({sg_status.STATUS: new_status})
         except exc.NoResultFound:
             self._create_security_group_status(
-                context, sec_group['id'], status)
-        sec_group[sg_status.STATUS] = status
+                context, sec_group['id'], new_status)
+        sec_group[sg_status.STATUS] = new_status
 
     def _create_security_group_status(self, context, sg_id, status):
         with context.session.begin(subtransactions=True):

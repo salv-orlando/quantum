@@ -198,16 +198,20 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             raise ext_sg.SecurityGroupNotFound(id=id)
         return sg
 
-    def delete_security_group(self, context, id):
-        filters = {'security_group_id': [id]}
+    def _pre_delete_security_group_checks(self, context, security_group_id):
+        filters = {'security_group_id': [security_group_id]}
         ports = self._get_port_security_group_bindings(context, filters)
         if ports:
-            raise ext_sg.SecurityGroupInUse(id=id)
+            raise ext_sg.SecurityGroupInUse(id=security_group_id)
         # confirm security group exists
-        sg = self._get_security_group(context, id)
+        sg = self._get_security_group(context, security_group_id)
 
         if sg['name'] == 'default' and not context.is_admin:
             raise ext_sg.SecurityGroupCannotRemoveDefault()
+        return sg
+
+    def delete_security_group(self, context, id):
+        sg = self._pre_delete_security_group_checks(context, id)
         with context.session.begin(subtransactions=True):
             context.session.delete(sg)
 
