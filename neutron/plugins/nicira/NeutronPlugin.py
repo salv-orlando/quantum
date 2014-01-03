@@ -72,6 +72,7 @@ from neutron.plugins.nicira.dbexts import maclearning as mac_db
 from neutron.plugins.nicira.dbexts import nicira_db
 from neutron.plugins.nicira.dbexts import nicira_networkgw_db as networkgw_db
 from neutron.plugins.nicira.dbexts import nicira_qos_db as qos_db
+from neutron.plugins.nicira.dbexts import security_group_status as sg_status_db
 from neutron.plugins.nicira import dhcpmeta_modes
 from neutron.plugins.nicira.extensions import maclearning as mac_ext
 from neutron.plugins.nicira.extensions import nvp_networkgw as networkgw
@@ -114,7 +115,8 @@ class NvpPluginV2(addr_pair_db.AllowedAddressPairsMixin,
                   portbindings_db.PortBindingMixin,
                   portsecurity_db.PortSecurityDbMixin,
                   qos_db.NVPQoSDbMixin,
-                  securitygroups_db.SecurityGroupDbMixin):
+                  securitygroups_db.SecurityGroupDbMixin,
+                  sg_status_db.SecurityGroupStatusDbMixin):
     """L2 Virtual network plugin.
 
     NvpPluginV2 is a Neutron plugin that provides L2 Virtual Network
@@ -137,6 +139,7 @@ class NvpPluginV2(addr_pair_db.AllowedAddressPairsMixin,
                                    "quotas",
                                    "external-net",
                                    "router",
+                                   "sec-group-status",
                                    "security-group"]
 
     __native_bulk_support = True
@@ -2039,6 +2042,12 @@ class NvpPluginV2(addr_pair_db.AllowedAddressPairsMixin,
             sec_group = super(NvpPluginV2, self).create_security_group(
                 context, security_group, default_sg)
             context.session.flush()
+            # Set status for security groups
+            # NOTE(salv-orlando): Once async processing is enabled,
+            # the status will be updated by the job handler
+            self._set_security_group_status(context,
+                                            sec_group,
+                                            "ACTIVE")
             # Add mapping between neutron and nsx identifiers
             nicira_db.add_neutron_nsx_security_group_mapping(
                 context.session, neutron_id, nvp_secgroup['uuid'])

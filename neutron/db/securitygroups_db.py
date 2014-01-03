@@ -27,8 +27,10 @@ from neutron.db import db_base_plugin_v2
 from neutron.db import model_base
 from neutron.db import models_v2
 from neutron.extensions import securitygroup as ext_sg
+from neutron.openstack.common import log
 from neutron.openstack.common import uuidutils
 
+LOG = log.getLogger(__name__)
 
 IP_PROTOCOL_MAP = {constants.PROTO_NAME_TCP: constants.PROTO_NUM_TCP,
                    constants.PROTO_NAME_UDP: constants.PROTO_NUM_UDP,
@@ -138,8 +140,10 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
                     direction='egress',
                     ethertype=ethertype)
                 context.session.add(egress_rule)
-
-        return self._make_security_group_dict(security_group_db)
+        # Extensions should not be processed on create as the newly
+        # created security group won't be committed yet
+        return self._make_security_group_dict(security_group_db,
+                                              process_extensions=False)
 
     def get_security_groups(self, context, filters=None, fields=None,
                             sorts=None, limit=None,
@@ -216,13 +220,20 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             sg.update(s)
         return self._make_security_group_dict(sg)
 
-    def _make_security_group_dict(self, security_group, fields=None):
+    def _make_security_group_dict(self, security_group, fields=None,
+                                  process_extensions=True):
         res = {'id': security_group['id'],
                'name': security_group['name'],
                'tenant_id': security_group['tenant_id'],
                'description': security_group['description']}
         res['security_group_rules'] = [self._make_security_group_rule_dict(r)
                                        for r in security_group.rules]
+        # NOTE(salv-orlando): The following assumes this mixin is used in a
+        # class inheriting from CommonDbMixin, which is true for all existing
+        # plugins.
+        if process_extensions:
+            self._apply_dict_extend_functions(
+                'security_groups', res, security_group)
         return self._fields(res, fields)
 
     def _make_security_group_binding_dict(self, security_group, fields=None):

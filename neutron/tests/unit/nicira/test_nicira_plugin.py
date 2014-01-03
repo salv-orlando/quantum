@@ -46,6 +46,7 @@ from neutron.plugins.nicira.dbexts import nicira_qos_db as qos_db
 from neutron.plugins.nicira.extensions import distributedrouter as dist_router
 from neutron.plugins.nicira.extensions import nvp_networkgw
 from neutron.plugins.nicira.extensions import nvp_qos as ext_qos
+from neutron.plugins.nicira.extensions import securitygroupstatus as sg_status
 from neutron.plugins.nicira import NeutronPlugin
 from neutron.plugins.nicira import NvpApiClient
 from neutron.plugins.nicira.NvpApiClient import NVPVersion
@@ -417,30 +418,46 @@ class TestNiciraAllowedAddressPairs(NiciraPluginV2TestCase,
     pass
 
 
-class NiciraSecurityGroupsTestCase(ext_sg.SecurityGroupDBTestCase):
+class TestNiciraSecurityGroupExtensionManager(object):
 
-    def setUp(self):
-        test_lib.test_config['config_files'] = [get_fake_conf('nsx.ini.test')]
-        # mock nvp api client
-        fc = fake_nvpapiclient.FakeClient(STUBS_PATH)
-        self.mock_nvpapi = mock.patch(NVPAPI_NAME, autospec=True)
-        instance = self.mock_nvpapi.start()
-        instance.return_value.login.return_value = "the_cookie"
-        # Avoid runs of the synchronizer looping call
-        patch_sync = mock.patch.object(sync, '_start_loopingcall')
-        patch_sync.start()
+    def get_resources(self):
+        # Simulate extension of security group attribute map
+        # First apply attribute extensions
+        for key in secgrp.RESOURCE_ATTRIBUTE_MAP.keys():
+            secgrp.RESOURCE_ATTRIBUTE_MAP[key].update(
+                sg_status.EXTENDED_ATTRIBUTES_2_0.get(key, {}))
+        # Finally add security group resources to the global attribute map
+        attributes.RESOURCE_ATTRIBUTE_MAP.update(
+            secgrp.RESOURCE_ATTRIBUTE_MAP)
+        return secgrp.Securitygroup.get_resources()
 
-        def _fake_request(*args, **kwargs):
-            return fc.fake_request(*args, **kwargs)
+    def get_actions(self):
+        return []
 
-        instance.return_value.request.side_effect = _fake_request
-        self.addCleanup(self.mock_nvpapi.stop)
-        self.addCleanup(patch_sync.stop)
-        super(NiciraSecurityGroupsTestCase, self).setUp(PLUGIN_NAME)
+    def get_request_extensions(self):
+        return []
 
 
-class TestNiciraSecurityGroup(ext_sg.TestSecurityGroups,
-                              NiciraSecurityGroupsTestCase):
+class NiciraSecurityGroupsTest(NiciraPluginV2TestCase,
+                               ext_sg.SecurityGroupDBTestCase):
+
+    def _restore_sec_group_attribute_map(self):
+        secgrp.RESOURCE_ATTRIBUTE_MAP = self._secgrp_attribute_map_bk
+
+    def setUp(self, plugin=None, ext_mgr=None):
+        self._secgrp_attribute_map_bk = {}
+        for item in secgrp.RESOURCE_ATTRIBUTE_MAP:
+            self._secgrp_attribute_map_bk[item] = (
+                secgrp.RESOURCE_ATTRIBUTE_MAP[item].copy())
+        cfg.CONF.set_override('api_extensions_path', NVPEXT_PATH)
+        self.addCleanup(self._restore_sec_group_attribute_map)
+        ext_mgr = ext_mgr or TestNiciraSecurityGroupExtensionManager()
+        super(NiciraSecurityGroupsTest, self).setUp(
+            plugin=PLUGIN_NAME, ext_mgr=ext_mgr)
+
+
+class TestNiciraSecurityGroup(NiciraSecurityGroupsTest,
+                              ext_sg.TestSecurityGroups):
 
     def test_create_security_group_name_exceeds_40_chars(self):
         name = 'this_is_a_secgroup_whose_name_is_longer_than_40_chars'
@@ -462,6 +479,17 @@ class TestNiciraSecurityGroup(ext_sg.TestSecurityGroups,
             res = self._create_security_group_rule(self.fmt, rule)
             self.deserialize(self.fmt, res)
             self.assertEqual(res.status_int, 400)
+
+    def test_create_and_show_security_group_return_status(self):
+        with self.security_group() as sg:
+            # Ensure there is a non-None status in the security group
+            self.assertIn('status', sg['security_group'])
+            self.assertTrue(sg['security_group']['status'])
+            req = self.new_show_request('security-groups',
+                                        sg['security_group']['id'])
+            sg_get = self.deserialize(self.fmt, req.get_response(self.ext_api))
+            self.assertIn('status', sg_get['security_group'])
+            self.assertTrue(sg_get['security_group']['status'])
 
 
 class TestNiciraL3ExtensionManager(object):

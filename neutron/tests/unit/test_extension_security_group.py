@@ -241,8 +241,8 @@ class SecurityGroupDBTestCase(SecurityGroupsTestCase):
     def setUp(self, plugin=None, ext_mgr=None):
         plugin = plugin or DB_PLUGIN_KLASS
         ext_mgr = ext_mgr or SecurityGroupTestExtensionManager()
-        super(SecurityGroupDBTestCase,
-              self).setUp(plugin=plugin, ext_mgr=ext_mgr)
+        super(SecurityGroupDBTestCase, self).setUp(
+            plugin=plugin, ext_mgr=ext_mgr)
 
 
 class TestSecurityGroups(SecurityGroupDBTestCase):
